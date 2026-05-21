@@ -32,12 +32,13 @@ function update_q!(model::KazmierczakHydroModel, grid::OGRectHydroGrid, state::H
 
     # Compute ψ_out via a recursive algorithm that traverses upsteam to compute ψ_out at the highest ϕ₀ and then come back down again, for each unvisited point on the grounded ice grid.
     update_ψ_out!(model, grid, state)
-     
+    
     # This is the factor to go from ψ_out to q. It can be derived using the definition of ψ_out = integral of q ⋅ n with n the outward normal 
     # and the line integral is over the whole sides of the grid cell that water leaves the cell, which can be 1 side for when q points to any of the 4 cardinal neighbours's center or 2 sides.
-    @. model.corfac.data = (abs(model.minus_∇ϕ₀_smoothed_x.data) * grid.grid.Δyᵃᶜᵃ + abs(model.minus_∇ϕ₀_smoothed_y.data) * grid.grid.Δxᶜᵃᵃ) / sqrt(model.minus_∇ϕ₀_smoothed_x.data^2 + model.minus_∇ϕ₀_smoothed_y.data^2)
-    
+    @. model.corfac.data = (abs(model.minus_∇ϕ₀_smoothed_x.data) * grid.grid.Δyᵃᶜᵃ + abs(model.minus_∇ϕ₀_smoothed_y.data) * grid.grid.Δxᶜᵃᵃ) / (sqrt(model.minus_∇ϕ₀_smoothed_x.data^2 + model.minus_∇ϕ₀_smoothed_y.data^2) + 1e-15) # 1e-15 for division by zero safety
+
     # Limits on q are heuristic and chosen by Frank Pattyn for numerical stability.
+    @. model.q = model.ψ_out / model.corfac
     @. model.q.data = min(max(model.ψ_out.data / model.corfac.data, 0), 1e5)
 
     return nothing
@@ -55,7 +56,7 @@ function update_W!(model::KazmierczakHydroModel, grid::OGRectHydroGrid, state::H
     abs_∇ϕ₀_smoothed_active = @views interior(model.abs_∇ϕ₀_smoothed, :, :, 1)[state.mask .== 1] # this allocates memory and we can avoid that with a for loop but the current method is faster
     abs_∇ϕ₀_smoothed_active_mean = mean(abs_∇ϕ₀_smoothed_active)
     @. state.W.data = min(model.Wmax, max(model.Wmin, (12 * model.η_w * model.q.data / abs_∇ϕ₀_smoothed_active_mean)^(1/3)))
-    fill_halo!(state.W, grid)
+    # fill_halo!(state.W, grid)
 
     return nothing
 
@@ -128,10 +129,10 @@ function update_potential_gradients!(model::KazmierczakHydroModel, grid::OGRectH
 
     model.minus_∇ϕ₀_x .= -∂x(model.ϕ₀)
     model.minus_∇ϕ₀_y .= -∂y(model.ϕ₀)
-    fill_halo!(model.minus_∇ϕ₀_x, grid)
+    fill_halo!(model.minus_∇ϕ₀_x, grid) # halo used in accumulate_ψ_out so we have to update them here in case longcoupwater = 0 which is relevant for the if statement in update_smoothed_potential_gradients
     fill_halo!(model.minus_∇ϕ₀_y, grid)
 
-    model.abs_∇ϕ₀ .= sqrt(model.minus_∇ϕ₀_x^2 + model.minus_∇ϕ₀_y^2)
+    @. model.abs_∇ϕ₀.data = sqrt(model.minus_∇ϕ₀_x.data^2 + model.minus_∇ϕ₀_y.data^2)
     fill_halo!(model.abs_∇ϕ₀, grid)
 
     return nothing
@@ -151,9 +152,10 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
 
     # If the longcoupwater parameter is set to zero we do not need to perform the smoothening here
     if model.longcoupwater == 0.0
-        model.minus_∇ϕ₀_smoothed_x .= model.minus_∇ϕ₀_x
-        model.minus_∇ϕ₀_smoothed_y .= model.minus_∇ϕ₀_y
-        model.abs_∇ϕ₀_smoothed .= model.abs_∇ϕ₀
+        model.minus_∇ϕ₀_smoothed_x.data .= model.minus_∇ϕ₀_x.data
+        model.minus_∇ϕ₀_smoothed_y.data .= model.minus_∇ϕ₀_y.data
+        @. model.abs_∇ϕ₀_smoothed.data = abs(model.minus_∇ϕ₀_x.data) + abs(model.minus_∇ϕ₀_y.data)
+        # fill_halo!(model.abs_∇ϕ₀_smoothed, grid) # used in accumulate_ψ_out! but this is commented out because we use .data in the line above which automatically sets the halo points as well
         return nothing
     else
         # Average grounded-ice ice thickness
@@ -192,8 +194,8 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
         fill_halo!(model.minus_∇ϕ₀_smoothed_y, grid) 
 
         # Update the absolute value of the gradient of the potential
-        @. model.abs_∇ϕ₀_smoothed = abs(model.minus_∇ϕ₀_smoothed_x) + abs(model.minus_∇ϕ₀_smoothed_y) # here we don't need @at (Center, Center, Center) because fields.abs_∇ϕ₀ is initialized already as CenterField
-        fill_halo!(model.abs_∇ϕ₀_smoothed, grid) # used in accumulate_ψ_out!
+        @. model.abs_∇ϕ₀_smoothed.data = abs(model.minus_∇ϕ₀_smoothed_x.data) + abs(model.minus_∇ϕ₀_smoothed_y.data) # here we don't need @at (Center, Center, Center) because fields.abs_∇ϕ₀ is initialized already as CenterField
+        # fill_halo!(model.abs_∇ϕ₀_smoothed, grid) # used in accumulate_ψ_out! but this is commented out because we use .data in the line above which automatically sets the halo points as well
 
         return nothing
     end
@@ -216,12 +218,12 @@ function accumulate_ψ_out!(model::KazmierczakHydroModel, i, j, grid::OGRectHydr
     # See Eq. (6) from Le Brocq et al 2009 (https://doi.org/10.3189/002214309790152564) for this udpate on ψ_out. We ensure that ψ_out stays non-negative, because ṁ can get negative.
     model.ψ_out[i, j] = max(0.0, model.ṁ_over_ρ_w[i, j]) * grid.grid.Δxᶜᵃᵃ * grid.grid.Δyᵃᶜᵃ # assumes that in each dimension the grid cell center spacing is uniform 
 
-    for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
+    @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
 
             ni, nj = i+di, j+dj 
 
             # Calculate the fraction of water w coming from the neighbour ni, nj
-            w = -(model.minus_∇ϕ₀_smoothed_x[ni, nj]*di + model.minus_∇ϕ₀_smoothed_y[ni, nj]*dj) / model.abs_∇ϕ₀_smoothed[ni, nj]
+            w = -(model.minus_∇ϕ₀_smoothed_x[ni, nj]*di + model.minus_∇ϕ₀_smoothed_y[ni, nj]*dj) / (model.abs_∇ϕ₀_smoothed[ni, nj] + 1e-15) # safety 1e-15 treats the case when abs_∇ϕ₀ = 0 to allow w to go to 0 instead of NaN
         
             if w > 0
                 model.ψ_out[i, j] += accumulate_ψ_out!(model, ni, nj, grid, state) * w
@@ -241,7 +243,7 @@ know that if a grid point has negative ψ_out, it is still unvisited.
 """
 function update_ψ_out!(model::KazmierczakHydroModel, grid::OGRectHydroGrid, state::HydroState)
     
-    for j in 1:grid.grid.Ny
+    @inbounds for j in 1:grid.grid.Ny
         for i in 1:grid.grid.Nx
             if state.mask[i, j] == 1
                 model.ψ_out[i, j] = -1.0
@@ -249,7 +251,7 @@ function update_ψ_out!(model::KazmierczakHydroModel, grid::OGRectHydroGrid, sta
         end
     end
 
-    for j in 1:grid.grid.Ny
+    @inbounds for j in 1:grid.grid.Ny
         for i in 1:grid.grid.Nx
             if state.mask[i, j] == 1
                 accumulate_ψ_out!(model, i, j, grid, state)
