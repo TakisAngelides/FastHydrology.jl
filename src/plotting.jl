@@ -75,26 +75,28 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Visualize the Oceananigans Rectilinear grid.
+Visualize the corners of a hydrology grid, showing cell centers and boundaries.
+Works with any concrete subtype of AbstractHydroGrid via the grid interface.
+For grid types other than OGRectHydroGrid, override this function to extract
+x/y node positions and spacings appropriate to that grid.
 """
 function visualize_grid(grid::OGRectHydroGrid)
 
-    grid = grid.grid
+    og = grid.grid  # Oceananigans-specific internals, kept local to this method
 
-    xc = xnodes(grid, Center())
-    yc = ynodes(grid, Center())
+    xc = xnodes(og, Center())
+    yc = ynodes(og, Center())
+    dx = xspacings(og, Center())
+    dy = yspacings(og, Center())
 
-    dx = xspacings(grid, Center())
-    dy = yspacings(grid, Center())
-
-    Nx = length(xc)
-    Ny = length(yc)
+    Nx = grid_Nx(grid)
+    Ny = grid_Ny(grid)
 
     quadrants = [
-        (1:5, Ny-4:Ny),   # top-left
+        (1:5, Ny-4:Ny),     # top-left
         (Nx-4:Nx, Ny-4:Ny), # top-right
-        (1:5, 1:5),      # bottom-left
-        (Nx-4:Nx, 1:5)   # bottom-right
+        (1:5, 1:5),          # bottom-left
+        (Nx-4:Nx, 1:5)       # bottom-right
     ]
 
     titles = ["top left grid corner", "top right grid corner", "bottom left grid corner", "bottom right grid corner"]
@@ -107,14 +109,12 @@ function visualize_grid(grid::OGRectHydroGrid)
 
         ax = Axis(fig[div(idx-1,2)+1, mod(idx-1,2)+1]; xlabel="x", ylabel="y", title=titles[idx], xticklabelsize=10, yticklabelsize=10, xgridvisible = false, ygridvisible = false)
 
-        # scatter centers
-        scatter!(ax,repeat(xc[xi], inner=length(yc[yi])), repeat(yc[yi], outer=length(xc[xi])), color=:blue, markersize=4)
+        scatter!(ax, repeat(xc[xi], inner=length(yc[yi])), repeat(yc[yi], outer=length(xc[xi])), color=:blue, markersize=4)
     
-        # plot rectangles for each cell
         for (i, x) in enumerate(xc[xi])
             for (j, y) in enumerate(yc[yi])
-                xs = [x - dx[xi[i]]/2, x + dx[xi[i]]/2, x + dx[xi[i]]/2, x - dx[xi[i]]/2] # left, right, right, left
-                ys = [y - dy[yi[j]]/2, y - dy[yi[j]]/2, y + dy[yi[j]]/2, y + dy[yi[j]]/2] # bottom, bottom, top, top
+                xs = [x - dx[xi[i]]/2, x + dx[xi[i]]/2, x + dx[xi[i]]/2, x - dx[xi[i]]/2]
+                ys = [y - dy[yi[j]]/2, y - dy[yi[j]]/2, y + dy[yi[j]]/2, y + dy[yi[j]]/2]
                 poly!(ax, xs, ys; color=:transparent, strokewidth=0.5, strokecolor=:red)
             end
         end

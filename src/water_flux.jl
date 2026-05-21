@@ -33,8 +33,8 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     update_psi_out!(model, grid, state)
 
     # Correction factor from psi_out to q.
-    Dx = grid_Dx(grid)
-    Dy = grid_Dy(grid)
+    Dx = grid_dx(grid)
+    Dy = grid_dy(grid)
     @. model.corfac.data = (abs(model.minus_grad_phi0_sx.data) * Dy + abs(model.minus_grad_phi0_sy.data) * Dx) /
                            (sqrt(model.minus_grad_phi0_sx.data^2 + model.minus_grad_phi0_sy.data^2) + 1e-15)
 
@@ -124,8 +124,8 @@ Compute (the negative of) the gradients of the geometric potential phi0 and its 
 """
 function update_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
-    model.minus_grad_phi0_x .= -dx(model.phi0)
-    model.minus_grad_phi0_y .= -dy(model.phi0)
+    model.minus_grad_phi0_x .= -∂x(model.phi0)
+    model.minus_grad_phi0_y .= -∂y(model.phi0)
     fill_halo!(model.minus_grad_phi0_x, grid)
     fill_halo!(model.minus_grad_phi0_y, grid)
 
@@ -159,11 +159,17 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     h_avg    = max(mean(h_active), 10.0)
 
     # Radius of influence
-    Dx    = grid_Dx(grid)
-    Dy    = grid_Dy(grid)
+    Dx    = grid_dx(grid)
+    Dy    = grid_dy(grid)
     Delta = (Dx + Dy) / 2.0
     scale = h_avg * model.longcoupwater * 2.0
-    width = 2.0 * scale
+    # Radius of the cone base (= 4 * h_avg * longcoupwater). The cone hits zero at this distance.
+    # Although this is 2-5x the Kamb & Echelmeyer (1986) coupling length (4-10x ice thickness for ice sheets),
+    # the effective coupling length is the kernel's weighted mean distance from center = width/3
+    # = 4/3 * h_avg * longcoupwater, which for longcoupwater=5 gives ~6.7x ice thickness —
+    # consistent with Kamb & Echelmeyer. At coarse resolution (16-32 km), the coupling length
+    # (6-15 km for 1500 m ice) is smaller than a grid cell, so set longcoupwater = 0.
+    width = 2.0 * scale 
     if width <= Delta
         scale = Delta / 2.0 + 1.0
     end
@@ -202,8 +208,8 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         return model.psi_out[i, j]
     end
 
-    Dx = grid_Dx(grid)
-    Dy = grid_Dy(grid)
+    Dx = grid_dx(grid)
+    Dy = grid_dy(grid)
     model.psi_out[i, j] = max(0.0, model.mdot_rho_w[i, j]) * Dx * Dy
 
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))

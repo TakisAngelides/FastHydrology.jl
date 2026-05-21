@@ -62,10 +62,10 @@ grid_Nx(grid::AbstractHydroGrid) = error("grid_Nx not implemented for $(typeof(g
 grid_Ny(grid::AbstractHydroGrid) = error("grid_Ny not implemented for $(typeof(grid))")
 
 """$(TYPEDSIGNATURES) Uniform cell width in x [m]."""
-grid_Δx(grid::AbstractHydroGrid) = error("grid_Δx not implemented for $(typeof(grid))")
+grid_dx(grid::AbstractHydroGrid) = error("grid_dx not implemented for $(typeof(grid))")
 
 """$(TYPEDSIGNATURES) Uniform cell width in y [m]."""
-grid_Δy(grid::AbstractHydroGrid) = error("grid_Δy not implemented for $(typeof(grid))")
+grid_dy(grid::AbstractHydroGrid) = error("grid_dy not implemented for $(typeof(grid))")
 
 """$(TYPEDSIGNATURES) Floating-point element type used on this grid."""
 grid_eltype(grid::AbstractHydroGrid) = error("grid_eltype not implemented for $(typeof(grid))")
@@ -101,8 +101,8 @@ end
 
 grid_Nx(g::OGRectHydroGrid)      = g.grid.Nx
 grid_Ny(g::OGRectHydroGrid)      = g.grid.Ny
-grid_Δx(g::OGRectHydroGrid)      = g.grid.Δxᶜᵃᵃ
-grid_Δy(g::OGRectHydroGrid)      = g.grid.Δyᵃᶜᵃ
+grid_dx(g::OGRectHydroGrid)      = g.grid.Δxᶜᵃᵃ
+grid_dy(g::OGRectHydroGrid)      = g.grid.Δyᵃᶜᵃ
 grid_eltype(g::OGRectHydroGrid)  = eltype(g.grid)
 
 alloc_field(g::OGRectHydroGrid)        = set!(CenterField(g.grid), 0.0)
