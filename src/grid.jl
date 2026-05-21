@@ -47,22 +47,67 @@ function OGRectHydroGrid(Nx::I, Ny::I, xlims, ylims; T = Float64, topology = (Bo
 end
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Grid interface
+#
+# Every concrete grid subtype must implement these six functions.
+# Physics and constructors only call these; they never reach into `grid.grid.*`.
+# ──────────────────────────────────────────────────────────────────────────────
+
+"""$(TYPEDSIGNATURES) Number of interior cells in x."""
+grid_Nx(grid::AbstractHydroGrid) = error("grid_Nx not implemented for $(typeof(grid))")
+
+"""$(TYPEDSIGNATURES) Number of interior cells in y."""
+grid_Ny(grid::AbstractHydroGrid) = error("grid_Ny not implemented for $(typeof(grid))")
+
+"""$(TYPEDSIGNATURES) Uniform cell width in x [m]."""
+grid_Δx(grid::AbstractHydroGrid) = error("grid_Δx not implemented for $(typeof(grid))")
+
+"""$(TYPEDSIGNATURES) Uniform cell width in y [m]."""
+grid_Δy(grid::AbstractHydroGrid) = error("grid_Δy not implemented for $(typeof(grid))")
+
+"""$(TYPEDSIGNATURES) Floating-point element type used on this grid."""
+grid_eltype(grid::AbstractHydroGrid) = error("grid_eltype not implemented for $(typeof(grid))")
+
 """
 $(TYPEDSIGNATURES)
 
-A function to fill the ghost points with the appropriate values for any grid. If this function
-is not defined for the specified grid, we inform the user with the error printed below.
+Allocate a scalar cell-centred field on `grid`, initialised to zero.
+This is the only place that knows about the underlying field type (e.g. Oceananigans `CenterField`).
+"""
+alloc_field(grid::AbstractHydroGrid) = error("alloc_field not implemented for $(typeof(grid))")
+
+"""
+$(TYPEDSIGNATURES)
+
+Allocate a scalar cell-centred field on `grid` and initialise it from `data`.
+"""
+alloc_field(grid::AbstractHydroGrid, data) = error("alloc_field not implemented for $(typeof(grid))")
+
+"""
+$(TYPEDSIGNATURES)
+
+Fill ghost/halo points of `field` according to the boundary conditions encoded in `grid`.
 """
 function fill_halo!(field, grid::AbstractHydroGrid)
     error("fill_halo! not implemented for $(typeof(grid))")
 end
 
 
-"""
-$(TYPEDSIGNATURES)
+# ──────────────────────────────────────────────────────────────────────────────
+# OGRectHydroGrid implementation of the grid interface
+# ──────────────────────────────────────────────────────────────────────────────
 
-A function to fill the ghost points of the field input with the appropriate values, specifically for an Oceananigans RectilinearGrid.
-"""
-function fill_halo!(field, ::OGRectHydroGrid) 
+grid_Nx(g::OGRectHydroGrid)      = g.grid.Nx
+grid_Ny(g::OGRectHydroGrid)      = g.grid.Ny
+grid_Δx(g::OGRectHydroGrid)      = g.grid.Δxᶜᵃᵃ
+grid_Δy(g::OGRectHydroGrid)      = g.grid.Δyᵃᶜᵃ
+grid_eltype(g::OGRectHydroGrid)  = eltype(g.grid)
+
+alloc_field(g::OGRectHydroGrid)        = set!(CenterField(g.grid), 0.0)
+alloc_field(g::OGRectHydroGrid, data)  = set!(CenterField(g.grid), data)
+
+function fill_halo!(field, ::OGRectHydroGrid)
     fill_halo_regions!(field)
 end
