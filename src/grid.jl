@@ -95,6 +95,22 @@ function fill_halo!(field, grid::AbstractHydroGrid)
 end
 
 
+"""
+$(TYPEDSIGNATURES)
+
+Return the underlying array-like storage of a field.
+"""
+field_data(field) = error("field_data not implemented for $(typeof(field))")
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Return the interior data of a field.
+"""
+interior_data(field) = error("interior_data not implemented for $(typeof(field))")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # OGRectHydroGrid implementation of the grid interface
 # ──────────────────────────────────────────────────────────────────────────────
@@ -111,3 +127,7 @@ alloc_field(g::OGRectHydroGrid, data)  = set!(CenterField(g.grid), data)
 function fill_halo!(field, ::OGRectHydroGrid)
     fill_halo_regions!(field)
 end
+
+field_data(field::Oceananigans.Fields.Field) = field.data
+
+interior_data(field::Oceananigans.Fields.Field) = interior(field, :, :, 1)

@@ -33,14 +33,14 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     update_psi_out!(model, grid, state)
 
     # Correction factor from psi_out to q.
-    Dx = grid_dx(grid)
-    Dy = grid_dy(grid)
-    @. model.corfac.data = (abs(model.minus_grad_phi0_sx.data) * Dy + abs(model.minus_grad_phi0_sy.data) * Dx) /
-                           (sqrt(model.minus_grad_phi0_sx.data^2 + model.minus_grad_phi0_sy.data^2) + 1e-15)
+    dx = grid_dx(grid)
+    dy = grid_dy(grid)
+    field_data(model.corfac) .= (abs.(field_data(model.minus_grad_phi0_sx)) .* dy .+ abs.(field_data(model.minus_grad_phi0_sy)) .* dx) ./
+                                  (sqrt.(field_data(model.minus_grad_phi0_sx).^2 .+ field_data(model.minus_grad_phi0_sy).^2) .+ 1e-15)
 
     # Limits on q are heuristic and chosen by Frank Pattyn for numerical stability.
-    @. model.q.data = min(max(model.psi_out.data / model.corfac.data, 0), 1e5)
-
+    field_data(model.q) .= min.(max.(field_data(model.psi_out) ./ field_data(model.corfac), 0.0), 1e5)
+    
     return nothing
 
 end
@@ -53,9 +53,9 @@ Update the water layer thickness W that is part of the HydroState. See Eq. (8) f
 """
 function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    abs_grad_phi0_s_active = @views interior(model.abs_grad_phi0_s, :, :, 1)[state.mask .== 1]
-    abs_grad_phi0_s_mean   = mean(abs_grad_phi0_s_active)
-    @. state.W.data = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q.data / abs_grad_phi0_s_mean)^(1/3)))
+    abs_grad_phi0_s_active = @views interior_data(model.abs_grad_phi0_s)[state.mask .== 1]
+    abs_grad_phi0_s_mean = mean(abs_grad_phi0_s_active)
+    field_data(state.W) .= min.(model.Wmax, max.(model.Wmin, (12 * model.eta_w * field_data(model.q) / abs_grad_phi0_s_mean).^(1/3)))
 
     return nothing
 
@@ -108,8 +108,7 @@ function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGri
         fill_halo!(phi0, grid)
     end
 
-    # Correction to h from potential filling; stored separately so it does not
-    # affect other calculations like effective pressure.
+    # Correction to h from potential filling; stored separately so it does not affect other calculations like effective pressure.
     @. model.h = (model.phi0 - model.rho_w * model.g * state.b) / (model.rho_i * model.g)
 
     return nothing
@@ -126,10 +125,11 @@ function update_potential_gradients!(model::KazmierczakHydroModel, grid::Abstrac
 
     model.minus_grad_phi0_x .= -∂x(model.phi0)
     model.minus_grad_phi0_y .= -∂y(model.phi0)
+
     fill_halo!(model.minus_grad_phi0_x, grid)
     fill_halo!(model.minus_grad_phi0_y, grid)
 
-    @. model.abs_grad_phi0.data = sqrt(model.minus_grad_phi0_x.data^2 + model.minus_grad_phi0_y.data^2)
+    field_data(model.abs_grad_phi0) .= sqrt.(field_data(model.minus_grad_phi0_x).^2 + field_data(model.minus_grad_phi0_y).^2)
     fill_halo!(model.abs_grad_phi0, grid)
 
     return nothing
@@ -148,28 +148,31 @@ such that the influence of nearby points is now incorporated into the value of t
 function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
     if model.longcoupwater == 0.0
-        model.minus_grad_phi0_sx.data .= model.minus_grad_phi0_x.data
-        model.minus_grad_phi0_sy.data .= model.minus_grad_phi0_y.data
-        @. model.abs_grad_phi0_s.data  = abs(model.minus_grad_phi0_x.data) + abs(model.minus_grad_phi0_y.data)
+        field_data(model.minus_grad_phi0_sx) .= field_data(model.minus_grad_phi0_x)
+        field_data(model.minus_grad_phi0_sy) .= field_data(model.minus_grad_phi0_y)
+        field_data(model.abs_grad_phi0_s) .= abs.(field_data(model.minus_grad_phi0_x)) + abs.(field_data(model.minus_grad_phi0_y))
         return nothing
     end
 
     # Average grounded-ice thickness
-    h_active = @views interior(model.h, :, :, 1)[state.mask .== 1]
+    h_active = @views interior_data(model.h)[state.mask .== 1]
     h_avg    = max(mean(h_active), 10.0)
 
     # Radius of influence
-    Dx    = grid_dx(grid)
-    Dy    = grid_dy(grid)
-    Delta = (Dx + Dy) / 2.0
+    dx    = grid_dx(grid)
+    dy    = grid_dy(grid)
+    Delta = (dx + dy) / 2.0
+
     scale = h_avg * model.longcoupwater * 2.0
+
     # Radius of the cone base (= 4 * h_avg * longcoupwater). The cone hits zero at this distance.
     # Although this is 2-5x the Kamb & Echelmeyer (1986) coupling length (4-10x ice thickness for ice sheets),
     # the effective coupling length is the kernel's weighted mean distance from center = width/3
     # = 4/3 * h_avg * longcoupwater, which for longcoupwater=5 gives ~6.7x ice thickness —
     # consistent with Kamb & Echelmeyer. At coarse resolution (16-32 km), the coupling length
     # (6-15 km for 1500 m ice) is smaller than a grid cell, so set longcoupwater = 0.
-    width = 2.0 * scale 
+    width = 2.0 * scale
+
     if width <= Delta
         scale = Delta / 2.0 + 1.0
     end
@@ -179,18 +182,24 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     frb      = Int((maxlevel - 1) / 2)
 
     kernel = zeros(maxlevel, maxlevel, 1)
+
     for nj in 1:maxlevel, ni in 1:maxlevel
-        dist = sqrt((Delta * (ni - frb - 1))^2 + (Delta * (nj - frb - 1))^2) / scale
+        dist = sqrt((Delta * (ni - frb - 1))^2 +
+                    (Delta * (nj - frb - 1))^2) / scale
+
         kernel[ni, nj, 1] = max(0.0, 1.0 - dist / 2.0)
     end
+
     kernel ./= sum(kernel)
 
-    imfilter!(model.minus_grad_phi0_sx, model.minus_grad_phi0_x, centered(kernel))
-    imfilter!(model.minus_grad_phi0_sy, model.minus_grad_phi0_y, centered(kernel))
+    imfilter!(field_data(model.minus_grad_phi0_sx), field_data(model.minus_grad_phi0_x), centered(kernel))
+
+    imfilter!(field_data(model.minus_grad_phi0_sy), field_data(model.minus_grad_phi0_y), centered(kernel))
+
     fill_halo!(model.minus_grad_phi0_sx, grid)
     fill_halo!(model.minus_grad_phi0_sy, grid)
 
-    @. model.abs_grad_phi0_s.data = abs(model.minus_grad_phi0_sx.data) + abs(model.minus_grad_phi0_sy.data)
+    field_data(model.abs_grad_phi0_s) .= abs.(field_data(model.minus_grad_phi0_sx)) + abs.(field_data(model.minus_grad_phi0_sy))
 
     return nothing
 
@@ -208,16 +217,20 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         return model.psi_out[i, j]
     end
 
-    Dx = grid_dx(grid)
-    Dy = grid_dy(grid)
-    model.psi_out[i, j] = max(0.0, model.mdot_rho_w[i, j]) * Dx * Dy
+    dx = grid_dx(grid)
+    dy = grid_dy(grid)
+
+    model.psi_out[i, j] = max(0.0, model.mdot_rho_w[i, j]) * dx * dy
 
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
+
         ni, nj = i + di, j + dj
-        w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) /
-            (model.abs_grad_phi0_s[ni, nj] + 1e-15)
+
+        w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
+
         if w > 0
-            model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state) * w
+            model.psi_out[i, j] +=
+                accumulate_psi_out!(model, ni, nj, grid, state) * w
         end
     end
 
