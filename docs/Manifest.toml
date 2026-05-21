@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "13ae2213c82e514d4a79ea7c3a3acf89aea96f12"
+project_hash = "edcb5c8018409718402045868bf6bcec7cf33877"
 
 [[deps.ANSIColoredPrinters]]
 git-tree-sha1 = "574baf8110975760d391c710b6341da1afa48d8c"
@@ -572,7 +572,7 @@ uuid = "f5851436-0d7a-5f13-b9de-f02708fd171a"
 version = "3.3.11+0"
 
 [[deps.FastHydrology]]
-deps = ["BenchmarkTools", "CairoMakie", "DataDeps", "DocStringExtensions", "Documenter", "DocumenterCitations", "DocumenterTools", "Downloads", "FileIO", "ImageFiltering", "Literate", "MAT", "Makie", "NCDatasets", "Oceananigans", "OffsetArrays", "SpecialFunctions"]
+deps = ["BenchmarkTools", "CairoMakie", "DataDeps", "DocStringExtensions", "Documenter", "DocumenterCitations", "DocumenterTools", "Downloads", "FileIO", "ImageFiltering", "JLD2", "Literate", "MAT", "Makie", "NCDatasets", "Oceananigans", "OffsetArrays", "SpecialFunctions"]
 path = ".."
 uuid = "91547ff3-b885-4d35-ac59-f1ca93abc87d"
 version = "1.0.0-DEV"

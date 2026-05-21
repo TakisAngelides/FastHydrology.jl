@@ -11,6 +11,7 @@ NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 [compat]
 Documenter = "1.17.0"
 DocumenterCitations = "1.4.1"
+DocumenterTools = "0.1.21"
 Literate = "2.21.0"
 LiveServer = "1.5.0"
 NCDatasets = "0.14.15"
