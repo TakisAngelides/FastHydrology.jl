@@ -6,32 +6,43 @@ Visualize a field.
 function visualize_field(x, y, data; 
         plot_title = "", 
         transpose_data = false, 
-        colorrange = extrema(filter(!isnan, data)), 
+        colorrange = nothing,       # now auto-computed with fallback
         display_flag = true, 
         colormap = Reverse(:RdBu), 
         colorscale = identity,
         savefig_path = nothing
     )
-
     fig = Figure(size = (900, 700))
     ax = Axis(fig[1, 1], xlabel = "x", ylabel = "y", title = plot_title, aspect = DataAspect())
 
     if transpose_data
         data = data'
     end
-    
-    hm = heatmap!(ax, x, y, data, colormap = colormap, colorrange = colorrange, colorscale = colorscale)
 
+    # Robust colorrange: handles all-zero, all-NaN, and flat fields
+    if colorrange === nothing
+        finite_vals = filter(isfinite, vec(data))
+        if isempty(finite_vals)
+            colorrange = (0.0, 1.0)   # nothing to show, dummy range
+        else
+            lo, hi = extrema(finite_vals)
+            if lo ≈ hi
+                colorrange = iszero(lo) ? (-1.0, 1.0) : (lo * 0.9, lo * 1.1)
+            else
+                colorrange = (lo, hi)
+            end
+        end
+    end
+
+    hm = heatmap!(ax, x, y, data; colormap, colorrange, colorscale)
     Colorbar(fig[1, 2], hm)
 
     if display_flag
         display(fig)
     end
-
     if savefig_path !== nothing
         save(savefig_path, fig)
     end
-
     return fig
 end
 

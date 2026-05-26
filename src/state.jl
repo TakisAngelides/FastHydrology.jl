@@ -19,7 +19,7 @@ mutable struct HydroState{A} <: AbstractHydroState
 
     # Outputs
     N    ::A  # effective pressure [Pa]
-    W    ::A  # water layer thickness or storage [m]
+    W    ::A  # water layer thickness [m]
 end
 
 
