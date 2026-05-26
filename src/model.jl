@@ -53,7 +53,7 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A} <: AbstractHydroMode
 
     # Water flux
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
-    mdot_rho_w ::A  # basal melt rate per unit area / rho_w [m/s]
+    mdot       ::A  # mass basal melt rate per unit area [Kg / m^2 / s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
     corfac     ::A  # Correction factor to go from psi_out to q
     q          ::A  # Distributed water flux [m2/s]
@@ -89,14 +89,14 @@ Works with any concrete subtype of AbstractHydroGrid -- changing the grid does n
 - `kappa_in::AbstractArray{<:AbstractFloat}`: Bed type indicator (0: hard, 1: soft)
 - `abs_v_b_in::AbstractArray{<:AbstractFloat}`: Magnitude of basal sliding velocity [m/s]
 - `A_visc_in::AbstractArray{<:AbstractFloat}`: Ice flow law rate factor (Glen's A) [Pa^-n s^-1]
-- `mdot_rho_w_in::AbstractArray{<:AbstractFloat}`: Melt rate per unit area / rho_w [m/s]
+- `mdot_in::AbstractArray{<:AbstractFloat}`: mass basal melt rate per unit area [Kg / m^2 / s]
 """
 function KazmierczakHydroModel(
     grid::AbstractHydroGrid,
     kappa_in::AbstractArray{<:AbstractFloat},
     abs_v_b_in::AbstractArray{<:AbstractFloat},
     A_visc_in::AbstractArray{<:AbstractFloat},
-    mdot_rho_w_in::AbstractArray{<:AbstractFloat};
+    mdot_in::AbstractArray{<:AbstractFloat};
     rho_w         = 1000.0,
     rho_i         = 917.0,
     g             = 9.81,
@@ -119,7 +119,7 @@ function KazmierczakHydroModel(
 )
 
     expected_size = (grid_Nx(grid), grid_Ny(grid))
-    for (name, arr) in [("kappa", kappa_in), ("abs_v_b", abs_v_b_in), ("A_visc", A_visc_in), ("mdot_rho_w_in", mdot_rho_w_in)]
+    for (name, arr) in [("kappa", kappa_in), ("abs_v_b", abs_v_b_in), ("A_visc", A_visc_in), ("mdot_in", mdot_in)]
         size(arr)[1:2] == expected_size || throw(ArgumentError("$name size $(size(arr)) != grid size $expected_size"))
     end
 
@@ -159,7 +159,7 @@ function KazmierczakHydroModel(
 
     # Water flux
     h          = alloc_field(grid)
-    mdot_rho_w = alloc_field(grid, mdot_rho_w_in)
+    mdot = alloc_field(grid, mdot_in)
     psi_out    = alloc_field(grid)
     corfac     = alloc_field(grid)
     q          = alloc_field(grid)
@@ -180,7 +180,7 @@ function KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        h, mdot_rho_w, psi_out, corfac, q,
+        h, mdot, psi_out, corfac, q,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 

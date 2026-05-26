@@ -27,7 +27,7 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
     b = data["B"]
     abs_v_b = data["ub"]
     A_visc = data["A"]
-    ṁ_over_ρ_w = perYear2perSecond.(data["Bmelt"]) # They stored this variable in per year units.
+    ṁ = perYear2perSecond.(data["Bmelt"]) .* 1000 # They stored this variable in per year units and as ṁ/ρ_w so we multiply by ρ_w = 1000 to get ṁ
 
     # Note: x and y are swapped in the file, and converted from km to m
     xc = Km2m.(data["y"]) 
@@ -64,7 +64,7 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
 
     κ = initialize_κ!(Nx, Ny, b; bed_rheology) 
 
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ_over_ρ_w, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
     
 end
 
@@ -107,7 +107,7 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     abs_v_b = reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny)
     A_visc = mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1]
     ρ_w = 1000.0
-    ṁ_over_ρ_w = reshape(-ds["bmb"][:], Nx, Ny) ./ ρ_w
+    ṁ = reshape(-ds["bmb"][:], Nx, Ny)
    
     function initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
         
@@ -139,7 +139,7 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
 
     κ = initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology) 
 
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ_over_ρ_w, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
     
 end
 

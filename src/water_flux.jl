@@ -220,7 +220,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
     dx = grid_dx(grid)
     dy = grid_dy(grid)
 
-    model.psi_out[i, j] = max(0.0, model.mdot_rho_w[i, j]) * dx * dy
+    model.psi_out[i, j] = max(0.0, model.mdot[i, j]) * dx * dy / model.rho_w # we limit the basal melt rate to only positive values
 
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
 
