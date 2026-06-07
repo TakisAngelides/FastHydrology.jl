@@ -106,7 +106,6 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     uy_b = reshape(ds["uy_b"][:], Nx, Ny)
     abs_v_b = reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny)
     A_visc = mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1]
-    ρ_w = 1000.0
     ṁ = reshape(-ds["bmb"][:], Nx, Ny)
    
     function initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)

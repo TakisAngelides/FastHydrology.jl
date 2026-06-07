@@ -229,8 +229,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
 
         if w > 0
-            model.psi_out[i, j] +=
-                accumulate_psi_out!(model, ni, nj, grid, state) * w
+            model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state) * w
         end
     end
 
