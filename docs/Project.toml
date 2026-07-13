@@ -9,6 +9,7 @@ LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 
 [compat]
+CairoMakie = "0.15.13"
 Documenter = "1.17.0"
 DocumenterCitations = "1.4.1"
 Literate = "2.21.0"
