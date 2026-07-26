@@ -52,6 +52,7 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A} <: AbstractHydroMode
     abs_grad_phi0_s        ::A  # Magnitude of the smoothed gradient of the geometric potential [Pa/m]
 
     # Water flux
+    visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
     mdot       ::A  # mass basal melt rate per unit area [Kg / m^2 / s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
@@ -158,8 +159,9 @@ function KazmierczakHydroModel(
     abs_grad_phi0_s    = alloc_field(grid)
 
     # Water flux
+    visited    = alloc_field(grid)
     h          = alloc_field(grid)
-    mdot = alloc_field(grid, mdot_in)
+    mdot       = alloc_field(grid, mdot_in)
     psi_out    = alloc_field(grid)
     corfac     = alloc_field(grid)
     q          = alloc_field(grid)
@@ -180,7 +182,7 @@ function KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        h, mdot, psi_out, corfac, q,
+        visited, h, mdot, psi_out, corfac, q,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 

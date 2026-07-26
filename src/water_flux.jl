@@ -213,14 +213,23 @@ Helper function to the recursive function to calculate the psi_out for every gri
 """
 function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractHydroGrid, state::HydroState)
 
-    if model.psi_out[i, j] >= 0.0
+    # If the neighbour does not have grounded ice then return 0
+    if state.mask[i, j] != 1.0
+        return 0.0
+    end
+
+    # If the neighbour has been visited then the psi_out has already been calculated for that cell
+    if model.visited[i, j] == 1.0
         return model.psi_out[i, j]
     end
+
+    # Passing the above if statements means we are now visiting cell i, j
+    model.visited[i, j] = 1.0
 
     dx = grid_dx(grid)
     dy = grid_dy(grid)
 
-    model.psi_out[i, j] = max(0.0, model.mdot[i, j]) * dx * dy / model.rho_w # we limit the basal melt rate to only positive values
+    model.psi_out[i, j] = model.mdot[i, j] * dx * dy / model.rho_w
 
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
 
@@ -232,6 +241,9 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
             model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state) * w
         end
     end
+
+    # If the mdot is very negative that all the flux refreezes then we limit the flux to zero
+    model.psi_out[i, j] = max(0.0, model.psi_out[i, j])
 
     return model.psi_out[i, j]
 
@@ -250,18 +262,15 @@ function update_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     Nx = grid_Nx(grid)
     Ny = grid_Ny(grid)
 
-    @inbounds for j in 1:Ny, i in 1:Nx
-        if state.mask[i, j] == 1
-            model.psi_out[i, j] = -1.0
-        end
-    end
+    # Refresh visited cells field
+    model.visited .= 0.0
 
     @inbounds for j in 1:Ny, i in 1:Nx
-        if state.mask[i, j] == 1
+        if state.mask[i, j] == 1.0
             accumulate_psi_out!(model, i, j, grid, state)
         end
     end
-
+    
     return nothing
 
 end
