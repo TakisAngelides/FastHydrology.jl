@@ -29,7 +29,7 @@ A third, genuinely time-evolving model is available as an optional extension:
 
 - [`ShaktiHydroModel`](@ref) -- wraps the separate
   [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl) package, a solver for the SHAKTI
-  subglacial hydrology model (Sommers et al. 2018, https://doi.org/10.3389/feart.2018.00104), which
+  subglacial hydrology model (Sommers et al. 2018, https://gmd.copernicus.org/articles/11/2955/2018/), which
   transitions smoothly between distributed and channelized drainage rather than treating them as
   separate regimes. FastHydrology just wraps a `Shakti.Simulation` and delegates to it; see
   [Coupling to Shakti.jl](@ref ShaktiCoupling) for a runnable example. Since Shakti pulls in a much

@@ -4,7 +4,7 @@ EditURL = "ShaktiCoupling.jl"
 
 # [Coupling to Shakti.jl](@id ShaktiCoupling)
 This is an example of how to use the [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl)
-subglacial hydrology solver (Sommers et al. 2018, https://doi.org/10.3389/feart.2018.00104) from
+subglacial hydrology solver (Sommers et al. 2018, https://gmd.copernicus.org/articles/11/2955/2018/) from
 within FastHydrology.jl, via the `ShaktiHydroModel`/`TimeSimulation` combination provided by the
 `FastHydrologyShaktiExt` package extension. Unlike `KazmierczakHydroModel`/`HABHydroModel` above,
 Shakti is a genuinely time-evolving solver with its own grid, state, and Picard-iteration solve for
