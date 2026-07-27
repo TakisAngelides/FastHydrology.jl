@@ -10,9 +10,12 @@ abstract type AbstractSimulation end
 """
 $(TYPEDSIGNATURES)
 
-A struct for time evolution simulations. For further details see the corresponding constructor.
+A struct for time evolution simulations. Wraps whichever `AbstractHydroModel` owns the actual time
+evolution logic (e.g. `ShaktiHydroModel`); `run!(sim::TimeSimulation)` dispatches on `M` to find the
+model-specific method.
 """
-struct TimeSimulation <: AbstractSimulation
+struct TimeSimulation{M <: AbstractHydroModel} <: AbstractSimulation
+    model::M
 end
 
 

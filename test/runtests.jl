@@ -161,3 +161,6 @@ field_values(field) = interior(field, :, :, 1)
     end
 
 end
+
+# Own module (see shakti_ext_test.jl) since FastHydrology and Shakti both export `run!`.
+include("shakti_ext_test.jl")

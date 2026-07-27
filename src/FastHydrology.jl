@@ -33,7 +33,7 @@ export fill_halo!, alloc_field
 export convolve!, masked_mean, overwrite_where!
 
 # model.jl
-export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel
+export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 
 # state.jl
 export AbstractHydroState, HydroState
@@ -42,7 +42,7 @@ export AbstractHydroState, HydroState
 export AbstractSimulation, TimeSimulation, SteadyStateSimulation
 
 # run.jl
-export run!, update_steady_state!
+export run!, step!, update_steady_state!
 
 # water_flux.jl
 export update_q!, update_W!
