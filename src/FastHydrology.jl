@@ -1,12 +1,12 @@
 module FastHydrology
 
+using Statistics: mean
 using Oceananigans
 using Oceananigans.BoundaryConditions: fill_halo_regions!
 using BenchmarkTools
 using ImageFiltering
 using OffsetArrays
 using Base.Threads
-using SpecialFunctions
 using DocStringExtensions
 using MAT
 using NCDatasets
@@ -14,6 +14,7 @@ using CairoMakie
 using CairoMakie: Reverse
 
 include("grid.jl")
+include("operations.jl")
 include("model.jl")
 include("state.jl")
 include("simulation.jl")
@@ -27,7 +28,7 @@ include("plotting.jl")
 # grid.jl
 export AbstractHydroGrid, OGRectHydroGrid
 export fill_halo!, alloc_field
-export grid_Nx, grid_Ny, grid_dx, grid_dy, grid_eltype, field_data, interior_data
+export convolve!, masked_mean, overwrite_where!
 
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel

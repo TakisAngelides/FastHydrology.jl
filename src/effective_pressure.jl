@@ -17,7 +17,9 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     update_Po!(model, grid, state) # ice overburden pressure rho*g*h
     update_N_inf!(model, grid) # far-field effective pressure
 
-    field_data(state.N) .= max.(0.0, erf.((sqrt(pi) .* field_data(model.phi0)) ./ (2 .* field_data(model.N_inf))) .* field_data(model.N_inf))
+    # sqrt(pi) must be precomputed outside the broadcast; see update_p_w! for why.
+    sqrt_pi = sqrt(pi)
+    @. state.N = max(0.0, erf(sqrt_pi * model.phi0 / (2 * model.N_inf)) * model.N_inf)
     fill_halo!(state.N, grid)
 
     return nothing
@@ -33,7 +35,7 @@ Defined for all models that carry a Po field and share the same rho_i, g constan
 """
 function update_Po!(model::AbstractHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    field_data(model.Po) .= max.(model.rho_i * model.g * field_data(state.h), 1e5)
+    @. model.Po = max(model.rho_i * model.g * state.h, 1e5)
     fill_halo!(model.Po, grid)
 
     return nothing
@@ -50,7 +52,7 @@ then interpolating based on the bed heterogeneity indicator kappa.
 function update_H!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
     @. model.H_hard = sqrt(model.S_inf)
-    field_data(model.H_soft) .= max.(0.0, model.H_0 .+ (sqrt.(field_data(model.S_inf)) ./ model.F_till .- model.H_0) .* exp.(-field_data(model.Q) / model.Q_c))
+    @. model.H_soft = max(0.0, model.H_0 + (sqrt(model.S_inf) / model.F_till - model.H_0) * exp(-model.Q / model.Q_c))
     @. model.H = (1 - model.kappa) * model.H_hard + model.kappa * model.H_soft
     fill_halo!(model.H, grid)
 
@@ -83,12 +85,17 @@ basal velocity, constrained by ice overburden pressure limits.
 """
 function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
-    field_data(model.N_inf) .= min.(max.(
-        ((field_data(model.H) ./ field_data(model.S_inf)).^2 .* ((model.rho_i .* model.L_w .* field_data(model.abs_v_b) .* model.h_b .+ field_data(model.Q) .* field_data(model.abs_grad_phi0)) # numerator
-        ./ (2.0 .* model.n^(-model.n) .* model.rho_i .* model.L_w .* field_data(model.A_visc)))).^(1.0 / model.n), # denominator
-        model.sigmat .* field_data(model.Po)), field_data(model.Po)) # min and max values of N_inf
+    # As in update_p_w!, the purely-scalar sub-expression `model.n^(-model.n)` must be
+    # precomputed outside the broadcast to avoid breaking Oceananigans' AbstractOperation
+    # conversion.
+    denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
 
-    field_data(model.N_inf)[field_data(model.S_inf) .== 0.0] .= field_data(model.Po)[field_data(model.S_inf) .== 0.0]
+    @. model.N_inf = min(max(
+        ((model.H / model.S_inf)^2.0 * (model.rho_i * model.L_w * model.abs_v_b * model.h_b + model.Q * model.abs_grad_phi0) # numerator
+        / (denom_const * model.A_visc))^(1.0 / model.n), # denominator
+        model.sigmat * model.Po), model.Po) # min and max values of N_inf
+
+    overwrite_where!(grid, model.N_inf, model.S_inf, ==(0.0), model.Po)
     fill_halo!(model.N_inf, grid)
 
     return nothing
@@ -128,7 +135,7 @@ function update_N!(model::HABHydroModel, grid::AbstractHydroGrid, state::HydroSt
     update_Po!(model, grid, state)
     update_p_w!(model, grid, state)
 
-    field_data(state.N) .= max(field_data(model.Po) - field_data(model.p_w), model.sigmat * field_data(model.Po))
+    @. state.N = max(model.Po - model.p_w, model.sigmat * model.Po)
     fill_halo!(state.N, grid)
 
     return nothing
@@ -143,9 +150,14 @@ Update the water pressure p_w.
 """
 function update_p_w!(model::HABHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    field_data(model.p_w) .= -model.P_w * model.rho_sw * model.g * field_data(state.b)
-    field_data(model.p_w)[field_data(state.mask) .== 0.0] .= model.P_w * model.rho_i * model.g * field_data(state.h)[field_data(state.mask) .== 0.0]
-    field_data(model.p_w)[field_data(state.b) .>= 0.0] .= 0.0
+    # The scalar coefficient must be precomputed outside the broadcast: Oceananigans'
+    # AbstractOperation conversion walks the whole broadcast tree structurally, and a
+    # nested scalar-only sub-expression (here `-model.P_w`) breaks when embedded inside
+    # a larger broadcast that also involves Fields.
+    neg_coeff = -model.P_w * model.rho_sw * model.g
+    @. model.p_w = neg_coeff * state.b
+    overwrite_where!(grid, model.p_w, state.mask, ==(0.0), state.h; scale = model.P_w * model.rho_i * model.g)
+    overwrite_where!(grid, model.p_w, state.b, >=(0.0), 0.0)
     fill_halo!(model.p_w, grid)
 
     return nothing

@@ -47,7 +47,7 @@ function HydroState(
 )
 
     # Check that the inputs match the grid size
-    expected_size = (grid_Nx(grid), grid_Ny(grid))
+    expected_size = (grid.Nx, grid.Ny)
     for (name, arr) in [("mask", mask_in), ("h", h_in), ("b", b_in)]
         size(arr)[1:2] == expected_size || throw(ArgumentError("$name size $(size(arr)) != grid size $expected_size"))
     end

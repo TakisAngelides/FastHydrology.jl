@@ -40,10 +40,10 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
 
         if bed_rheology == :hard 
             κ = zeros(T, Nx, Ny) 
-        elseif bed_rheology == :soft 
-            κ = one(T, Nx, Ny) 
-        elseif bed_rheology == :mixed 
-            κ = zeros(T, Nx, Ny) 
+        elseif bed_rheology == :soft
+            κ = ones(T, Nx, Ny)
+        elseif bed_rheology == :mixed
+            κ = zeros(T, Nx, Ny)
             κ[b .< -1000] .= T(1.0)
         elseif bed_rheology == :mixed_smooth
             κ = zeros(T, Nx, Ny)
@@ -62,10 +62,10 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
 
     end
 
-    κ = initialize_κ!(Nx, Ny, b; bed_rheology) 
+    κ = initialize_κ!(Nx, Ny, b; bed_rheology)
 
     return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
-    
+
 end
 
 
@@ -114,10 +114,10 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
 
         if bed_rheology == :hard 
             κ = zeros(T, Nx, Ny) 
-        elseif bed_rheology == :soft 
-            κ = one(T, Nx, Ny) 
-        elseif bed_rheology == :mixed 
-            κ = zeros(T, Nx, Ny) 
+        elseif bed_rheology == :soft
+            κ = ones(T, Nx, Ny)
+        elseif bed_rheology == :mixed
+            κ = zeros(T, Nx, Ny)
             κ[b .< -1000] .= T(1.0)
         elseif bed_rheology == :mixed_smooth
             κ = zeros(T, Nx, Ny)
@@ -136,9 +136,9 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
 
     end
 
-    κ = initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology) 
+    κ = initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
 
     return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
-    
+
 end
 

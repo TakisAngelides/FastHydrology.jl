@@ -119,12 +119,12 @@ function KazmierczakHydroModel(
     fill_iters    = 10
 )
 
-    expected_size = (grid_Nx(grid), grid_Ny(grid))
+    expected_size = (grid.Nx, grid.Ny)
     for (name, arr) in [("kappa", kappa_in), ("abs_v_b", abs_v_b_in), ("A_visc", A_visc_in), ("mdot_in", mdot_in)]
         size(arr)[1:2] == expected_size || throw(ArgumentError("$name size $(size(arr)) != grid size $expected_size"))
     end
 
-    T = grid_eltype(grid)
+    T = typeof(grid.dx)
 
     # Physical constants
     rho_w         = T(rho_w)
@@ -228,7 +228,7 @@ Works with any concrete subtype of AbstractHydroGrid -- changing the grid does n
 """
 function HABHydroModel(grid::AbstractHydroGrid)
 
-    T = grid_eltype(grid)
+    T = typeof(grid.dx)
 
     # Physical constants
     rho_sw = T(1027.0)

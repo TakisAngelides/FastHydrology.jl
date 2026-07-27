@@ -100,8 +100,8 @@ function visualize_grid(grid::OGRectHydroGrid)
     dx = xspacings(og, Center())
     dy = yspacings(og, Center())
 
-    Nx = grid_Nx(grid)
-    Ny = grid_Ny(grid)
+    Nx = grid.Nx
+    Ny = grid.Ny
 
     quadrants = [
         (1:5, Ny-4:Ny),     # top-left
