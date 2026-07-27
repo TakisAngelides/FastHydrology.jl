@@ -10,7 +10,7 @@ Compute the cell-centered grid limits with half-cell padding from coordinate vec
 # Arguments
 
 - `xc::AbstractArray`: the x values of the grid cell centers.
-- `yc::AbstractArray`:
+- `yc::AbstractArray`: the y values of the grid cell centers.
 """
 function compute_lims(xc::AbstractArray, yc::AbstractArray)
     dx = xc[2] - xc[1]

@@ -37,9 +37,9 @@ The constructor to the struct for the Oceananigans RectilinearGrid.
 # Arguments
 
 - `Nx::I`: number of grid cells in the x direction.
-- `Ny::I`: 
+- `Ny::I`: number of grid cells in the y direction.
 - `xlims`: tuple specifying the x values of the left-most and right-most edges of the grid in the x direction (e.g. xlims = (0, 1)).
-- `ylims`: 
+- `ylims`: tuple specifying the y values of the bottom-most and top-most edges of the grid in the y direction (e.g. ylims = (0, 1)).
 
 # Keywords
 

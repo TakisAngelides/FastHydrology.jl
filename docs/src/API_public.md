@@ -1,12 +1,65 @@
-# Public API
+# API Reference
+
+This page documents every exported name in FastHydrology.jl. It mirrors the "Package structure"
+section of the [README](https://github.com/TakisAngelides/FastHydrology.jl#package-structure):
+the package is built around four abstractions -- **grid**, **model**, **state**, and
+**simulation** -- plus the functions that operate on them. If you are looking for a narrative
+introduction instead, start with the [Quick start](@ref) example on the front page or the runnable
+[Examples](@ref).
+
+A typical session touches these pieces in order:
+
+1. Build a grid ([Grid](@ref)).
+2. Build a model on that grid ([Model](@ref)).
+3. Build a state on that grid ([State](@ref)).
+4. Wrap model, grid, and state in a simulation and run it ([Running Simulations](@ref)).
+
+The functions under [Water Flux](@ref) and [Effective Pressure](@ref) are the physics
+implementations that `run!` calls into; they are exported and documented individually because they
+are also useful on their own, e.g. for inspecting an intermediate quantity or for calling only part
+of a model's update sequence. [Data Loading](@ref), [Utilities](@ref), and [Plotting](@ref) round
+out the API with helpers for getting real data in and results out.
 
 ## Grid
+
+An [`AbstractHydroGrid`](@ref) describes the geometry of the simulation domain (grid size and
+spacing) together with a small set of backend-specific operations -- allocating fields, filling
+halo/ghost points, convolution, masked reductions, and masked overwrites -- that the physics code
+in [Water Flux](@ref) and [Effective Pressure](@ref) is written against instead of reaching into a
+specific backend's internals directly. [`OGRectHydroGrid`](@ref) is the only concrete grid provided
+today, wrapping an `Oceananigans.RectilinearGrid`; a different array/mesh backend can be supported
+by implementing the same interface (`alloc_field`, [`fill_halo!`](@ref), [`convolve!`](@ref),
+[`masked_mean`](@ref), [`overwrite_where!`](@ref)) for a new `AbstractHydroGrid` subtype, without
+touching any physics code.
+
 ```@docs
 AbstractHydroGrid
 OGRectHydroGrid
+alloc_field
+fill_halo!
+convolve!
+masked_mean
+overwrite_where!
 ```
 
 ## Model
+
+An [`AbstractHydroModel`](@ref) holds everything specific to one subglacial hydrology
+parameterization: physical constants and the mutable fields the model needs (geometric potential,
+water flux, effective pressure, etc.), all sized to match a given grid. Two models are provided:
+
+- [`KazmierczakHydroModel`](@ref) -- the fast, simplified model of
+  [Kazmierczak et al. 2024](https://doi.org/10.5194/tc-18-5887-2024), which routes distributed
+  subglacial water flux over the geometric potential and parameterizes effective pressure for both
+  hard and soft beds.
+- [`HABHydroModel`](@ref) -- the simpler "height above buoyancy" parameterization from
+  Sec. 2.1.1 of [Kazmierczak et al. 2022](https://doi.org/10.5194/tc-16-4537-2022), assuming a
+  direct hydraulic connection to the ocean at the grounding line.
+
+Both are steady-state: effective pressure is recomputed from the current ice geometry and melt
+rate on each call rather than time-stepped, since subglacial hydrology is assumed to equilibrate
+much faster than the ice sheet evolves.
+
 ```@docs
 AbstractHydroModel
 KazmierczakHydroModel
@@ -14,12 +67,24 @@ HABHydroModel
 ```
 
 ## State
+
+[`AbstractHydroState`](@ref) holds the fields that are common to every model, independent of which
+hydrology parameterization is in use: the inputs (grounded-ice mask, ice thickness, bedrock
+elevation) and the outputs every model must produce (effective pressure `N` and water layer
+thickness `W`). [`HydroState`](@ref) is the (currently only) concrete implementation.
+
 ```@docs
 AbstractHydroState
 HydroState
 ```
 
 ## Simulation
+
+An [`AbstractSimulation`](@ref) bundles a model, a grid, and a state, and determines how they are
+advanced. [`SteadyStateSimulation`](@ref) re-solves for equilibrium effective pressure on each
+call; [`TimeSimulation`](@ref) is reserved for a future time-evolving solve mode and is not yet
+implemented.
+
 ```@docs
 AbstractSimulation
 TimeSimulation
@@ -27,25 +92,41 @@ SteadyStateSimulation
 ```
 
 ## Running Simulations
+
+[`run!`](@ref) is the single entry point users call; it dispatches to
+[`update_steady_state!`](@ref) for the model type held by the simulation, which in turn calls the
+model-specific sequence of [Water Flux](@ref) and [Effective Pressure](@ref) updates.
+
 ```@docs
 run!
 update_steady_state!
 ```
 
 ## Water Flux
+
+Functions specific to [`KazmierczakHydroModel`](@ref) that compute the geometric potential,
+route distributed water flux over it, and derive the water layer thickness. `update_q!` is the
+entry point; the remaining functions are its documented sub-steps, exported so each stage can be
+inspected or invoked independently. See `update_q!`'s docstring for the full algorithm description
+and references.
+
 ```@docs
 update_q!
-fill_halo!
-update_ϕ₀!
+update_phi0!
 potential_filling!
 update_potential_gradients!
 update_smoothed_potential_gradients!
-accumulate_ψ_out!
-update_ψ_out!
+accumulate_psi_out!
+update_psi_out!
 update_W!
 ```
 
 ## Effective Pressure
+
+Functions that compute effective pressure `N`, the quantity that couples subglacial water to basal
+sliding. `update_N!` is defined for both models (with different physics in each case); the
+remaining functions are shared or model-specific sub-steps used to build it up.
+
 ```@docs
 update_N!
 update_Po!
@@ -53,15 +134,25 @@ update_H!
 update_S_inf!
 update_N_inf!
 update_Q!
+update_p_w!
 ```
 
 ## Data Loading
+
+Loaders that read real glaciological datasets into the plain arrays expected by the
+[Grid](@ref), [Model](@ref), and [State](@ref) constructors above, saving users from having to
+hand-write that plumbing for the two data formats FastHydrology.jl has been used with so far.
+
 ```@docs
 load_Kazmierczak
 load_yelmox
 ```
 
 ## Utilities
+
+Small unit-conversion and grid-geometry helpers used throughout the package and by the data
+loaders above.
+
 ```@docs
 compute_lims
 perYear2perSecond
@@ -70,6 +161,10 @@ Km2m
 ```
 
 ## Plotting
+
+Convenience wrappers around CairoMakie.jl for visualizing fields and grid geometry, primarily
+intended for interactive exploration and for generating the figures in the [Examples](@ref).
+
 ```@docs
 visualize_grid
 visualize_field
