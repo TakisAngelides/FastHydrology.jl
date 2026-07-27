@@ -5,6 +5,7 @@ using Oceananigans
 using Oceananigans.BoundaryConditions: fill_halo_regions!
 using BenchmarkTools
 using ImageFiltering
+using FFTW
 using OffsetArrays
 using Base.Threads
 using DocStringExtensions
@@ -15,6 +16,7 @@ using CairoMakie: Reverse
 
 include("grid.jl")
 include("operations.jl")
+include("fft_convolution.jl")
 include("model.jl")
 include("state.jl")
 include("simulation.jl")

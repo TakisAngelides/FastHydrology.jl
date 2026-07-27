@@ -12,6 +12,12 @@ $(TYPEDSIGNATURES)
 A struct for the Oceananigans Rectilinear grid. `Nx`, `Ny`, `dx`, `dy` are cached at construction
 time (grid geometry never changes afterwards) so callers can read them directly, e.g. `grid.dx`,
 rather than going through an accessor function.
+
+`conv_cache` holds FFT plans/buffers for `convolve!` (see fft_convolution.jl), reused across calls
+since the same (image size, kernel size) combination repeats every timestep of a coupled
+simulation. It's a `Ref` rather than a genuinely mutable struct field so `OGRectHydroGrid` itself
+can stay immutable; its contents are lazily built on first use and rebuilt only if the kernel size
+changes.
 """
 struct OGRectHydroGrid{T} <: AbstractHydroGrid
     grid::Oceananigans.RectilinearGrid
@@ -19,6 +25,7 @@ struct OGRectHydroGrid{T} <: AbstractHydroGrid
     Ny::Int
     dx::T
     dy::T
+    conv_cache::Base.RefValue{Any}
 end
 
 
@@ -49,7 +56,7 @@ function OGRectHydroGrid(Nx::I, Ny::I, xlims, ylims; T = Float64, topology = (Bo
 
     grid = Oceananigans.RectilinearGrid(T; size = (Nx, Ny), x = xlims, y = ylims, topology = topology, halo = halo)
 
-    return OGRectHydroGrid(grid, grid.Nx, grid.Ny, grid.Δxᶜᵃᵃ, grid.Δyᵃᶜᵃ)
+    return OGRectHydroGrid(grid, grid.Nx, grid.Ny, grid.Δxᶜᵃᵃ, grid.Δyᵃᶜᵃ, Ref{Any}(nothing))
 end
 
 
@@ -174,6 +181,6 @@ function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; sca
 end
 
 function convolve!(grid::OGRectHydroGrid, dest, src, kernel)
-    imfilter!(dest.data, src.data, centered(kernel))
+    cached_fft_convolve!(grid.conv_cache, dest.data, src.data, kernel)
     return nothing
 end
