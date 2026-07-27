@@ -25,9 +25,16 @@ Literate.markdown(
     config = Dict("credit" => false)
 )
 
+Literate.markdown(
+    joinpath(@__DIR__, "src", "examples", "ShaktiCoupling.jl"),
+    joinpath(@__DIR__, "src", "examples");
+    config = Dict("credit" => false)
+)
+
 example_pages = [
     "examples/Kazmierczak2024.md",
     "examples/HAB.md",
+    "examples/ShaktiCoupling.md",
 ]
 
 ref_pages = ["API_public.md", "references.md"]

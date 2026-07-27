@@ -60,10 +60,18 @@ Both are steady-state: effective pressure is recomputed from the current ice geo
 rate on each call rather than time-stepped, since subglacial hydrology is assumed to equilibrate
 much faster than the ice sheet evolves.
 
+A third model, [`ShaktiHydroModel`](@ref), wraps the separate
+[Shakti.jl](https://github.com/TakisAngelides/Shakti.jl) package and is genuinely time-evolving --
+see [Running Simulations](@ref) and [Coupling to Shakti.jl](@ref ShaktiCoupling). It's defined
+unconditionally (no hard dependency on Shakti), but only becomes runnable once `Shakti` is loaded
+alongside `FastHydrology`, since the `run!`/`step!` methods that dispatch on it live in the
+`FastHydrologyShaktiExt` package extension.
+
 ```@docs
 AbstractHydroModel
 KazmierczakHydroModel
 HABHydroModel
+ShaktiHydroModel
 ```
 
 ## State
@@ -82,8 +90,8 @@ HydroState
 
 An [`AbstractSimulation`](@ref) bundles a model, a grid, and a state, and determines how they are
 advanced. [`SteadyStateSimulation`](@ref) re-solves for equilibrium effective pressure on each
-call; [`TimeSimulation`](@ref) is reserved for a future time-evolving solve mode and is not yet
-implemented.
+call; [`TimeSimulation`](@ref) wraps a time-evolving [`AbstractHydroModel`](@ref) (currently just
+[`ShaktiHydroModel`](@ref)) and dispatches `run!`/`step!` on it.
 
 ```@docs
 AbstractSimulation
@@ -93,12 +101,20 @@ SteadyStateSimulation
 
 ## Running Simulations
 
-[`run!`](@ref) is the single entry point users call; it dispatches to
-[`update_steady_state!`](@ref) for the model type held by the simulation, which in turn calls the
-model-specific sequence of [Water Flux](@ref) and [Effective Pressure](@ref) updates.
+[`run!`](@ref) is the single entry point users call for a [`SteadyStateSimulation`](@ref); it
+dispatches to [`update_steady_state!`](@ref) for the model type held by the simulation, which in
+turn calls the model-specific sequence of [Water Flux](@ref) and [Effective Pressure](@ref)
+updates. For a [`TimeSimulation`](@ref), `run!` and [`step!`](@ref) are the two entry points --
+`run!` hands the whole time loop to the model (for [`ShaktiHydroModel`](@ref), delegating to
+`Shakti.run!`), while `step!` advances a single timestep, meant for a caller (e.g. a coupled ice
+flow model) that owns its own timestep loop and needs to update geometry between hydrology steps.
+Both are stubs with no methods in `FastHydrology`'s core -- the methods that make
+[`ShaktiHydroModel`](@ref) actually runnable are added by the `FastHydrologyShaktiExt` package
+extension once `Shakti` is loaded (see [Coupling to Shakti.jl](@ref ShaktiCoupling)).
 
 ```@docs
 run!
+step!
 update_steady_state!
 ```
 

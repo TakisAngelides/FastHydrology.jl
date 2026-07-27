@@ -7,6 +7,11 @@ FastHydrology = "91547ff3-b885-4d35-ac59-f1ca93abc87d"
 Literate = "98b081ad-f1c9-55d3-8b20-4c87d4299306"
 LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+Shakti = "d638fb90-b6c0-422d-b96d-ad6c4615b4d0"
+
+[sources]
+FastHydrology = {path = ".."}
+Shakti = {path = "../../Shakti"}
 
 [compat]
 Documenter = "1.17.0"

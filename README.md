@@ -32,6 +32,19 @@ Both are steady-state models: subglacial hydrology is assumed to equilibrate on 
 shorter than ice-sheet evolution, so effective pressure is recomputed from the current ice
 geometry and melt rate at each call rather than time-stepped.
 
+A third, genuinely time-evolving model is available as an optional extension:
+
+- **`ShaktiHydroModel`** -- wraps the separate [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl)
+  package, a solver for the SHAKTI subglacial hydrology model (Sommers et al. 2018,
+  https://doi.org/10.3389/feart.2018.00104), which transitions smoothly between distributed and
+  channelized drainage rather than treating them as separate regimes. FastHydrology just wraps a
+  `Shakti.Simulation` and delegates to it; see
+  [`docs/src/examples/ShaktiCoupling.jl`](docs/src/examples/ShaktiCoupling.jl) for a runnable
+  example. Since Shakti pulls in a much heavier set of dependencies (CUDA, Metal,
+  AlgebraicMultigrid, ...), it's loaded via a Julia package extension (`FastHydrologyShaktiExt`)
+  rather than as a hard dependency -- `ShaktiHydroModel` only becomes usable once you
+  `using Shakti` alongside `using FastHydrology`.
+
 ## Installation
 
 ```julia
@@ -74,9 +87,9 @@ The package is organized around four abstractions:
 | Abstraction | Purpose | Concrete implementation(s) provided |
 |---|---|---|
 | `AbstractHydroGrid` | Grid geometry and the backend-specific glue (field allocation, halo filling, and a few array operations physics code needs without knowing the backend) | `OGRectHydroGrid` (wraps an `Oceananigans.RectilinearGrid`) -- any grid backend can implement this interface |
-| `AbstractHydroModel` | Model-specific constants and fields | `KazmierczakHydroModel`, `HABHydroModel` |
-| `AbstractHydroState` | Fields common to every model: mask, ice thickness, bedrock elevation (inputs), effective pressure and water thickness (outputs) | `HydroState` |
-| `AbstractSimulation` | How to run a model | `SteadyStateSimulation` |
+| `AbstractHydroModel` | Model-specific constants and fields | `KazmierczakHydroModel`, `HABHydroModel`, `ShaktiHydroModel` |
+| `AbstractHydroState` | Fields common to every model: mask, ice thickness, bedrock elevation (inputs), effective pressure and water thickness (outputs) | `HydroState` (not used by `ShaktiHydroModel`, which brings its own state) |
+| `AbstractSimulation` | How to run a model | `SteadyStateSimulation`, `TimeSimulation` |
 
 Physics code (`water_flux.jl`, `effective_pressure.jl`) is written against the grid interface --
 `grid.Nx`, `grid.dx`, `alloc_field`, `fill_halo!`, `convolve!`, `masked_mean`, `overwrite_where!`
@@ -89,15 +102,19 @@ would only need to implement that interface.
 - `operations.jl` -- registers `min`, `max`, `erf` as broadcastable Oceananigans field operations.
 - `fft_convolution.jl` -- a cached, plan-reusing FFT convolution (used by the stress-gradient
   coupling smoothing in `water_flux.jl`) that avoids `ImageFiltering.jl`'s per-call allocation.
-- `model.jl` -- the two model structs and their constructors.
+- `model.jl` -- the model structs and their constructors, including `ShaktiHydroModel`.
 - `state.jl` -- `HydroState`.
-- `simulation.jl`, `run.jl` -- the simulation abstraction and `run!`/`update_steady_state!`.
+- `simulation.jl`, `run.jl` -- the simulation abstraction and `run!`/`step!`/`update_steady_state!`
+  (`step!` is a stub with no methods in core -- see below).
 - `water_flux.jl` -- geometric potential, flux routing, and water layer thickness
   (`KazmierczakHydroModel` only).
 - `effective_pressure.jl` -- effective pressure for both models.
 - `data_loaders.jl` -- `load_Kazmierczak` and `load_yelmox`, for reading `.mat`/`.nc` input data
   into the arrays the constructors above expect.
 - `utilities.jl`, `plotting.jl` -- unit conversions and visualization helpers.
+- `../ext/FastHydrologyShaktiExt.jl` -- package extension adding the `run!`/`step!` methods that
+  make `ShaktiHydroModel` actually runnable, active only once `Shakti` is loaded alongside
+  `FastHydrology`.
 
 ## Testing
 
@@ -106,8 +123,10 @@ using Pkg
 Pkg.test("FastHydrology")
 ```
 
-The test suite exercises both models end-to-end, both data loaders across all bed-rheology
-options, and regression-tests specific bugs found during development.
+The test suite exercises both steady-state models end-to-end, both data loaders across all
+bed-rheology options, regression-tests specific bugs found during development, and (in its own
+`module`, in `test/shakti_ext_test.jl`) `ShaktiHydroModel`'s `run!`/`step!` extension methods
+against a real `Shakti.Simulation`.
 
 ## License
 

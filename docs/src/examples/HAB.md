@@ -16,7 +16,7 @@ How to load data from a file to get the necessary inputs to initialize the grid,
 ````@example HAB
 T = Float64 # Type of the physical fields
 path = "$(@__DIR__)/input/Kazmierczak2024/THWAITES2km_m3_HAB_toto.mat" # Path to data for Fig. S3 of Kazmierczak et al 2024 which focuses on Thwaites glacier.
-Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ_over_ρ_w, κ = load_Kazmierczak(path)
+Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ = load_Kazmierczak(path)
 ````
 
 Here we prepare a grid using the Oceananigans rectilinear grid.
@@ -70,31 +70,5 @@ Now we can visualize the resulting effective pressure N [MPa].
 
 ````@example HAB
 fig_N = visualize_field(state.N; plot_title = "N", transpose_data = true, colorrange = (0, 10))
-````
-
-Using a similar setup to the one above but with model.longcoupwater = 0.0, we can plot results for the whole of Antarctica.
-
-````@example HAB
-function plot(f, r)
-    img = load("$(@__DIR__)/figures/HAB_yelmox_$(f)_$(r)km.png")
-    fig = CairoMakie.Figure()
-    ax = Axis(fig[1, 1], yreversed = true)
-    image!(ax, img')
-    ax.aspect = DataAspect()
-    hidedecorations!(ax)
-    return fig
-end
-````
-
-Effective pressure 32km resolution.
-
-````@example HAB
-fig = plot("N", "32")
-````
-
-Effective pressure 16km resolution.
-
-````@example HAB
-fig = plot("N", "16")
 ````
 

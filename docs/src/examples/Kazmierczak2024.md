@@ -17,7 +17,7 @@ How to load data from a file to get the necessary inputs to initialize the grid,
 ````@example Kazmierczak2024
 T = Float64 # Type of the physical fields
 path = "$(@__DIR__)/input/Kazmierczak2024/THWAITES2km_m3_HAB_toto.mat" # Path to data for Fig. S3 of Kazmierczak et al 2024 which focuses on Thwaites glacier.
-Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ_over_ρ_w, κ = load_Kazmierczak(path; bed_rheology = :hard)
+Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ = load_Kazmierczak(path; bed_rheology = :hard)
 ````
 
 Here we prepare a grid using the Oceananigans rectilinear grid.
@@ -35,7 +35,7 @@ fig = visualize_grid(grid)
 We then build the model using the data from the input file above. The model will hold its model-specific fields, with the rest of the fields common to all models stored in the HydroState below.
 
 ````@example Kazmierczak2024
-model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ_over_ρ_w);
+model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ);
 nothing #hide
 ````
 
@@ -76,65 +76,15 @@ Now we can visualize the resulting water flux q [10⁴ m² a⁻¹].
 fig_q = visualize_field(model.q; plot_title = "Distributed water flux q [10⁴ m² a⁻¹]", transpose_data = true, display_flag = display_flag, colorrange = (0, 10))
 ````
 
-The effective pressure N [MPa].
-
-````@example Kazmierczak2024
-fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, display_flag = display_flag, colorrange = (0, 10))
-````
-
 The water layer thickness W [m].
 
 ````@example Kazmierczak2024
 fig_W = visualize_field(state.W; plot_title = "Water thickness W [m]", transpose_data = true, display_flag = display_flag, colorrange = extrema(filter(!isnan, state.W.data)))
 ````
 
-Using a similar setup to the one above but with model.longcoupwater = 0.0, we can plot results for the whole of Antarctica.
+The effective pressure N [MPa].
 
 ````@example Kazmierczak2024
-function plot(f, r)
-    img = load("$(@__DIR__)/figures/Kaz24_yelmox_$(f)_$(r)km.png")
-    fig = CairoMakie.Figure()
-    ax = Axis(fig[1, 1], yreversed = true)
-    image!(ax, img')
-    ax.aspect = DataAspect()
-    hidedecorations!(ax)
-    return fig
-end
-````
-
-Water flux [m²/s] 32km resolution.
-
-````@example Kazmierczak2024
-fig = plot("q", "32")
-````
-
-Water flux [m²/s] 16km resolution.
-
-````@example Kazmierczak2024
-fig = plot("q", "16")
-````
-
-Water thickness [m] 32km resolution.
-
-````@example Kazmierczak2024
-fig = plot("W", "32")
-````
-
-Water thickness [m] 16km resolution.
-
-````@example Kazmierczak2024
-fig = plot("W", "16")
-````
-
-Effective pressure [Pa] 32km resolution.
-
-````@example Kazmierczak2024
-fig = plot("N", "32")
-````
-
-Effective pressure [Pa] 16km resolution.
-
-````@example Kazmierczak2024
-fig = plot("N", "16")
+fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, display_flag = display_flag, colorrange = (0, 10))
 ````
 
