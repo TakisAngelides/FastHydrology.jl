@@ -70,6 +70,14 @@ Gauckler-Manning-Strickler flow law.
 function update_S_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
     @. model.S_inf = model.K^(-1 / model.alpha) * model.abs_grad_phi0^((1 - model.beta) / model.alpha) * model.Q^(1 / model.alpha)
+
+    # At degenerate cells with Q == 0 and abs_grad_phi0 == 0 simultaneously (which occurs at a
+    # few corner/edge cells where the input data is flat outside the glacier extent), the formula
+    # above evaluates 0^(negative) * 0^(positive) = Inf * 0 = NaN, since (1-beta)/alpha < 0.
+    # Physically, zero flux implies zero conduit cross-section regardless of the gradient, so we
+    # resolve this indeterminate form in favor of that limit.
+    overwrite_where!(grid, model.S_inf, model.Q, ==(0.0), 0.0)
+
     fill_halo!(model.S_inf, grid)
 
     return nothing

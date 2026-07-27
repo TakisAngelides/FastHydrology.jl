@@ -49,6 +49,31 @@ field_values(field) = interior(field, :, :, 1)
         @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
     end
 
+    @testset "KazmierczakHydroModel with a flat, zero-flux region" begin
+        # Regression test: on real datasets (THWAITES), a few cells beyond the glacier extent
+        # have h=b=0 (flat, zero geometric-potential gradient) and mask=0 (zero water flux).
+        # update_S_inf! evaluated 0^(negative) * 0^(positive) = Inf * 0 = NaN there, since
+        # (1-beta)/alpha < 0 for the default alpha, beta. Build a grid with such a flat/ungrounded
+        # region and confirm N stays finite.
+        grid = OGRectHydroGrid(10, 10, (0.0, 1000.0), (0.0, 1000.0))
+        mask = [i <= 5 ? 1.0 : 0.0 for i in 1:10, j in 1:10]
+        h    = [i <= 5 ? 500.0 - 5.0 * i : 0.0 for i in 1:10, j in 1:10]
+        b    = [i <= 5 ? -100.0 - 2.0 * j : 0.0 for i in 1:10, j in 1:10]
+        state = HydroState(grid, mask, h, b)
+
+        kappa   = zeros(10, 10)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 10, 10)
+        A_visc  = fill(1e-24, 10, 10)
+        mdot    = fill(1e-6, 10, 10)
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+
+        sim = SteadyStateSimulation(model, grid, state)
+        run!(sim)
+
+        @test all(isfinite, field_values(model.S_inf))
+        @test all(isfinite, field_values(state.N))
+    end
+
     @testset "HABHydroModel steady state" begin
         # Regression test: update_N! used to call max(::Array, ::Array) instead of
         # max.(...), which threw a MethodError for any grid larger than a scalar.
