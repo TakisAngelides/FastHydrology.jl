@@ -7,13 +7,11 @@
 [ci-img]: https://github.com/TakisAngelides/FastHydrology.jl/workflows/CI/badge.svg
 [ci-url]: https://github.com/TakisAngelides/FastHydrology.jl/actions
 
-A general Julia framework for simulating subglacial hydrology beneath ice sheets, built on top of
-[Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl)'s grid and field infrastructure.
-FastHydrology provides shared grid, state, and simulation infrastructure that different subglacial
-hydrology models plug into, computing the effective pressure at the base of an ice sheet -- the
-quantity that couples subglacial water to basal sliding. It can be run standalone or coupled into
-a larger ice-sheet model (e.g. as the hydrology component of a coupled Kori-ULB / yelmox
-simulation).
+A general Julia framework for simulating subglacial hydrology beneath ice sheets. FastHydrology
+provides shared grid, state, and simulation infrastructure that different subglacial hydrology
+models plug into, computing the effective pressure at the base of an ice sheet -- the quantity
+that couples subglacial water to basal sliding. It can be run standalone or coupled into a larger
+ice-sheet model such as yelmox.
 
 ## Models
 
