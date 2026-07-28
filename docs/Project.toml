@@ -11,7 +11,7 @@ Shakti = "d638fb90-b6c0-422d-b96d-ad6c4615b4d0"
 
 [sources]
 FastHydrology = {path = ".."}
-Shakti = {path = "../../Shakti"}
+Shakti = {url = "https://github.com/TakisAngelides/Shakti.jl"}
 
 [compat]
 Documenter = "1.17.0"

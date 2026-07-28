@@ -6,4 +6,4 @@ Shakti = "d638fb90-b6c0-422d-b96d-ad6c4615b4d0"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-Shakti = {path = "../../Shakti"}
+Shakti = {url = "https://github.com/TakisAngelides/Shakti.jl"}

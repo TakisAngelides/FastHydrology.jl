@@ -2419,9 +2419,11 @@ version = "0.5.0"
 
 [[deps.Shakti]]
 deps = ["AlgebraicMultigrid", "CSV", "CUDA", "CairoMakie", "DocStringExtensions", "HDF5", "JLD2", "KernelAbstractions", "Krylov", "LinearAlgebra", "MAT", "Metal", "NetCDF", "ParallelStencil", "Preferences", "SparseArrays", "Statistics"]
-path = "../../Shakti"
+git-tree-sha1 = "e28ab3d44ae652e45ad396c84705d518bc2af0aa"
+repo-rev = "main"
+repo-url = "https://github.com/TakisAngelides/Shakti.jl"
 uuid = "d638fb90-b6c0-422d-b96d-ad6c4615b4d0"
-version = "0.1.0"
+version = "0.1.2"
 
 [[deps.SharedArrays]]
 deps = ["Distributed", "Mmap", "Random", "Serialization"]
