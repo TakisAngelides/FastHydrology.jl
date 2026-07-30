@@ -7,7 +7,7 @@
 [ci-img]: https://github.com/TakisAngelides/FastHydrology.jl/workflows/CI/badge.svg
 [ci-url]: https://github.com/TakisAngelides/FastHydrology.jl/actions
 
-A general Julia framework for simulating subglacial hydrology beneath ice sheets. FastHydrology
+A general Julia framework for simulating subglacial hydrology. FastHydrology
 provides shared grid, state, and simulation infrastructure that different subglacial hydrology
 models plug into, computing the effective pressure at the base of an ice sheet -- the quantity
 that couples subglacial water to basal sliding. It can be run standalone or coupled into a larger
@@ -42,7 +42,7 @@ A third, genuinely time-evolving model is available as an optional extension:
   [`docs/src/examples/ShaktiCoupling.jl`](docs/src/examples/ShaktiCoupling.jl) for a runnable
   example. Since Shakti pulls in a much heavier set of dependencies (CUDA, Metal,
   AlgebraicMultigrid, ...), it's loaded via a Julia package extension (`FastHydrologyShaktiExt`)
-  rather than as a hard dependency -- `ShaktiHydroModel` only becomes usable once you
+  rather than as a hard dependency -- `ShaktiHydroModel` only becomes usable once you write
   `using Shakti` alongside `using FastHydrology`.
 
 ## Installation
