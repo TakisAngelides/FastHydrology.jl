@@ -136,7 +136,7 @@ function KazmierczakHydroModel(
     sigmat        = 0.02,
     fill_iters    = 10,
     max_dissipation_iters = 20,
-    dissipation_rtol       = 1e-9,
+    dissipation_rtol       = 1e-12,
     dissipation_melt        = true
 )
 
