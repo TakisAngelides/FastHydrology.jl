@@ -14,10 +14,23 @@ abstract type AbstractHydroModel end
 """
 $(TYPEDSIGNATURES)
 
+Trait controlling whether `update_q!` includes the dissipation melt rate |q * grad(phi0)| / L_w in the water source
+(see `KazmierczakHydroModel`'s `dissipation_melt` keyword). Stored as a type parameter so the on/off choice is
+resolved by multiple dispatch at compile time -- `update_q!` calls a helper on `model.dissipation_melt` that has one
+method for `DissipationMeltOn` and one for `DissipationMeltOff`, rather than branching on a `Bool` field at runtime.
+"""
+abstract type AbstractDissipationMelt end
+struct DissipationMeltOn  <: AbstractDissipationMelt end
+struct DissipationMeltOff <: AbstractDissipationMelt end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 The hydrology model described in Kazmierczak et al 2024 (https://doi.org/10.5194/tc-18-5887-2024). In our implementation here for
 the calculations of water flux, we make the assumption that on the grid we have Delta_x = Delta_y.
 """
-mutable struct KazmierczakHydroModel{T <: AbstractFloat, A} <: AbstractHydroModel
+mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt} <: AbstractHydroModel
 
     # Model constants
     rho_w           ::T    # Density of fresh water [kg/m3]
@@ -42,6 +55,7 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A} <: AbstractHydroMode
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
+    dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
 
     # Geometric potential
     phi0                   ::A  # Geometric potential [Pa]
@@ -122,7 +136,8 @@ function KazmierczakHydroModel(
     sigmat        = 0.02,
     fill_iters    = 10,
     max_dissipation_iters = 20,
-    dissipation_rtol       = 1e-9
+    dissipation_rtol       = 1e-9,
+    dissipation_melt        = true
 )
 
     expected_size = (grid.Nx, grid.Ny)
@@ -155,6 +170,7 @@ function KazmierczakHydroModel(
     fill_iters    = Int(fill_iters)
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol)
+    dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
 
     # Geometric potential
     phi0          = alloc_field(grid)
@@ -190,7 +206,7 @@ function KazmierczakHydroModel(
 
     return KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
-        max_dissipation_iters, dissipation_rtol,
+        max_dissipation_iters, dissipation_rtol, dissipation_melt_trait,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
         visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev,
