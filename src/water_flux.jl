@@ -110,7 +110,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     if model.dissipation_verbose
         elapsed = time() - start_time
         status  = converged ? "converged" : "did NOT converge (hit max_dissipation_iters)"
-        println("Dissipation melt Picard iteration: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s")
+        println("Water flux Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s")
     end
 
     return nothing
