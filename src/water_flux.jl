@@ -75,10 +75,15 @@ $(TYPEDSIGNATURES)
 
 With the dissipation melt term on, mdot_total = mdot + |q * grad(phi0)| / L_w depends on q, which is itself the routing algorithm's output, so we Picard-iterate: recompute the source from
 the current q, re-run the routing algorithm, and stop once q stops changing to within model.dissipation_rtol (relative to its own peak magnitude), capped at model.max_dissipation_iters sweeps.
+If `model.dissipation_verbose` is set, prints how long the loop took, whether it converged, and after how many iterations.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::DissipationMeltOn)
 
-    for _ in 1:model.max_dissipation_iters
+    start_time = time()
+    converged  = false
+    n_iters    = model.max_dissipation_iters
+
+    for iter in 1:model.max_dissipation_iters
 
         model.q_prev .= model.q
 
@@ -95,9 +100,17 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
         if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
+            converged = true
+            n_iters   = iter
             break
         end
 
+    end
+
+    if model.dissipation_verbose
+        elapsed = time() - start_time
+        status  = converged ? "converged" : "did NOT converge (hit max_dissipation_iters)"
+        println("Dissipation melt Picard iteration: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s")
     end
 
     return nothing

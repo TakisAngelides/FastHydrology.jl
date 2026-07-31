@@ -56,6 +56,7 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipa
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
+    dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration prints its timing/convergence summary each call
 
     # Geometric potential
     phi0                   ::A  # Geometric potential [Pa]
@@ -137,7 +138,8 @@ function KazmierczakHydroModel(
     fill_iters    = 10,
     max_dissipation_iters = 20,
     dissipation_rtol       = 1e-12,
-    dissipation_melt        = true
+    dissipation_melt        = true,
+    dissipation_verbose     = true
 )
 
     expected_size = (grid.Nx, grid.Ny)
@@ -206,7 +208,7 @@ function KazmierczakHydroModel(
 
     return KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
-        max_dissipation_iters, dissipation_rtol, dissipation_melt_trait,
+        max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
         visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev,
