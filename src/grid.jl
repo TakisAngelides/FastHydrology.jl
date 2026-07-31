@@ -129,6 +129,29 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Return the maximum of `abs.(a .- b)`, restricted to cells where `mask` equals 1. Used to check
+convergence of fixed-point iterations (e.g. the dissipation-melt Picard loop in `update_q!`)
+without assuming `a`/`b` behave like plain arrays outside the masked reduction itself.
+"""
+function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, mask)
+    return maximum(abs.(@views a[mask .== 1] .- b[mask .== 1]))
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Return the maximum of `abs.(field)`, restricted to cells where `mask` equals 1. Paired with
+`masked_max_abs_diff` to build a relative convergence tolerance.
+"""
+function masked_max_abs(grid::AbstractHydroGrid, field, mask)
+    return maximum(abs.(@views field[mask .== 1]))
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 The actual masked-overwrite logic, shared by every `overwrite_where!` grid method below: given
 plain arrays (or a scalar for `src`), overwrite `dest` wherever `predicate(cond)` holds with
 `scale .* src` (restricted to the same cells if `src` is array-like).
@@ -173,6 +196,14 @@ end
 
 function masked_mean(grid::OGRectHydroGrid, field, mask)
     return mean(@views interior(field, :, :, 1)[mask .== 1])
+end
+
+function masked_max_abs_diff(grid::OGRectHydroGrid, a, b, mask)
+    return maximum(abs.(@views interior(a, :, :, 1)[mask .== 1] .- interior(b, :, :, 1)[mask .== 1]))
+end
+
+function masked_max_abs(grid::OGRectHydroGrid, field, mask)
+    return maximum(abs.(@views interior(field, :, :, 1)[mask .== 1]))
 end
 
 function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; scale = true)

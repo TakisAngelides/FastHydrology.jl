@@ -55,10 +55,11 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A} <: AbstractHydroMode
     visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
     mdot       ::A  # mass basal melt rate per unit area [Kg / m^2 / s]
-    mdot_total ::A  # mdot plus the dissipation melt rate |q * grad(phi0_s)| / L_w [Kg / m^2 / s]
+    mdot_total ::A  # mdot plus the dissipation melt rate |q * grad(phi0)| / L_w [Kg / m^2 / s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
     corfac     ::A  # Correction factor to go from psi_out to q
     q          ::A  # Distributed water flux [m2/s]
+    q_prev     ::A  # q from the previous Picard sweep, for the dissipation-melt convergence check
 
     # Effective pressure and Bed state
     Q       ::A  # Volumetric water flux within a conduit [m3/s]
@@ -167,6 +168,7 @@ function KazmierczakHydroModel(
     psi_out    = alloc_field(grid)
     corfac     = alloc_field(grid)
     q          = alloc_field(grid)
+    q_prev     = alloc_field(grid)
 
     # Effective pressure
     Q       = alloc_field(grid)
@@ -184,7 +186,7 @@ function KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        visited, h, mdot, mdot_total, psi_out, corfac, q,
+        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 
