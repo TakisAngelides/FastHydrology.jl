@@ -20,7 +20,7 @@ itself as it moves down the hydraulic gradient (Eq. (3), Sec. 2.2.2 of Kazmiercz
 gradient of phi0 here, not the smoothed one used for flow routing below -- the smoothing is a numerical device for stress-gradient coupling, not part of the actual local driving gradient that
 does work on the water, and this matches how the analogous conduit dissipation term (`model.Q * model.abs_grad_phi0`) is already written in `update_N_inf!`. Since the term depends on q, which
 is itself the output of the routing algorithm below, we resolve the resulting fixed point with Picard iteration, stopping once q stops changing (relative to its own peak magnitude) to within
-`dissipation_rtol`, capped at `max_dissipation_iters` sweeps as a safety net.
+`model.dissipation_rtol`, capped at `model.max_dissipation_iters` sweeps as a safety net.
 """
 function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
@@ -43,10 +43,7 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
                        (sqrt(model.minus_grad_phi0_sx^2.0 + model.minus_grad_phi0_sy^2.0) + 1e-15)
 
-    max_dissipation_iters = 20
-    dissipation_rtol       = 1e-6
-
-    for _ in 1:max_dissipation_iters
+    for _ in 1:model.max_dissipation_iters
 
         model.q_prev .= model.q
 
@@ -62,7 +59,7 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
         @. model.q = min(max(model.psi_out / model.corfac, 0.0), 1e5)
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
-        if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= dissipation_rtol * q_scale
+        if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
             break
         end
 
