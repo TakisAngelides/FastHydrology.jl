@@ -209,5 +209,9 @@ field_values(field) = interior(field, :, :, 1)
 
 end
 
+# Reuses field_values/interior from above, so include at top level (unlike shakti_ext_test.jl,
+# ArrayHydroGrid has no naming collisions requiring its own module).
+include("array_grid_test.jl")
+
 # Own module (see shakti_ext_test.jl) since FastHydrology and Shakti both export `run!`.
 include("shakti_ext_test.jl")

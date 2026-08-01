@@ -28,9 +28,10 @@ include("utilities.jl")
 include("plotting.jl")
 
 # grid.jl
-export AbstractHydroGrid, OGRectHydroGrid
+export AbstractHydroGrid, OGRectHydroGrid, ArrayHydroGrid
 export fill_halo!, alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
+export minus_gradient_x!, minus_gradient_y!
 
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel

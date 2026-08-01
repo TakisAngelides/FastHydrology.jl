@@ -168,8 +168,12 @@ function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGri
         @inbounds for j in 1:Ny
             for i in 1:Nx
                 p = phi0[i, j]
-                p1, p2 = phi0[i+1, j], phi0[i-1, j]
-                p3, p4 = phi0[i, j+1], phi0[i, j-1]
+                # Domain edges are treated as zero-gradient (edge-replicated) neighbours, same
+                # convention as minus_gradient_x!/minus_gradient_y! -- see grid.jl.
+                im1, ip1 = max(i - 1, 1), min(i + 1, Nx)
+                jm1, jp1 = max(j - 1, 1), min(j + 1, Ny)
+                p1, p2 = phi0[ip1, j], phi0[im1, j]
+                p3, p4 = phi0[i, jp1], phi0[i, jm1]
                 if p < p1 && p < p2 && p < p3 && p < p4
                     phi0_tmp[i, j] = (p1 + p2 + p3 + p4) / 4.0
                 end
@@ -194,8 +198,8 @@ Compute (the negative of) the gradients of the geometric potential phi0 and its 
 """
 function update_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
-    model.minus_grad_phi0_x .= -∂x(model.phi0)
-    model.minus_grad_phi0_y .= -∂y(model.phi0)
+    minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
+    minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
 
     fill_halo!(model.minus_grad_phi0_x, grid)
     fill_halo!(model.minus_grad_phi0_y, grid)
@@ -251,13 +255,13 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     maxlevel = 2 * round(Int, width / Delta - 0.5) + 1
     frb      = Int((maxlevel - 1) / 2)
 
-    kernel = zeros(maxlevel, maxlevel, 1)
+    kernel = zeros(maxlevel, maxlevel)
 
     for nj in 1:maxlevel, ni in 1:maxlevel
         dist = sqrt((Delta * (ni - frb - 1))^2 +
                     (Delta * (nj - frb - 1))^2) / scale
 
-        kernel[ni, nj, 1] = max(0.0, 1.0 - dist / 2.0)
+        kernel[ni, nj] = max(0.0, 1.0 - dist / 2.0)
     end
 
     kernel ./= sum(kernel)
@@ -303,6 +307,10 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
 
         ni, nj = i + di, j + dj
+
+        # Off the edge of the domain: no neighbouring cell, so no upstream contribution can cross
+        # in (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
+        (1 <= ni <= grid.Nx && 1 <= nj <= grid.Ny) || continue
 
         w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
 
