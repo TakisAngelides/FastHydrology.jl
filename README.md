@@ -60,7 +60,7 @@ Pkg.add(url="https://github.com/TakisAngelides/FastHydrology.jl")
 ```julia
 using FastHydrology
 
-# 1. Build a rectilinear grid.
+# 1. Build a rectilinear grid. ArrayHydroGrid (plain Arrays, no Oceananigans) is a drop-in swap.
 grid = OGRectHydroGrid(Nx, Ny, xlims, ylims)
 
 # 2. Build a model, providing the model-specific input fields.
@@ -89,19 +89,22 @@ The package is organized around four abstractions:
 
 | Abstraction | Purpose | Concrete implementation(s) provided |
 |---|---|---|
-| `AbstractHydroGrid` | Grid geometry and the backend-specific glue (field allocation, halo filling, and a few array operations physics code needs without knowing the backend) | `OGRectHydroGrid` (wraps an `Oceananigans.RectilinearGrid`) -- any grid backend can implement this interface |
+| `AbstractHydroGrid` | Grid geometry and the backend-specific glue (field allocation, halo filling, and a few array operations physics code needs without knowing the backend) | `OGRectHydroGrid` (wraps an `Oceananigans.RectilinearGrid`), `ArrayHydroGrid` (plain `Array`s, no Oceananigans) -- any grid backend can implement this interface |
 | `AbstractHydroModel` | Model-specific constants and fields | `KazmierczakHydroModel`, `HABHydroModel`, `ShaktiHydroModel` |
 | `AbstractHydroState` | Fields common to every model: mask, ice thickness, bedrock elevation (inputs), effective pressure and water thickness (outputs) | `HydroState` (not used by `ShaktiHydroModel`, which brings its own state) |
 | `AbstractSimulation` | How to run a model | `SteadyStateSimulation`, `TimeSimulation` |
 
 Physics code (`water_flux.jl`, `effective_pressure.jl`) is written against the grid interface --
-`grid.Nx`, `grid.dx`, `alloc_field`, `fill_halo!`, `convolve!`, `masked_mean`, `masked_max_abs`,
-`masked_max_abs_diff`, `overwrite_where!` -- rather than reaching into Oceananigans-specific
-internals directly, so a different grid backend would only need to implement that interface.
+`grid.Nx`, `grid.dx`, `alloc_field`, `fill_halo!`, `convolve!`, `minus_gradient_x!`,
+`minus_gradient_y!`, `masked_mean`, `masked_max_abs`, `masked_max_abs_diff`, `overwrite_where!` --
+rather than reaching into a specific backend's internals directly, so a different grid backend
+would only need to implement that interface. Most of these already have a default implementation
+that works for any grid whose fields behave like plain arrays, which is why `ArrayHydroGrid` only
+needs to implement `alloc_field`.
 
 ### Source layout
 
-- `grid.jl` -- the grid abstraction and its `OGRectHydroGrid` implementation.
+- `grid.jl` -- the grid abstraction and its `OGRectHydroGrid`/`ArrayHydroGrid` implementations.
 - `operations.jl` -- registers `min`, `max`, `erf` as broadcastable Oceananigans field operations.
 - `fft_convolution.jl` -- a cached, plan-reusing FFT convolution (used by the stress-gradient
   coupling smoothing in `water_flux.jl`) that avoids `ImageFiltering.jl`'s per-call allocation.
