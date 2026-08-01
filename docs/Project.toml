@@ -14,8 +14,10 @@ FastHydrology = {path = ".."}
 Shakti = {url = "https://github.com/TakisAngelides/Shakti.jl"}
 
 [compat]
+CairoMakie = "0.15.13"
 Documenter = "1.17.0"
 DocumenterCitations = "1.4.1"
+DocumenterTools = "0.1.21"
 Literate = "2.21.0"
 LiveServer = "1.5.0"
 NCDatasets = "0.14.15"
