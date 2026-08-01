@@ -30,7 +30,7 @@ include("plotting.jl")
 # grid.jl
 export AbstractHydroGrid, OGRectHydroGrid
 export fill_halo!, alloc_field
-export convolve!, masked_mean, overwrite_where!
+export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
 
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel

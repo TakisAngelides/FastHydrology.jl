@@ -49,6 +49,53 @@ field_values(field) = interior(field, :, :, 1)
         @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
     end
 
+    @testset "KazmierczakHydroModel dissipation melt term" begin
+        # dissipation_melt toggles whether update_q! includes the |q * grad(phi0)| / L_w
+        # source term (Eq. 3, Sec. 2.2.2 of Kazmierczak et al 2024, dropped there as negligible).
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        model_on  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = true, dissipation_verbose = false)
+        model_off = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = false, dissipation_verbose = false)
+
+        # The on/off choice is resolved by multiple dispatch on this trait field, not a runtime Bool.
+        @test model_on.dissipation_melt isa FastHydrology.DissipationMeltOn
+        @test model_off.dissipation_melt isa FastHydrology.DissipationMeltOff
+
+        run!(SteadyStateSimulation(model_on, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_off, grid, HydroState(grid, mask, h, b)))
+
+        # With the term off, the routing algorithm's source is exactly mdot.
+        @test all(field_values(model_off.mdot_total) .== field_values(model_off.mdot))
+
+        # With the term on, mdot_total = mdot + |q * grad(phi0)| / L_w is pointwise >= mdot.
+        @test all(field_values(model_on.mdot_total) .>= field_values(model_on.mdot))
+
+        q_on  = field_values(model_on.q)
+        q_off = field_values(model_off.q)
+
+        # The term has a real (if small) effect on the solution...
+        @test q_on != q_off
+        # ...consistent with the paper's own claim that it's negligible.
+        @test maximum(abs.(q_on .- q_off)) / maximum(abs.(q_off)) < 0.05
+
+        @test all(isfinite, field_values(model_on.q))
+        @test all(isfinite, field_values(model_off.q))
+
+        # max_dissipation_iters is a hard cap: it must not error even when it cuts the Picard
+        # iteration off before convergence.
+        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_dissipation_iters = 1, dissipation_verbose = false)
+        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
+        @test all(isfinite, field_values(model_capped.q))
+    end
+
     @testset "KazmierczakHydroModel with a flat, zero-flux region" begin
         # Regression test: on real datasets (THWAITES), a few cells beyond the glacier extent
         # have h=b=0 (flat, zero geometric-potential gradient) and mask=0 (zero water flux).
