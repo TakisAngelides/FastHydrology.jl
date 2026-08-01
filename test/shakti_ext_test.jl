@@ -41,7 +41,7 @@ using Test
     taub_x = zeros(nx + 1, ny)
     taub_y = zeros(nx, ny + 1)
 
-    Shakti.set_initial_conditions!(state, grid, p, mi, sl, mask, A_visc, zb, zs, b, G, ub_x, ub_y, ieb, taub_x, taub_y)
+    Shakti.set_initial_conditions!(state, grid, p, sl, mask, A_visc, zb, zs, b, G, ub_x, ub_y, ieb, taub_x, taub_y)
 
     ls = Shakti.CholeskyDirectSolver(grid)
     ps = Shakti.PicardSolver(500, 1e-6, ls, grid)
@@ -94,7 +94,7 @@ end
     taub_x = zeros(nx + 1, ny)
     taub_y = zeros(nx, ny + 1)
 
-    Shakti.set_initial_conditions!(state, grid, p, mi, sl, mask, A_visc, zb, zs, b, G, ub_x, ub_y, ieb, taub_x, taub_y)
+    Shakti.set_initial_conditions!(state, grid, p, sl, mask, A_visc, zb, zs, b, G, ub_x, ub_y, ieb, taub_x, taub_y)
 
     ls = Shakti.CholeskyDirectSolver(grid)
     ps = Shakti.PicardSolver(500, 1e-6, ls, grid)
