@@ -35,7 +35,7 @@ FastHydrologyShaktiExt = "Shakti"
 [compat]
 BenchmarkTools = "1.7.0"
 CairoMakie = "0.15.9"
-DataDeps = "0.7.13"
+DataDeps = "0.7.13, 1.0"
 DocStringExtensions = "0.9.5"
 Documenter = "1.17.0"
 DocumenterCitations = "1.4.1"
