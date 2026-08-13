@@ -33,6 +33,12 @@ $(TYPEDSIGNATURES)
 
 Update the model and state variables for the Kazmierczak et al 2024 model steady-state calculation.
 We specifically update first the distributed water flux q, then the water layer thickness W, and then the effective pressure N.
+
+When `model.sliding_law` is N-dependent (see water_flux.jl's `resolve_q!`), `update_q!` already
+converges q and N together internally, so the explicit `update_W!`/`update_N!` calls below just
+recompute the same converged values from the same final q -- redundant but harmless (both are pure
+functions of q and the unchanged geometry/state), kept for a uniform call sequence across all
+sliding-law choices.
 """
 function update_steady_state!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     update_q!(model, grid, state)

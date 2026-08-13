@@ -25,7 +25,12 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
     mask = data["MASKo"]
     h = data["H"]
     b = data["B"]
-    abs_v_b = data["ub"]
+    # `ub` is stored in per-year units, like `Bmelt` below -- the file's own `par["secperyear"]`
+    # (3.1556926e7, matching FastHydrology's own SECONDS_PER_YEAR to 5 significant figures) is the
+    # constant this source model uses to convert its per-year fields to SI, and raw `ub` values here
+    # reach ~2634, which is only plausible as m/yr (a fast Thwaites trunk speed) -- taken as literal
+    # m/s that would be supersonic ice flow.
+    abs_v_b = perYear2perSecond.(data["ub"])
     A_visc = data["A"]
     ṁ = perYear2perSecond.(data["Bmelt"]) .* 1000 # They stored this variable in per year units and as ṁ/ρ_w so we multiply by ρ_w = 1000 to get ṁ
 
@@ -104,9 +109,18 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     b = reshape(ds["z_bed"][:], Nx, Ny)
     ux_b = reshape(ds["ux_b"][:], Nx, Ny)
     uy_b = reshape(ds["uy_b"][:], Nx, Ny)
-    abs_v_b = reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny)
+    # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against
+    # test/local_experiments/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
+    # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
+    abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
     A_visc = mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1]
-    ṁ = reshape(-ds["bmb"][:], Nx, Ny)
+    # bmb ("Combined basal mass balance") also carries a "units" = "m/yr" attribute, and is an
+    # ice-equivalent thickness rate: Yelmo.jl's own definition (src/thrm/helpers.jl) is
+    # `bmb = -Q_net / (rho_ice * L_ice)`, i.e. a heat flux divided by rho_ice (not rho_w) -- the
+    # inverse of how Bmelt is handled in load_Kazmierczak above, which is already a water-equivalent
+    # rate divided by rho_w. Negative bmb is mass loss (melting), hence the sign flip to get a melt
+    # rate; rho_ice = 917.0 matches Yelmo.jl's own default rho_ice constant (YelmoConst.jl).
+    ṁ = perYear2perSecond.(reshape(-ds["bmb"][:], Nx, Ny)) .* 917.0
    
     function initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
         

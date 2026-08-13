@@ -27,10 +27,121 @@ struct DissipationMeltOff <: AbstractDissipationMelt end
 """
 $(TYPEDSIGNATURES)
 
+Basal sliding law used to compute the frictional-heating term tau_b * v_b in the melt rate (Eq. 3,
+Sec. 2.2.1 of Kazmierczak et al 2024): mdot = (G + tau_b*v_b - q_T) / L_w + mdot_w. `calc_tau_b`
+(a plain scalar formula) and `update_tau_b!` (the field-broadcast version actually used in
+`resolve_q!`; see sliding_law.jl for why they're separate) both dispatch on this type to turn
+`model.abs_v_b` and the current effective pressure `state.N` into a basal shear stress tau_b [Pa].
+
+Split into two branches:
+- `NoSlidingLaw`/`WeertmanSlidingLaw` do not depend on N, so they contribute a source term that is
+  either zero or a fixed offset computed once -- no new fixed point to resolve.
+- `AbstractPressureDependentSlidingLaw` (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`)
+  scale with N, so tau_b now depends on N which itself depends on q which depends on mdot which
+  depends on tau_b: a genuine (q, N) fixed point. `resolve_q!` dispatches on this hierarchy to
+  decide whether the existing q-only Picard loop needs widening to also update N each sweep (see
+  water_flux.jl for the loop and the reasoning).
+
+The two N-dependent laws mirror the two families of sliding law implemented in Yelmo.jl
+(`Yelmo.jl/src/dyn/basal_dragging.jl`, `beta_method` 1/2/4 and 3/5 respectively) so that, when this
+model is eventually coupled to Yelmo via Kryonomos.jl, both sides can be configured with numerically
+matching laws rather than independently-drifting formulas: `PowerPlasticSlidingLaw` matches
+`_calc_beta_aa_power_plastic!` (Bueler & van Pelt 2015) and `RegularizedCoulombSlidingLaw` matches
+`_calc_beta_aa_reg_coulomb!` (Joughin et al. 2019, GRL Eq. 2).
+"""
+abstract type AbstractSlidingLaw end
+abstract type AbstractPressureDependentSlidingLaw <: AbstractSlidingLaw end
+
+"""
+$(TYPEDSIGNATURES)
+
+No frictional-heating feedback: tau_b = 0 everywhere, so mdot is unaffected by sliding
+(`KazmierczakHydroModel`'s default `sliding_law`). Preserves the model's original behaviour, where
+`mdot_in` alone is assumed to already represent the full melt rate.
+"""
+struct NoSlidingLaw <: AbstractSlidingLaw end
+
+"""
+$(TYPEDSIGNATURES)
+
+Weertman-type power sliding law: tau_b = C * |v_b|^q, independent of effective pressure N. Included
+for comparison/testing and for domains where N-independent sliding is the intended approximation;
+since it does not depend on N it does not introduce a (q, N) feedback and costs nothing beyond a
+single elementwise evaluation.
+
+# Fields
+- `C::T`: sliding coefficient [Pa (s/m)^q]
+- `q::T`: velocity exponent (dimensionless; classically 1/n with n Glen's law exponent, so ~1/3)
+"""
+struct WeertmanSlidingLaw{T <: AbstractFloat} <: AbstractSlidingLaw
+    C ::T
+    q ::T
+end
+WeertmanSlidingLaw(; C, q = 1/3) = WeertmanSlidingLaw(promote(float(C), float(q))...)
+
+"""
+$(TYPEDSIGNATURES)
+
+Power-plastic sliding law (Bueler & van Pelt 2015): tau_b = c_till * N * (|v_b| / u0)^q. Matches
+Yelmo.jl's `_calc_beta_aa_power_plastic!` (`beta_method` 1 when `q = 1`, 2 for general `q`).
+
+# Fields
+- `c_till::T`: till-strength coefficient (dimensionless, ~ tan of the till friction angle)
+- `q::T`: velocity exponent (dimensionless; `q = 1` gives a linear-in-velocity law)
+- `u0::T`: velocity scale [m/s]
+"""
+struct PowerPlasticSlidingLaw{T <: AbstractFloat} <: AbstractPressureDependentSlidingLaw
+    c_till ::T
+    q      ::T
+    u0     ::T
+end
+PowerPlasticSlidingLaw(; c_till, q = 1.0, u0 = perYear2perSecond(100.0)) =
+    PowerPlasticSlidingLaw(promote(float(c_till), float(q), float(u0))...)
+
+"""
+$(TYPEDSIGNATURES)
+
+Regularized-Coulomb sliding law (Joughin et al. 2019, GRL Eq. 2): tau_b = c_till * N * (|v_b| /
+(|v_b| + u0))^q. Saturates toward the Coulomb-friction limit c_till * N as |v_b| -> infinity;
+behaves like a Weertman power law for |v_b| << u0. Matches Yelmo.jl's `_calc_beta_aa_reg_coulomb!`
+(`beta_method` 3/5).
+
+# Fields
+- `c_till::T`: till-strength coefficient (dimensionless, ~ tan of the till friction angle)
+- `q::T`: velocity exponent (dimensionless)
+- `u0::T`: velocity scale [m/s]
+"""
+struct RegularizedCoulombSlidingLaw{T <: AbstractFloat} <: AbstractPressureDependentSlidingLaw
+    c_till ::T
+    q      ::T
+    u0     ::T
+end
+RegularizedCoulombSlidingLaw(; c_till, q = 1/3, u0 = perYear2perSecond(100.0)) =
+    RegularizedCoulombSlidingLaw(promote(float(c_till), float(q), float(u0))...)
+
+"""
+$(TYPEDSIGNATURES)
+
+Convert a sliding law's parameters to float type `T`, mirroring the explicit `T(...)` conversions
+`KazmierczakHydroModel`'s constructor applies to its own scalar parameters -- keeps `model.sliding_law`
+type-stable with the rest of the model when `T` is not `Float64` (e.g. `Float32` grids).
+"""
+convert_sliding_law(::Type{T}, law::NoSlidingLaw) where {T <: AbstractFloat} = law
+convert_sliding_law(::Type{T}, law::WeertmanSlidingLaw) where {T <: AbstractFloat} =
+    WeertmanSlidingLaw(C = T(law.C), q = T(law.q))
+convert_sliding_law(::Type{T}, law::PowerPlasticSlidingLaw) where {T <: AbstractFloat} =
+    PowerPlasticSlidingLaw(c_till = T(law.c_till), q = T(law.q), u0 = T(law.u0))
+convert_sliding_law(::Type{T}, law::RegularizedCoulombSlidingLaw) where {T <: AbstractFloat} =
+    RegularizedCoulombSlidingLaw(c_till = T(law.c_till), q = T(law.q), u0 = T(law.u0))
+
+
+"""
+$(TYPEDSIGNATURES)
+
 The hydrology model described in Kazmierczak et al 2024 (https://doi.org/10.5194/tc-18-5887-2024). In our implementation here for
 the calculations of water flux, we make the assumption that on the grid we have Delta_x = Delta_y.
 """
-mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt} <: AbstractHydroModel
+mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw} <: AbstractHydroModel
 
     # Model constants
     rho_w           ::T    # Density of fresh water [kg/m3]
@@ -57,6 +168,10 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipa
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration prints its timing/convergence summary each call
+    sliding_law             ::L    # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
+    max_coupling_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
+    coupling_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
+    coupling_verbose        ::Bool # Whether the (q, N) coupling Picard iteration prints its timing/convergence summary each call
 
     # Geometric potential
     phi0                   ::A  # Geometric potential [Pa]
@@ -71,12 +186,14 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipa
     # Water flux
     visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
-    mdot       ::A  # mass basal melt rate per unit area [Kg / m^2 / s]
-    mdot_total ::A  # mdot plus the dissipation melt rate |q * grad(phi0)| / L_w [Kg / m^2 / s]
+    mdot       ::A  # mass basal melt rate per unit area, background (G - q_T)/L_w term supplied by the caller [Kg / m^2 / s]
+    mdot_total ::A  # mdot plus the dissipation melt term and/or the frictional-heating term tau_b*v_b/L_w, whichever are active [Kg / m^2 / s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
     corfac     ::A  # Correction factor to go from psi_out to q
     q          ::A  # Distributed water flux [m2/s]
-    q_prev     ::A  # q from the previous Picard sweep, for the dissipation-melt convergence check
+    q_prev     ::A  # q from the previous Picard sweep, for the dissipation-melt/coupling convergence check
+    tau_b      ::A  # Basal shear stress from model.sliding_law, set by update_tau_b!(model, state, sliding_law) [Pa]
+    N_prev     ::A  # N from the previous Picard sweep, for the (q, N) coupling convergence check (only used when sliding_law is N-dependent)
 
     # Effective pressure and Bed state
     Q       ::A  # Volumetric water flux within a conduit [m3/s]
@@ -100,6 +217,13 @@ The constructor to the Kazmierczak et al 2024 hydrology model. All fields are in
 the viscosity parameter A_visc from Glen's flow, the kappa field describing the hardness of the bed, and the absolute value
 of the basal velocity of the ice. These three fields are given values from an input file. The user must provide these fields
 for the simulation to be able to start.
+
+`mdot_in` should carry only the sliding-independent part of the melt rate ((G - q_T)/L_w in Eq. 3 of
+Kazmierczak et al 2024); the frictional-heating term tau_b*v_b/L_w is added on top of it during the
+simulation according to the `sliding_law` keyword (`NoSlidingLaw()` by default, matching the
+original behaviour where `mdot_in` was assumed to be the complete melt rate). See the `AbstractSlidingLaw`
+docstring in model.jl for the available laws and `resolve_q!` in water_flux.jl for how N-dependent laws
+widen the existing dissipation-melt Picard loop into a joint (q, N) fixed point.
 
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
@@ -139,7 +263,11 @@ function KazmierczakHydroModel(
     max_dissipation_iters = 20,
     dissipation_rtol       = 1e-12,
     dissipation_melt        = true,
-    dissipation_verbose     = true
+    dissipation_verbose     = true,
+    sliding_law         = NoSlidingLaw(),
+    max_coupling_iters  = 20,
+    coupling_rtol       = 1e-8,
+    coupling_verbose    = true
 )
 
     expected_size = (grid.Nx, grid.Ny)
@@ -173,6 +301,9 @@ function KazmierczakHydroModel(
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol)
     dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
+    max_coupling_iters  = Int(max_coupling_iters)
+    coupling_rtol       = T(coupling_rtol)
+    sliding_law         = convert_sliding_law(T, sliding_law)
 
     # Geometric potential
     phi0          = alloc_field(grid)
@@ -193,6 +324,8 @@ function KazmierczakHydroModel(
     corfac     = alloc_field(grid)
     q          = alloc_field(grid)
     q_prev     = alloc_field(grid)
+    tau_b      = alloc_field(grid)
+    N_prev     = alloc_field(grid)
 
     # Effective pressure
     Q       = alloc_field(grid)
@@ -209,9 +342,10 @@ function KazmierczakHydroModel(
     return KazmierczakHydroModel(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
         max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
+        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose,
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev,
+        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 

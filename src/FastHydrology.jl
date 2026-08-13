@@ -18,6 +18,7 @@ include("grid.jl")
 include("operations.jl")
 include("fft_convolution.jl")
 include("model.jl")
+include("sliding_law.jl")
 include("state.jl")
 include("simulation.jl")
 include("run.jl")
@@ -35,6 +36,10 @@ export minus_gradient_x!, minus_gradient_y!
 
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
+export AbstractSlidingLaw, NoSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw
+
+# sliding_law.jl
+export calc_tau_b, update_tau_b!
 
 # state.jl
 export AbstractHydroState, HydroState

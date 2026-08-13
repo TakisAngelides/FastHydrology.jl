@@ -96,6 +96,95 @@ field_values(field) = interior(field, :, :, 1)
         @test all(isfinite, field_values(model_capped.q))
     end
 
+    @testset "Sliding laws: calc_tau_b" begin
+        N  = 1e5   # Pa
+        vb = 200.0 / (60^2 * 24 * 365.25)  # m/s
+
+        @test calc_tau_b(NoSlidingLaw(), N, vb) == 0.0
+
+        law_w = WeertmanSlidingLaw(C = 1e7, q = 1/3)
+        @test calc_tau_b(law_w, N, vb) ≈ 1e7 * vb^(1/3)
+        # Independent of N.
+        @test calc_tau_b(law_w, N, vb) == calc_tau_b(law_w, 2 * N, vb)
+
+        law_pp = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0))
+        @test calc_tau_b(law_pp, N, vb) ≈ 0.5 * N * (vb / law_pp.u0)^1.0
+        @test calc_tau_b(law_pp, 0.0, vb) == 0.0
+
+        law_rc = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
+        @test calc_tau_b(law_rc, N, vb) ≈ 0.5 * N * (vb / (vb + law_rc.u0))^(1/3)
+        # Saturates toward the Coulomb limit c_till * N as v_b -> infinity.
+        @test calc_tau_b(law_rc, N, 1e10) ≈ 0.5 * N atol = 1e-3 * N
+    end
+
+    @testset "KazmierczakHydroModel with WeertmanSlidingLaw" begin
+        # Weertman tau_b does not depend on N, so it needs no Picard loop: a single pass is exact.
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+        state = HydroState(grid, mask, h, b)
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        law   = WeertmanSlidingLaw(C = 1e7, q = 1/3)
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                       sliding_law = law, dissipation_melt = false, dissipation_verbose = false)
+
+        run!(SteadyStateSimulation(model, grid, state))
+
+        @test all(isfinite, field_values(model.q))
+        @test all(field_values(model.tau_b) .≈ 1e7 .* field_values(model.abs_v_b) .^ (1/3))
+        @test all(field_values(model.mdot_total) .>= field_values(model.mdot))
+    end
+
+    @testset "KazmierczakHydroModel with N-dependent sliding laws (q, N) coupling" begin
+        # PowerPlasticSlidingLaw and RegularizedCoulombSlidingLaw make tau_b depend on N, which is
+        # itself downstream of q, so resolve_q! widens its Picard loop to also update N each sweep
+        # (see water_flux.jl). Exercise both laws, with and without the (independent) dissipation
+        # melt term, and confirm the joint loop produces finite, physically sane results.
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        for law in (
+            PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
+            RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0)),
+        ), dissipation_melt in (false, true)
+
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                           sliding_law = law, dissipation_melt = dissipation_melt,
+                                           dissipation_verbose = false, coupling_verbose = false)
+            state = HydroState(grid, mask, h, b)
+            run!(SteadyStateSimulation(model, grid, state))
+
+            @test all(isfinite, field_values(state.N))
+            @test all(isfinite, field_values(model.q))
+            @test all(isfinite, field_values(model.tau_b))
+            @test all(>=(0.0), field_values(state.N))
+            @test all(>=(0.0), field_values(model.tau_b))
+            # Frictional heating only adds to the background melt rate.
+            @test all(field_values(model.mdot_total) .>= field_values(model.mdot))
+        end
+
+        # max_coupling_iters is a hard cap: it must not error even when it cuts the Picard
+        # iteration off before convergence.
+        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                              sliding_law = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
+                                              max_coupling_iters = 1, coupling_verbose = false)
+        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
+        @test all(isfinite, field_values(model_capped.q))
+    end
+
     @testset "KazmierczakHydroModel with a flat, zero-flux region" begin
         # Regression test: on real datasets (THWAITES), a few cells beyond the glacier extent
         # have h=b=0 (flat, zero geometric-potential gradient) and mask=0 (zero water flux).
@@ -166,6 +255,10 @@ field_values(field) = interior(field, :, :, 1)
                 elseif bed_rheology == :soft
                     @test all(==(1.0), κ)
                 end
+
+                # Regression test: `ub` is stored per-year (like `Bmelt`), so `abs_v_b` must come
+                # back converted to m/s -- previously it was passed through raw.
+                @test all(≈(perYear2perSecond(100.0)), abs_v_b)
             end
         end
     end
@@ -203,6 +296,15 @@ field_values(field) = interior(field, :, :, 1)
                 elseif bed_rheology == :soft
                     @test all(==(1.0), κ)
                 end
+
+                # Regression test: ux_b/uy_b carry a "units" = "m/yr" attribute in real yelmox
+                # restart files, so abs_v_b = sqrt(ux_b^2 + uy_b^2) must come back converted to m/s.
+                @test all(≈(perYear2perSecond(sqrt(50.0^2 + 50.0^2))), abs_v_b)
+
+                # Regression test: bmb also carries a "units" = "m/yr" attribute and is an
+                # ice-equivalent thickness rate (Yelmo.jl: bmb = -Q_net / (rho_ice * L_ice)), so ṁ
+                # must come back converted to m/s and scaled by rho_ice = 917.0, not left raw.
+                @test all(≈(perYear2perSecond(-0.1) * 917.0), ṁ)
             end
         end
     end
