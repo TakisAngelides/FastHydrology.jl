@@ -31,7 +31,14 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
     # reach ~2634, which is only plausible as m/yr (a fast Thwaites trunk speed) -- taken as literal
     # m/s that would be supersonic ice flow.
     abs_v_b = perYear2perSecond.(data["ub"])
-    A_visc = data["A"]
+    # `A` (Glen's law rate factor) is also stored per-year: KORI-ULB's own reference implementation
+    # of this effective-pressure formula (SchoofWaterFarField.m in
+    # https://github.com/FrankPat/Kori-ULB/blob/main/subroutines/SchoofWaterFarField.m) explicitly
+    # does `A = A/par.secperyear` alongside the same conversion for `ub`, confirming the source data
+    # convention -- left unconverted, A_visc was ~3e7x too large, pinning N_inf at its sigmat*Po
+    # floor almost everywhere (a degenerate, uniformly-low N field, not the sensible ~5 MPa
+    # background with narrow low-N channels this model actually produces once fixed).
+    A_visc = perYear2perSecond.(data["A"])
     ṁ = perYear2perSecond.(data["Bmelt"]) .* 1000 # They stored this variable in per year units and as ṁ/ρ_w so we multiply by ρ_w = 1000 to get ṁ
 
     # Note: x and y are swapped in the file, and converted from km to m
@@ -113,7 +120,11 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     # test/local_experiments/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
     # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
     abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
-    A_visc = mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1]
+    # ATT (Glen's law rate factor) is also per-year: Yelmo.jl's own rate-factor constants are
+    # explicitly documented in units of [1/yr / Pa^3] (src/mat/rate_factor.jl, e.g.
+    # `_RF_GB_A0_1 = 1.25671e-5 [1/yr / Pa^3]`), confirming ATT itself comes out per-year -- the
+    # same convention as ux_b/uy_b/bmb above, not the Pa^-n s^-1 SI this model expects.
+    A_visc = perYear2perSecond.(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1])
     # bmb ("Combined basal mass balance") also carries a "units" = "m/yr" attribute, and is an
     # ice-equivalent thickness rate: Yelmo.jl's own definition (src/thrm/helpers.jl) is
     # `bmb = -Q_net / (rho_ice * L_ice)`, i.e. a heat flux divided by rho_ice (not rho_w) -- the

@@ -259,6 +259,11 @@ field_values(field) = interior(field, :, :, 1)
                 # Regression test: `ub` is stored per-year (like `Bmelt`), so `abs_v_b` must come
                 # back converted to m/s -- previously it was passed through raw.
                 @test all(≈(perYear2perSecond(100.0)), abs_v_b)
+
+                # Regression test: `A` is also stored per-year (confirmed against KORI-ULB's own
+                # SchoofWaterFarField.m, which divides A by secperyear alongside ub), so A_visc must
+                # come back converted to Pa^-n s^-1 -- previously it was passed through raw.
+                @test all(≈(perYear2perSecond(1e-24)), A_visc)
             end
         end
     end
@@ -300,6 +305,11 @@ field_values(field) = interior(field, :, :, 1)
                 # Regression test: ux_b/uy_b carry a "units" = "m/yr" attribute in real yelmox
                 # restart files, so abs_v_b = sqrt(ux_b^2 + uy_b^2) must come back converted to m/s.
                 @test all(≈(perYear2perSecond(sqrt(50.0^2 + 50.0^2))), abs_v_b)
+
+                # Regression test: ATT (Glen's law rate factor) is documented in [1/yr / Pa^3] by
+                # Yelmo.jl's own rate_factor.jl constants, so A_visc must come back converted to
+                # Pa^-n s^-1.
+                @test all(≈(perYear2perSecond(1e-24)), A_visc)
 
                 # Regression test: bmb also carries a "units" = "m/yr" attribute and is an
                 # ice-equivalent thickness rate (Yelmo.jl: bmb = -Q_net / (rho_ice * L_ice)), so ṁ
