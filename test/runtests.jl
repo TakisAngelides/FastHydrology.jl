@@ -49,6 +49,32 @@ field_values(field) = interior(field, :, :, 1)
         @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
     end
 
+    @testset "KazmierczakHydroModel q clamp is per-year 1e5, not raw 1e5" begin
+        # Regression test: KORI-ULB's own SubWaterFlux.m clamps its per-year-native flw at
+        # 1e5 m2/yr (confirmed against a real KORI-ULB output file's flw field, which is genuinely
+        # pinned at exactly 1e5 in the fastest-draining cells). q here is SI (m2/s), so the bare
+        # literal 1e5 used to make this clamp a no-op (~3.16e7x too permissive to ever bind). Force
+        # an extreme mdot so q would blow well past perYear2perSecond(1e5) unclamped, and check it's
+        # actually capped there.
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+        state = HydroState(grid, mask, h, b)
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1.0, 5, 5)  # extreme -- forces the routing algorithm well past the clamp
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+
+        run!(SteadyStateSimulation(model, grid, state))
+
+        q_max = perYear2perSecond(1e5)
+        @test all(<=(q_max), field_values(model.q))
+        @test any(>=(q_max - 1e-12), field_values(model.q))
+    end
+
     @testset "KazmierczakHydroModel dissipation melt term" begin
         # dissipation_melt toggles whether update_q! includes the |q * grad(phi0)| / L_w
         # source term (Eq. 3, Sec. 2.2.2 of Kazmierczak et al 2024, dropped there as negligible).
