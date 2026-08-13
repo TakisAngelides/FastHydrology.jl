@@ -92,3 +92,36 @@ The effective pressure N [MPa].
 fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, display_flag = display_flag, colorrange = (0, 10))
 ````
 
+## Adding a basal sliding law
+
+By default `sliding_law = NoSlidingLaw()`, so `mdot_in` alone is assumed to already be the
+complete melt rate. Passing a pressure-dependent sliding law instead adds the frictional-heating
+term tau_b*v_b/L_w (Eq. 3 of Kazmierczak et al 2024) on top of it, computed from a basal shear
+stress `tau_b(N, v_b)`. Since tau_b then depends on the effective pressure N, which is itself
+downstream of q, `resolve_q!` widens its Picard loop to solve for q and N jointly rather than
+nesting a second loop around the first -- see the `sliding_law` keyword on
+[`KazmierczakHydroModel`](@ref) and `resolve_q!`'s docstring for the physics and the loop design.
+
+`PowerPlasticSlidingLaw` and `RegularizedCoulombSlidingLaw` are written to match the two sliding
+laws implemented in [Yelmo.jl](https://github.com/palma-ice/yelmo)'s `basal_dragging.jl`
+(`beta_method` 1/2/4 and 3/5 respectively), so a future ice-dynamics coupling can configure both
+sides with numerically matching laws. The parameters below (`c_till`, `q`, `u0`) are illustrative,
+not calibrated to Thwaites.
+
+````@example Kazmierczak2024
+sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
+model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ;
+                                       sliding_law = sliding_law, dissipation_verbose = false, coupling_verbose = false);
+state_sliding = HydroState(grid, mask, h, b);
+run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
+nothing #hide
+````
+
+The resulting basal shear stress tau_b [MPa].
+
+````@example Kazmierczak2024
+model_sliding.tau_b .*= 1e-6 # makes tau_b [MPa]
+model_sliding.tau_b .= mask_field(model_sliding.tau_b, state_sliding.mask, NaN)
+fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stress tau_b [MPa]", transpose_data = true, display_flag = display_flag, colorrange = extrema(filter(!isnan, model_sliding.tau_b.data)))
+````
+
