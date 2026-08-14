@@ -1,4 +1,12 @@
 /Manifest*.toml
 .DS_Store
-local_experiments
 docs/src/examples/input/
+
+# Only the maintained test suite is tracked under test/ (runtests.jl plus the files it includes,
+# and the test-only Project.toml). Everything else -- exploratory/one-off scripts, real datasets,
+# generated figures -- is ignored wholesale so new scratch folders never need a new .gitignore line.
+/test/*
+!/test/Project.toml
+!/test/runtests.jl
+!/test/array_grid_test.jl
+!/test/shakti_ext_test.jl

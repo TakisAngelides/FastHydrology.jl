@@ -117,7 +117,7 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     ux_b = reshape(ds["ux_b"][:], Nx, Ny)
     uy_b = reshape(ds["uy_b"][:], Nx, Ny)
     # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against
-    # test/local_experiments/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
+    # test/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
     # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
     abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
     # ATT (Glen's law rate factor) is also per-year: Yelmo.jl's own rate-factor constants are
