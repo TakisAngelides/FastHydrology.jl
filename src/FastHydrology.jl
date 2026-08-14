@@ -3,16 +3,12 @@ module FastHydrology
 using Statistics: mean
 using Oceananigans
 using Oceananigans.BoundaryConditions: fill_halo_regions!
-using BenchmarkTools
 using ImageFiltering
 using FFTW
 using OffsetArrays
-using Base.Threads
 using DocStringExtensions
 using MAT
 using NCDatasets
-using CairoMakie
-using CairoMakie: Reverse
 
 include("grid.jl")
 include("operations.jl")
