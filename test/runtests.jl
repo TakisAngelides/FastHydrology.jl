@@ -236,6 +236,76 @@ field_values(field) = interior(field, :, :, 1)
         @test all(isfinite, field_values(state.N))
     end
 
+    @testset "update_psi_out_iterative! matches recursive update_psi_out!" begin
+        # update_psi_out_iterative! (water_flux.jl) is a stack-based rewrite of the recursive
+        # accumulate_psi_out!/update_psi_out! flow-routing algorithm, meant to be a drop-in
+        # equivalent (same visitation order: outer j-then-i loop, same 4-direction neighbour order),
+        # not just a numerically-close one. Both write psi_out only for mask == 1 cells, in the same
+        # per-cell 4-term summation order, so results should match exactly (not just approximately).
+        # A roughly circular grounded region (rather than a filled rectangle) gives every cell a
+        # different number/arrangement of grounded neighbours, exercising the boundary- and
+        # masked-neighbour branches that a uniform mask never reaches.
+        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
+        b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
+        state = HydroState(grid, mask, h, b)
+
+        kappa   = zeros(12, 12)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
+        A_visc  = fill(1e-24, 12, 12)
+        # A mix of melt (positive) and net-refreezing (negative) source cells, not a uniform
+        # positive mdot: accumulate_psi_out!'s max_psi_out_calls cap-trip branch returns before its
+        # final `max(0.0, psi_out)` clamp, so a cell cut off there can be left negative if its local
+        # mdot_total is negative -- a uniform positive mdot never exercises that path and would let
+        # update_psi_out_iterative! clamp there (silently diverging) without this test catching it.
+        mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+
+        for max_psi_out_calls in (50_000, 5) # 5 forces the safety cap to bind mid-sweep
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_psi_out_calls)
+            run!(SteadyStateSimulation(model, grid, state))
+
+            psi_out_recursive = copy(field_values(model.psi_out))
+
+            update_psi_out_iterative!(model, grid, state)
+            psi_out_iterative = field_values(model.psi_out)
+
+            @test psi_out_iterative[mask .== 1] == psi_out_recursive[mask .== 1]
+        end
+    end
+
+    @testset "KazmierczakHydroModel psi_out_algorithm keyword dispatches recursive vs iterative" begin
+        # End-to-end (not just a single psi_out sweep): route_psi_out! (water_flux.jl) dispatches on
+        # model.psi_out_algorithm, set via the psi_out_algorithm keyword (RecursivePsiOut() by
+        # default). Build two otherwise-identical models differing only in that keyword and confirm
+        # a full run! (including the dissipation-melt Picard loop, so route_psi_out! is called
+        # several times) converges to the same q and N.
+        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
+        b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
+
+        kappa   = zeros(12, 12)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
+        A_visc  = fill(1e-24, 12, 12)
+        mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+
+        model_recursive = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut())
+        model_iterative = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = IterativePsiOut())
+
+        @test model_recursive.psi_out_algorithm isa RecursivePsiOut
+        @test model_iterative.psi_out_algorithm isa IterativePsiOut
+
+        state_recursive = HydroState(grid, mask, h, b)
+        state_iterative = HydroState(grid, mask, h, b)
+
+        run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
+        run!(SteadyStateSimulation(model_iterative, grid, state_iterative))
+
+        @test field_values(model_iterative.q)[mask .== 1] == field_values(model_recursive.q)[mask .== 1]
+        @test field_values(state_iterative.N)[mask .== 1] == field_values(state_recursive.N)[mask .== 1]
+    end
+
     @testset "HABHydroModel steady state" begin
         # Regression test: update_N! used to call max(::Array, ::Array) instead of
         # max.(...), which threw a MethodError for any grid larger than a scalar.

@@ -94,26 +94,3 @@ Colorbar(fig[1, 2], hm)
 fig
 ````
 
-## Coupling to an ice flow model
-
-A coupled ice-flow simulation typically needs to update the ice geometry every timestep and only
-then advance the hydrology by one step, rather than handing the whole time loop over to
-`Shakti.run!`. `FastHydrology.step!` is the entry point for that: it advances the wrapped
-`Shakti.Simulation` by exactly one timestep (`Shakti.step!`, plus the matching `total_time[]`
-update that `Shakti.run!`'s own loop would otherwise apply), and leaves everything else --
-mutating geometry beforehand, reading fields back out afterward -- to the caller.
-
-````@example ShaktiCoupling
-for i in 1:3
-    # Stand-in for an ice flow model lowering the surface by 0.5 m this step.
-    shakti_sim.state.zs .-= 0.5
-
-    FastHydrology.step!(time_sim)
-
-    # `shakti_sim.state.N` now reflects the updated geometry, ready to feed into e.g. a sliding
-    # law for the next ice flow step.
-end
-
-heatmap(Array(shakti_sim.state.N); axis = (; title = "Effective pressure N [Pa] after coupled steps"))
-````
-

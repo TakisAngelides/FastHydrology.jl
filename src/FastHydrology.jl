@@ -33,6 +33,7 @@ export minus_gradient_x!, minus_gradient_y!
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 export AbstractSlidingLaw, NoSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw
+export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut
 
 # sliding_law.jl
 export calc_tau_b, update_tau_b!
@@ -50,7 +51,7 @@ export run!, step!, update_steady_state!
 export update_q!, update_W!
 export update_phi0!, potential_filling!
 export update_potential_gradients!, update_smoothed_potential_gradients!
-export accumulate_psi_out!, update_psi_out!
+export accumulate_psi_out!, update_psi_out!, update_psi_out_iterative!, route_psi_out!
 
 # effective_pressure.jl
 export update_N!, update_Po!, update_p_w!

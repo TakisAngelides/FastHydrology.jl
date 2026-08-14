@@ -78,6 +78,25 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Computes psi_out for the current sweep, dispatching on `model.psi_out_algorithm`
+(`RecursivePsiOut()` or `IterativePsiOut()` -- see `AbstractPsiOutAlgorithm`'s docstring in
+model.jl) to either the recursive `update_psi_out!` or the stack-based `update_psi_out_iterative!`.
+Every `resolve_q!` method calls this instead of `update_psi_out!` directly, so the algorithm choice
+applies uniformly regardless of which sliding law/dissipation-melt combination is active.
+"""
+route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState) =
+    route_psi_out!(model, grid, state, model.psi_out_algorithm)
+
+route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::RecursivePsiOut) =
+    update_psi_out!(model, grid, state)
+
+route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::IterativePsiOut) =
+    update_psi_out_iterative!(model, grid, state)
+
+
+"""
+$(TYPEDSIGNATURES)
+
 With the dissipation melt term off and an N-independent sliding law (`NoSlidingLaw`, which
 contributes nothing, or `WeertmanSlidingLaw`, whose tau_b does not depend on N), the water source
 has no dependence on q or N: a single pass through the routing algorithm already gives the exact
@@ -89,7 +108,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     update_tau_b!(model, state, sliding_law)
     @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w
 
-    update_psi_out!(model, grid, state)
+    route_psi_out!(model, grid, state)
 
     # q_max must be precomputed outside the broadcast -- see the note on q_max in the
     # DissipationMeltOn method below for why.
@@ -142,8 +161,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w +
                                abs(model.q * model.abs_grad_phi0) / model.L_w
 
-        # Compute psi_out via a recursive algorithm.
-        update_psi_out!(model, grid, state)
+        # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
+        route_psi_out!(model, grid, state)
 
         @. model.q = min(max(model.psi_out / model.corfac, 0.0), q_max)
 
@@ -202,7 +221,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w
         add_dissipation_term!(model, dissipation_melt)
 
-        update_psi_out!(model, grid, state)
+        route_psi_out!(model, grid, state)
         @. model.q = min(max(model.psi_out / model.corfac, 0.0), q_max)
 
         update_W!(model, grid, state)
@@ -492,6 +511,122 @@ function update_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     @inbounds for j in 1:Ny, i in 1:Nx
         if state.mask[i, j] == 1.0
             accumulate_psi_out!(model, i, j, grid, state, call_count)
+        end
+    end
+
+    return nothing
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Iterative counterpart to [`update_psi_out!`](@ref)/[`accumulate_psi_out!`](@ref): computes the exact
+same psi_out field with an explicit stack standing in for the Julia call stack, instead of true
+recursion. It exists purely to sidestep the recursive version's call-stack usage (and per-frame
+dispatch/allocation overhead) on large domains, not to change the algorithm -- so it must reproduce
+the recursive version's output cell-for-cell, `max_psi_out_calls` cutoff included.
+
+Each stack entry is `(i, j, k)`: `k == 0` means cell `(i, j)` has not been visited yet (do the
+first-visit work below); `1 <= k <= 4` means its first `k - 1` neighbours (in the same `dirs` order
+`accumulate_psi_out!` iterates) have already had their contribution folded into `psi_out[i, j]`, and
+neighbour `k` is next; `k == 5` means all four neighbours are done and `psi_out[i, j]` is ready to be
+clamped and finalized. Critically, when a not-yet-visited neighbour is found, we push it *without*
+advancing the current frame's `k` -- so once that child is popped (fully resolved, `visited = 1`), we
+revisit the same `(i, j, k)` frame, and it takes the "already visited" branch to fold the now-ready
+child value in and move on to `k + 1`. This is exactly how a return value flows back to a paused
+caller in real recursion, just made explicit.
+"""
+function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+
+    Nx = grid.Nx
+    Ny = grid.Ny
+    dx = grid.dx
+    dy = grid.dy
+
+    # Refresh visited cells field
+    model.visited .= 0.0
+
+    # Local counter, playing the same role as the `Ref`-shared `call_count` in the recursive
+    # version -- shared across the whole sweep since it lives outside the `stack` loop below.
+    call_count = 0
+
+    dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    stack = Tuple{Int, Int, Int}[]
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+
+        (state.mask[i, j] == 1.0 && model.visited[i, j] != 1.0) || continue
+
+        push!(stack, (i, j, 0))
+
+        while !isempty(stack)
+
+            si, sj, sk = stack[end]
+
+            if sk == 0
+
+                model.visited[si, sj] = 1.0
+                model.psi_out[si, sj] = model.mdot_total[si, sj] * dx * dy / model.rho_w
+
+                call_count += 1
+                if call_count > model.max_psi_out_calls
+                    @warn "update_psi_out_iterative! hit max_psi_out_calls = $(model.max_psi_out_calls) cells in one sweep -- cutting the flow-routing traversal off early at cell ($si, $sj), matching accumulate_psi_out!'s own cutoff. Pass a larger `max_psi_out_calls` to KazmierczakHydroModel if this grid genuinely has more grounded cells than the default allows." maxlog=1
+                    # Pop without clamping: accumulate_psi_out!'s own cap-trip branch returns
+                    # model.psi_out[i, j] immediately, *before* reaching its final `max(0.0, ...)`
+                    # clamp -- so a cell cut off here can end up left negative (raw, un-clamped
+                    # mdot_total-only source) if its local mdot_total is negative (net refreezing).
+                    # Matched here rather than "fixed", since the point of this function is to
+                    # reproduce the recursive version exactly, not to change its behaviour.
+                    pop!(stack)
+                else
+                    stack[end] = (si, sj, 1)
+                end
+
+            elseif sk <= 4
+
+                di, dj = dirs[sk]
+                ni, nj = si + di, sj + dj
+
+                # Off the edge of the domain: no neighbouring cell, so no upstream contribution can cross
+                # in (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
+                if !(1 <= ni <= Nx && 1 <= nj <= Ny)
+                    stack[end] = (si, sj, sk + 1)
+                    continue
+                end
+
+                w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
+
+                if w <= 0
+                    stack[end] = (si, sj, sk + 1)
+                    continue
+                end
+
+                # If the neighbour does not have grounded ice then it contributes 0, matching
+                # accumulate_psi_out!'s own mask check (which runs inside the recursive call, i.e.
+                # only once w > 0).
+                if state.mask[ni, nj] != 1.0
+                    stack[end] = (si, sj, sk + 1)
+                    continue
+                end
+
+                if model.visited[ni, nj] == 1.0
+                    # Neighbour already resolved (either earlier in this sweep, or as the child we
+                    # just popped back from): fold its value in and move to the next neighbour.
+                    model.psi_out[si, sj] += model.psi_out[ni, nj] * w
+                    stack[end] = (si, sj, sk + 1)
+                else
+                    # Neighbour not resolved yet: resolve it first, without advancing sk -- see
+                    # docstring.
+                    push!(stack, (ni, nj, 0))
+                end
+
+            else
+                # If the mdot is very negative that all the flux refreezes then we limit the flux to zero
+                model.psi_out[si, sj] = max(0.0, model.psi_out[si, sj])
+                pop!(stack)
+            end
         end
     end
 

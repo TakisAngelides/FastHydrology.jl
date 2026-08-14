@@ -27,6 +27,54 @@ struct DissipationMeltOff <: AbstractDissipationMelt end
 """
 $(TYPEDSIGNATURES)
 
+Trait selecting which flow-routing implementation `resolve_q!` uses to compute psi_out each sweep
+(see `KazmierczakHydroModel`'s `psi_out_algorithm` keyword). Stored as a type parameter, resolved by
+multiple dispatch at compile time via `route_psi_out!` in water_flux.jl, the same pattern as
+`AbstractDissipationMelt` above.
+
+`RecursivePsiOut` (`update_psi_out!`/`accumulate_psi_out!`) and `IterativePsiOut`
+(`update_psi_out_iterative!`) compute exactly the same field -- verified to match bit-for-bit,
+`max_psi_out_calls` cutoff included, on synthetic grids and on real Thwaites/pan-Antarctica datasets
+-- so switching between them changes performance and robustness, not results:
+- `RecursivePsiOut` (the default, preserving prior behaviour) is substantially faster (~30-40x
+  faster per sweep, benchmarked on Thwaites 2km and pan-Antarctica 8km) since Julia's native call
+  stack has far less overhead than an explicit heap-allocated stack. But it recurses as deep as the
+  longest flow-routing chain in the domain, which for real (non-toy) ice-sheet grids can exceed the
+  calling process's `ulimit -s` and crash with a `StackOverflowError` -- independent of, and
+  potentially before, `max_psi_out_calls` ever binds (that cap limits total cells visited per sweep,
+  not recursion depth along any one chain).
+- `IterativePsiOut` has no such requirement (its "stack" is a plain `Vector`, bounded only by heap
+  memory), at the cost of that ~30-40x slowdown. Prefer it for large/convoluted domains, or whenever
+  running under a constrained/unknown stack limit (CI, HPC job schedulers, etc.) where raising
+  `ulimit -s` isn't an option.
+"""
+abstract type AbstractPsiOutAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Route psi_out with the original recursive algorithm (`update_psi_out!`/`accumulate_psi_out!`;
+`KazmierczakHydroModel`'s default `psi_out_algorithm`). Substantially faster than
+[`IterativePsiOut`](@ref) (~30-40x per sweep, benchmarked on Thwaites 2km and pan-Antarctica 8km),
+but recurses as deep as the domain's longest flow-routing chain -- see
+[`AbstractPsiOutAlgorithm`](@ref)'s docstring for when that's a problem.
+"""
+struct RecursivePsiOut <: AbstractPsiOutAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Route psi_out with a stack-based rewrite of the same algorithm (`update_psi_out_iterative!`),
+verified to match [`RecursivePsiOut`](@ref) bit-for-bit. Its "stack" is a heap-allocated `Vector`
+rather than the native call stack, so it has no recursion-depth limit -- at the cost of that
+~30-40x slowdown. See [`AbstractPsiOutAlgorithm`](@ref)'s docstring for the full trade-off.
+"""
+struct IterativePsiOut <: AbstractPsiOutAlgorithm end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Basal sliding law used to compute the frictional-heating term tau_b * v_b in the melt rate (Eq. 3,
 Sec. 2.2.1 of Kazmierczak et al 2024): mdot = (G + tau_b*v_b - q_T) / L_w + mdot_w. `calc_tau_b`
 (a plain scalar formula) and `update_tau_b!` (the field-broadcast version actually used in
@@ -144,7 +192,7 @@ once the model is constructed and never touched again during a solve. Split out 
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_i           ::T    # Density of ice [kg/m3]
@@ -167,6 +215,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
+    psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
@@ -246,8 +295,8 @@ if a field is inserted out of order.
 `workspace`, so nothing in water_flux.jl/effective_pressure.jl/sliding_law.jl/run.jl needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw} <: AbstractHydroModel
-    params    ::KazmierczakParams{T, D, L}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm} <: AbstractHydroModel
+    params    ::KazmierczakParams{T, D, L, P}
     workspace ::KazmierczakWorkspace{A}
 end
 
@@ -278,6 +327,10 @@ simulation according to the `sliding_law` keyword (`NoSlidingLaw()` by default, 
 original behaviour where `mdot_in` was assumed to be the complete melt rate). See the `AbstractSlidingLaw`
 docstring in model.jl for the available laws and `resolve_q!` in water_flux.jl for how N-dependent laws
 widen the existing dissipation-melt Picard loop into a joint (q, N) fixed point.
+
+The `psi_out_algorithm` keyword (`RecursivePsiOut()` by default) selects which flow-routing
+implementation `resolve_q!` uses each sweep to compute psi_out -- see the `AbstractPsiOutAlgorithm`
+docstring above for the `RecursivePsiOut`/`IterativePsiOut` speed-vs-stack-robustness trade-off.
 
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
@@ -315,6 +368,7 @@ function KazmierczakHydroModel(
     sigmat        = 0.02,
     fill_iters    = 10,
     max_psi_out_calls = 50_000,
+    psi_out_algorithm = RecursivePsiOut(),
     max_dissipation_iters = 20,
     dissipation_rtol       = 1e-12,
     dissipation_melt        = true,
@@ -397,7 +451,7 @@ function KazmierczakHydroModel(
 
     params = KazmierczakParams(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
-        max_psi_out_calls, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
+        max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
     )
 
