@@ -81,9 +81,13 @@ arguments, units, and governing equations.
 
 ## Examples
 
-Two complete, runnable examples against real Thwaites Glacier and whole-Antarctica input data are
-included, plus a synthetic example of the `ShaktiHydroModel` extension and of the `ArrayHydroGrid`
-backend:
+Four examples are included. [Coupling to Shakti.jl](@ref ShaktiCoupling) and
+[Plain-array grid](@ref ArrayGrid) run on small synthetic geometry and execute live as part of the
+docs build. [Kazmierczak et al 2024](@ref Kazmierczak2024) and [Height above buoyancy (HAB)](@ref
+HAB) run against real Thwaites Glacier data instead; that dataset (~90 MB) isn't shipped with the
+repository, so those two pages render pre-generated figures from a real run, with the full
+data-loading/model/run pipeline included as reference code and instructions for reproducing it
+yourself:
 
 - [Kazmierczak et al 2024](@ref Kazmierczak2024)
 - [Height above buoyancy (HAB)](@ref HAB)
@@ -118,7 +122,9 @@ implement `alloc_field`.
   coupling smoothing in `water_flux.jl`) that avoids ImageFiltering.jl's per-call allocation.
 - `model.jl` -- the model structs and their constructors, including [`ShaktiHydroModel`](@ref), and
   the [`AbstractSlidingLaw`](@ref) hierarchy used by [`KazmierczakHydroModel`](@ref)'s
-  `sliding_law` keyword.
+  `sliding_law` keyword. [`KazmierczakHydroModel`](@ref) itself composes `KazmierczakParams`
+  (physical constants/solver config) and `KazmierczakWorkspace` (array buffers) behind a
+  transparent `model.<field>` interface, rather than one struct with both flattened together.
 - `sliding_law.jl` -- [`calc_tau_b`](@ref)/[`update_tau_b!`](@ref), turning an
   [`AbstractSlidingLaw`](@ref) plus the current effective pressure and sliding velocity into a
   basal shear stress.
@@ -130,10 +136,18 @@ implement `alloc_field`.
 - `effective_pressure.jl` -- effective pressure for both models.
 - `data_loaders.jl` -- `load_Kazmierczak` and `load_yelmox`, for reading `.mat`/`.nc` input data
   into the arrays the constructors above expect.
-- `utilities.jl`, `plotting.jl` -- unit conversions and visualization helpers.
+- `utilities.jl` -- unit conversions and grid-geometry helpers.
+- `plotting.jl` -- [`mask_field`](@ref), plus stub declarations for
+  [`visualize_field`](@ref)/[`visualize_grid`](@ref) (their implementations live in
+  `../ext/FastHydrologyMakieExt.jl`, see below).
 - `../ext/FastHydrologyShaktiExt.jl` -- package extension adding the `run!`/`step!` methods that
   make [`ShaktiHydroModel`](@ref) actually runnable, active only once `Shakti` is loaded alongside
   `FastHydrology`.
+- `../ext/FastHydrologyMakieExt.jl` -- package extension adding
+  [`visualize_field`](@ref)/[`visualize_grid`](@ref)'s implementations, active only once a Makie
+  backend (e.g. `CairoMakie`) is loaded alongside `FastHydrology`. Kept as an extension rather than
+  a hard dependency since CairoMakie is one of the slower-compiling packages in the ecosystem and
+  plotting isn't needed to run a simulation.
 
 ## Testing
 

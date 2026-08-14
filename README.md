@@ -84,8 +84,10 @@ run!(sim)
 # state.N and state.W (and, for KazmierczakHydroModel, model.q) now hold the solution.
 ```
 
-See [`docs/src/examples`](docs/src/examples) for complete, runnable examples against real
-Thwaites Glacier and whole-Antarctica input data, or the
+See [`docs/src/examples`](docs/src/examples) for four examples: two that run live on small
+synthetic geometry (`ShaktiCoupling`, `ArrayGrid`), and two against real Thwaites Glacier data
+(`Kazmierczak2024`, `HAB`) whose rendered pages show pre-generated figures with the full pipeline
+included as reference code, since that ~90 MB dataset isn't shipped with the repository. See the
 [online documentation](https://TakisAngelides.github.io/FastHydrology.jl/dev/) for the rendered
 versions.
 
@@ -116,6 +118,9 @@ needs to implement `alloc_field`.
   coupling smoothing in `water_flux.jl`) that avoids `ImageFiltering.jl`'s per-call allocation.
 - `model.jl` -- the model structs and their constructors, including `ShaktiHydroModel`, and the
   `AbstractSlidingLaw` hierarchy used by `KazmierczakHydroModel`'s `sliding_law` keyword.
+  `KazmierczakHydroModel` itself composes `KazmierczakParams` (physical constants/solver config) and
+  `KazmierczakWorkspace` (array buffers) behind a transparent `model.<field>` interface, rather than
+  one struct with both flattened together.
 - `sliding_law.jl` -- `calc_tau_b`/`update_tau_b!`, turning an `AbstractSlidingLaw` plus the current
   effective pressure and sliding velocity into a basal shear stress.
 - `state.jl` -- `HydroState`.
@@ -126,10 +131,16 @@ needs to implement `alloc_field`.
 - `effective_pressure.jl` -- effective pressure for both models.
 - `data_loaders.jl` -- `load_Kazmierczak` and `load_yelmox`, for reading `.mat`/`.nc` input data
   into the arrays the constructors above expect.
-- `utilities.jl`, `plotting.jl` -- unit conversions and visualization helpers.
+- `utilities.jl` -- unit conversions and grid-geometry helpers.
+- `plotting.jl` -- `mask_field`, plus stub declarations for `visualize_field`/`visualize_grid`
+  (their implementations live in `../ext/FastHydrologyMakieExt.jl`, see below).
 - `../ext/FastHydrologyShaktiExt.jl` -- package extension adding the `run!`/`step!` methods that
   make `ShaktiHydroModel` actually runnable, active only once `Shakti` is loaded alongside
   `FastHydrology`.
+- `../ext/FastHydrologyMakieExt.jl` -- package extension adding `visualize_field`/`visualize_grid`'s
+  implementations, active only once a Makie backend (e.g. `CairoMakie`) is loaded alongside
+  `FastHydrology`. Kept as an extension rather than a hard dependency since CairoMakie is one of the
+  slower-compiling packages in the ecosystem and plotting isn't needed to run a simulation.
 
 ## Testing
 

@@ -221,6 +221,10 @@ Km2m
 
 Convenience wrappers around CairoMakie.jl for visualizing fields and grid geometry, primarily
 intended for interactive exploration and for generating the figures in the [Examples](@ref).
+[`visualize_field`](@ref)/[`visualize_grid`](@ref) are defined unconditionally (no hard dependency
+on CairoMakie), but only become usable once a Makie backend is loaded alongside `FastHydrology`,
+since their implementations live in the `FastHydrologyMakieExt` package extension --
+[`mask_field`](@ref) needs no plotting library and works regardless.
 
 ```@docs
 visualize_grid

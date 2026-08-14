@@ -201,12 +201,6 @@ git-tree-sha1 = "8c290a1b223deaeea9aea44b235d24546da8eb98"
 uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.4.0"
 
-[[deps.BenchmarkTools]]
-deps = ["Compat", "JSON", "Logging", "PrecompileTools", "Printf", "Profile", "Statistics", "UUIDs"]
-git-tree-sha1 = "9670d3febc2b6da60a0ae57846ba74670290653f"
-uuid = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
-version = "1.8.0"
-
 [[deps.BibInternal]]
 deps = ["TestItems"]
 git-tree-sha1 = "9bdbf50f7a887f765688cc91e69ca9640146f583"
@@ -551,12 +545,6 @@ git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
 uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
 
-[[deps.DataDeps]]
-deps = ["HTTP", "Libdl", "Reexport", "SHA", "Scratch", "p7zip_jll"]
-git-tree-sha1 = "75226661988f5b66a4c52358933eaa43b9278bb2"
-uuid = "124859b0-ceae-595e-8997-d05f6a7a8dfe"
-version = "0.7.14"
-
 [[deps.DataStructures]]
 deps = ["OrderedCollections"]
 git-tree-sha1 = "b0bc6d2cad1fed8b7fd59a1551a991cb3d2809e6"
@@ -717,13 +705,14 @@ uuid = "f5851436-0d7a-5f13-b9de-f02708fd171a"
 version = "3.3.12+0"
 
 [[deps.FastHydrology]]
-deps = ["BenchmarkTools", "CairoMakie", "DataDeps", "DocStringExtensions", "Documenter", "DocumenterCitations", "DocumenterTools", "Downloads", "FFTW", "FileIO", "ImageFiltering", "JLD2", "LinearAlgebra", "Literate", "MAT", "Makie", "NCDatasets", "Oceananigans", "OffsetArrays", "SpecialFunctions", "Statistics"]
+deps = ["DocStringExtensions", "FFTW", "ImageFiltering", "LinearAlgebra", "MAT", "NCDatasets", "Oceananigans", "OffsetArrays", "SpecialFunctions", "Statistics"]
 path = ".."
 uuid = "91547ff3-b885-4d35-ac59-f1ca93abc87d"
-version = "1.0.0-DEV"
-weakdeps = ["Shakti"]
+version = "1.0.0"
+weakdeps = ["CairoMakie", "Shakti"]
 
     [deps.FastHydrology.extensions]
+    FastHydrologyMakieExt = "CairoMakie"
     FastHydrologyShaktiExt = "Shakti"
 
 [[deps.FileIO]]
@@ -2051,11 +2040,6 @@ version = "0.5.7"
 [[deps.Printf]]
 deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-version = "1.11.0"
-
-[[deps.Profile]]
-deps = ["StyledStrings"]
-uuid = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
 version = "1.11.0"
 
 [[deps.ProgressMeter]]
