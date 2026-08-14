@@ -1,3 +1,4 @@
 /Manifest*.toml
 .DS_Store
 local_experiments
+docs/src/examples/input/
