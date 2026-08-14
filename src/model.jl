@@ -138,12 +138,14 @@ convert_sliding_law(::Type{T}, law::RegularizedCoulombSlidingLaw) where {T <: Ab
 """
 $(TYPEDSIGNATURES)
 
-The hydrology model described in Kazmierczak et al 2024 (https://doi.org/10.5194/tc-18-5887-2024). In our implementation here for
-the calculations of water flux, we make the assumption that on the grid we have Delta_x = Delta_y.
+Physical constants and solver configuration for `KazmierczakHydroModel` -- everything that is fixed
+once the model is constructed and never touched again during a solve. Split out from
+`KazmierczakWorkspace` (the mutable array buffers) so the two can be reasoned about and constructed
+independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
+for how the split is made transparent to callers.
 """
-mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw} <: AbstractHydroModel
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw}
 
-    # Model constants
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_i           ::T    # Density of ice [kg/m3]
     g               ::T    # Gravitational acceleration [m/s2]
@@ -164,14 +166,29 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipa
     longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0
+    max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
-    dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration prints its timing/convergence summary each call
+    dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
     sliding_law             ::L    # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
     max_coupling_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
     coupling_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
-    coupling_verbose        ::Bool # Whether the (q, N) coupling Picard iteration prints its timing/convergence summary each call
+    coupling_verbose        ::Bool # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Every array buffer `KazmierczakHydroModel` touches during a solve -- allocated once at construction
+and updated in place by `update_q!`/`update_W!`/`update_N!` and their helpers. Split out from
+`KazmierczakParams` (the immutable physical constants/config); see `KazmierczakHydroModel` for how
+the split is made transparent to callers. Not `mutable` itself: nothing ever reassigns a field of
+this struct, only the contents of the arrays it holds (`model.q .= ...`, never `model.q = ...`).
+"""
+struct KazmierczakWorkspace{A}
 
     # Geometric potential
     phi0                   ::A  # Geometric potential [Pa]
@@ -207,6 +224,43 @@ mutable struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipa
     N_inf   ::A  # Far-field (away from grounding line) effective pressure [Pa]
     Po      ::A  # Ice overburden pressure (rho_i * g * ice_thickness) [Pa]
 
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+The hydrology model described in Kazmierczak et al 2024 (https://doi.org/10.5194/tc-18-5887-2024).
+dx != dy grids are supported: every step of the water-flux calculation (including the
+stress-gradient coupling kernel in `update_smoothed_potential_gradients!`) works from dx and dy
+separately rather than assuming square cells.
+
+Composed of a `KazmierczakParams` (physical constants and solver configuration, immutable) and a
+`KazmierczakWorkspace` (every array buffer the solve touches, allocated once and updated in place),
+rather than one struct with the ~40 fields of both flattened together. This keeps the constructor's
+positional argument list short and grouped by struct instead of one long tuple that silently breaks
+if a field is inserted out of order.
+
+`model.<field>` (e.g. `model.rho_w`, `model.q`) still resolves exactly as before the split:
+`Base.getproperty` is overridden below to look up unrecognized field names on `params` then
+`workspace`, so nothing in water_flux.jl/effective_pressure.jl/sliding_law.jl/run.jl needed to
+change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
+"""
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw} <: AbstractHydroModel
+    params    ::KazmierczakParams{T, D, L}
+    workspace ::KazmierczakWorkspace{A}
+end
+
+function Base.getproperty(model::KazmierczakHydroModel, name::Symbol)
+    name === :params    && return getfield(model, :params)
+    name === :workspace && return getfield(model, :workspace)
+    params = getfield(model, :params)
+    hasfield(typeof(params), name) && return getfield(params, name)
+    return getfield(getfield(model, :workspace), name)
+end
+
+function Base.propertynames(model::KazmierczakHydroModel, private::Bool = false)
+    return (fieldnames(typeof(getfield(model, :params)))..., fieldnames(typeof(getfield(model, :workspace)))..., :params, :workspace)
 end
 
 
@@ -260,6 +314,7 @@ function KazmierczakHydroModel(
     longcoupwater = 5.0,
     sigmat        = 0.02,
     fill_iters    = 10,
+    max_psi_out_calls = 50_000,
     max_dissipation_iters = 20,
     dissipation_rtol       = 1e-12,
     dissipation_melt        = true,
@@ -298,6 +353,7 @@ function KazmierczakHydroModel(
     longcoupwater = T(longcoupwater)
     sigmat        = T(sigmat)
     fill_iters    = Int(fill_iters)
+    max_psi_out_calls = Int(max_psi_out_calls)
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol)
     dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
@@ -339,15 +395,20 @@ function KazmierczakHydroModel(
     N_inf   = alloc_field(grid)
     Po      = alloc_field(grid)
 
-    return KazmierczakHydroModel(
+    params = KazmierczakParams(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
-        max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
-        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose,
+        max_psi_out_calls, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
+        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
+    )
+
+    workspace = KazmierczakWorkspace(
         phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
         visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
+
+    return KazmierczakHydroModel(params, workspace)
 
 end
 

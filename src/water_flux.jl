@@ -109,7 +109,7 @@ With the dissipation melt term on and an N-independent sliding law, mdot_total =
 for the whole loop since it does not depend on q or, for these two laws, N), so we Picard-iterate:
 recompute the source from the current q, re-run the routing algorithm, and stop once q stops
 changing to within model.dissipation_rtol (relative to its own peak magnitude), capped at
-model.max_dissipation_iters sweeps. If `model.dissipation_verbose` is set, prints how long the loop
+model.max_dissipation_iters sweeps. If `model.dissipation_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
@@ -159,7 +159,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     if model.dissipation_verbose
         elapsed = time() - start_time
         status  = converged ? "converged" : "did NOT converge (hit max_dissipation_iters)"
-        println("Water flux Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s")
+        @info "Water flux Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s"
     end
 
     return nothing
@@ -176,7 +176,7 @@ depends on N, which is itself downstream of q -- so q and N form a joint fixed p
 dissipation term, if `model.dissipation_melt` is on) to the water source, route q, then update W
 and N from the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
 changing (each relative to its own peak magnitude) to within `model.coupling_rtol`, capped at
-`model.max_coupling_iters` sweeps. If `model.coupling_verbose` is set, prints how long the loop
+`model.max_coupling_iters` sweeps. If `model.coupling_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
 
 N starts from whatever `state.N` already holds (zero on a fresh `HydroState`), so the first sweep's
@@ -224,7 +224,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     if model.coupling_verbose
         elapsed = time() - start_time
         status  = converged ? "converged" : "did NOT converge (hit max_coupling_iters)"
-        println("Water flux/effective pressure coupling Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s")
+        @info "Water flux/effective pressure coupling Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s"
     end
 
     return nothing
@@ -346,10 +346,13 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     # Average grounded-ice thickness
     h_avg = max(masked_mean(grid, model.h, state.mask), 10.0)
 
-    # Radius of influence
-    dx    = grid.dx
-    dy    = grid.dy
-    Delta = (dx + dy) / 2.0
+    # Grid spacing in each direction. The kernel below computes each cell's distance from the
+    # center using dx and dy separately, rather than collapsing both to a single isotropic
+    # Delta = (dx+dy)/2 -- so its nonzero support is a genuine circle in physical space (an
+    # ellipse in these grid-index coordinates whenever dx != dy), correct for any cell aspect
+    # ratio rather than only for square cells.
+    dx = grid.dx
+    dy = grid.dy
 
     scale = h_avg * model.longcoupwater * 2.0
 
@@ -361,19 +364,30 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     # (6-15 km for 1500 m ice) is smaller than a grid cell, so set longcoupwater = 0.
     width = 2.0 * scale
 
-    if width <= Delta
-        scale = Delta / 2.0 + 1.0
+    # Below Delta_min (the finer of the two spacings), `width` wouldn't resolve to even one grid
+    # cell in the tighter direction, so bump scale up to guarantee the kernel spans at least
+    # ~1 cell there rather than degenerating to a single-cell no-op.
+    Delta_min = min(dx, dy)
+
+    if width <= Delta_min
+        scale = Delta_min / 2.0 + 1.0
     end
 
-    # Kernel size
-    maxlevel = 2 * round(Int, width / Delta - 0.5) + 1
-    frb      = Int((maxlevel - 1) / 2)
+    # Kernel size, independent per axis (frb_x, frb_y): cached_fft_convolve! (fft_convolution.jl)
+    # supports a rectangular kernel array, so each axis is sized from its own spacing rather than
+    # both being forced to the size the finer axis would need (which wasted array space and FFT
+    # work on the coarser axis without changing the result).
+    maxlevel_x = 2 * round(Int, width / dx - 0.5) + 1
+    maxlevel_y = 2 * round(Int, width / dy - 0.5) + 1
+    frb_x = Int((maxlevel_x - 1) / 2)
+    frb_y = Int((maxlevel_y - 1) / 2)
 
-    kernel = zeros(maxlevel, maxlevel)
+    kernel = zeros(maxlevel_x, maxlevel_y)
 
-    for nj in 1:maxlevel, ni in 1:maxlevel
-        dist = sqrt((Delta * (ni - frb - 1))^2 +
-                    (Delta * (nj - frb - 1))^2) / scale
+    for nj in 1:maxlevel_y, ni in 1:maxlevel_x
+        # True physical (Euclidean) distance from the kernel center, using dx and dy separately.
+        dist = sqrt((dx * (ni - frb_x - 1))^2 +
+                    (dy * (nj - frb_y - 1))^2) / scale
 
         kernel[ni, nj] = max(0.0, 1.0 - dist / 2.0)
     end
@@ -397,8 +411,18 @@ end
 $(TYPEDSIGNATURES)
 
 Helper function to the recursive function to calculate the psi_out for every grid cell that has grounded ice.
+
+`call_count` is a per-sweep counter, shared by reference across the whole recursion tree started by
+`update_psi_out!`, that caps the total number of cells this recursion is allowed to visit at
+`model.max_psi_out_calls` -- mirroring KORI-ULB's own `funcnt <= 5e4` safety cap in
+`DpareaWarGds.m` (https://github.com/FrankPat/Kori-ULB/blob/main/subroutines/DpareaWarGds.m).
+Without it, a large or unusually convoluted flow-routing domain could recurse deep enough to hit
+Julia's call stack limit and crash with a `StackOverflowError` instead of failing predictably. Once
+the cap is hit, the current cell is treated as a terminal source (its own mdot_total contribution
+only, no further upstream accumulation) so the sweep still terminates with a (locally truncated but
+finite) result rather than crashing.
 """
-function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractHydroGrid, state::HydroState)
+function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractHydroGrid, state::HydroState, call_count::Base.RefValue{Int})
 
     # If the neighbour does not have grounded ice then return 0
     if state.mask[i, j] != 1.0
@@ -418,6 +442,12 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
 
     model.psi_out[i, j] = model.mdot_total[i, j] * dx * dy / model.rho_w
 
+    call_count[] += 1
+    if call_count[] > model.max_psi_out_calls
+        @warn "accumulate_psi_out! hit max_psi_out_calls = $(model.max_psi_out_calls) cells in one update_psi_out! sweep -- cutting the flow-routing recursion off early at cell ($i, $j) instead of risking a StackOverflowError. Pass a larger `max_psi_out_calls` to KazmierczakHydroModel if this grid genuinely has more grounded cells than the default allows." maxlog=1
+        return model.psi_out[i, j]
+    end
+
     @inbounds for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1))
 
         ni, nj = i + di, j + dj
@@ -429,7 +459,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
 
         if w > 0
-            model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state) * w
+            model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state, call_count) * w
         end
     end
 
@@ -456,12 +486,15 @@ function update_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     # Refresh visited cells field
     model.visited .= 0.0
 
+    # Shared by reference across the whole sweep -- see accumulate_psi_out!'s docstring.
+    call_count = Ref(0)
+
     @inbounds for j in 1:Ny, i in 1:Nx
         if state.mask[i, j] == 1.0
-            accumulate_psi_out!(model, i, j, grid, state)
+            accumulate_psi_out!(model, i, j, grid, state, call_count)
         end
     end
-    
+
     return nothing
 
 end
