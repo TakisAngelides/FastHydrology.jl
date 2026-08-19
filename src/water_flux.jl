@@ -110,10 +110,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     route_psi_out!(model, grid, state)
 
-    # q_max must be precomputed outside the broadcast -- see the note on q_max in the
-    # DissipationMeltOn method below for why.
-    q_max = perYear2perSecond(1e5)
-    @. model.q = min(max(model.psi_out / model.corfac, 0.0), q_max)
+    @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
     return nothing
 
@@ -140,17 +137,6 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     update_tau_b!(model, state, sliding_law)
 
-    # Limits on q are heuristic and chosen by Frank Pattyn for numerical stability: KORI-ULB's own
-    # SubWaterFlux.m clamps its (per-year-native) flw at 1e5 m2/yr, so the SI equivalent is
-    # perYear2perSecond(1e5), not the bare literal 1e5 -- q is in m2/s here, and a raw `1e5` cap is
-    # ~3.16e7x too permissive to ever bind (previously this made the clamp a no-op; confirmed against
-    # KORI-ULB's own THWAITES2km_m3_HARD_toto.mat, whose flw field is genuinely pinned at 1e5 in the
-    # fastest-draining cells). Precomputed outside the broadcast: Oceananigans' AbstractOperation
-    # conversion walks the whole broadcast tree structurally, and a nested scalar-only sub-expression
-    # breaks when embedded inside a larger broadcast that also involves Fields (see update_N_inf!'s
-    # denom_const for the same pattern).
-    q_max = perYear2perSecond(1e5)
-
     for iter in 1:model.max_dissipation_iters
 
         model.q_prev .= model.q
@@ -164,7 +150,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
         route_psi_out!(model, grid, state)
 
-        @. model.q = min(max(model.psi_out / model.corfac, 0.0), q_max)
+        @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
         if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
@@ -209,9 +195,6 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     converged  = false
     n_iters    = model.max_coupling_iters
 
-    # See the note on q_max in the DissipationMeltOn method above.
-    q_max = perYear2perSecond(1e5)
-
     for iter in 1:model.max_coupling_iters
 
         model.q_prev .= model.q
@@ -222,7 +205,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         add_dissipation_term!(model, dissipation_melt)
 
         route_psi_out!(model, grid, state)
-        @. model.q = min(max(model.psi_out / model.corfac, 0.0), q_max)
+        @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
         update_W!(model, grid, state)
         update_N!(model, grid, state)

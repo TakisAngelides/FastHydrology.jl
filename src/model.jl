@@ -213,6 +213,8 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     Wmax            ::T    # Maximum subglacial water layer thickness [m]
     longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure
+    q_min           ::T    # Minimum allowed value for the distributed water flux
+    q_max           ::T    # Maximum allowed value for the distributed water flux, default to perYear2perSecond(1e5) following KORI-ULB
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
@@ -366,6 +368,8 @@ function KazmierczakHydroModel(
     Wmax          = 0.015,
     longcoupwater = 5.0,
     sigmat        = 0.02,
+    q_min         = 0.0,
+    q_max         = perYear2perSecond(1e5),
     fill_iters    = 10,
     max_psi_out_calls = 50_000,
     psi_out_algorithm = RecursivePsiOut(),
@@ -406,6 +410,8 @@ function KazmierczakHydroModel(
     Wmax          = T(Wmax)
     longcoupwater = T(longcoupwater)
     sigmat        = T(sigmat)
+    q_min         = T(q_min)
+    q_max         = T(q_max)
     fill_iters    = Int(fill_iters)
     max_psi_out_calls = Int(max_psi_out_calls)
     max_dissipation_iters = Int(max_dissipation_iters)
@@ -450,7 +456,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, fill_iters,
+        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, q_min, q_max, fill_iters,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
     )
