@@ -33,7 +33,8 @@ export minus_gradient_x!, minus_gradient_y!
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 export AbstractSlidingLaw, NoSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw
-export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut
+export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut
+export AbstractWaterThicknessAlgorithm, ConduitThickness, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness
 
 # sliding_law.jl
 export calc_tau_b, update_tau_b!

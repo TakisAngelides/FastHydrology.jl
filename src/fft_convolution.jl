@@ -139,23 +139,27 @@ end
 $(TYPEDSIGNATURES)
 
 Cached equivalent of `imfilter!(dest, src, centered(kernel))` with the default "replicate" border,
-for a point-symmetric `kernel` (so convolution and correlation coincide). `dest`, `src` are
-cell-centered (Nx, Ny, 1) arrays (possibly `OffsetArray`s, e.g. `Field.data`); `kernel` is
-(2*frb_x+1, 2*frb_y+1, 1) -- not necessarily square. `cache_ref` should be a `Base.RefValue{Any}`
-owned by the caller, reused across repeated calls with the same sizes.
+for a point-symmetric `kernel` (so convolution and correlation coincide). `dest`, `src`, `kernel` are
+plain 2D `AbstractMatrix`es -- `kernel` is `(2*frb_x+1, 2*frb_y+1)`, not necessarily square. `dest`
+and `src` are read/written exactly as given (no `parent`-unwrapping), so the caller must pass views
+already restricted to the true logical domain -- e.g. `interior(field, :, :, 1)` for an Oceananigans
+`Field`, not `field.data` (which additionally carries halo padding `interior` already strips; unwrapping
+via `parent` inside this function used to silently reintroduce that padding as if it were domain,
+corrupting the result -- see `convolve!`'s `OGRectHydroGrid` method in grid.jl). Since `src`/`dest`
+are only ever read/written through broadcasting into this function's own cached buffers below, using
+them as given (rather than materializing a plain-`Array` copy first) costs nothing extra: no
+allocation happens here beyond the one-time cache build in `get_fft_conv_cache!`. `cache_ref` should
+be a `Base.RefValue{Any}` owned by the caller, reused across repeated calls with the same sizes.
 """
-function cached_fft_convolve!(cache_ref::Base.RefValue, dest::AbstractArray, src::AbstractArray, kernel::AbstractArray)
-    # Work through `parent` so indexing below is always plain 1-based, regardless of whether
-    # dest/src/kernel are OffsetArrays (e.g. Field.data) or plain arrays.
-    dest_p, src_p, kernel_p = parent(dest), parent(src), parent(kernel)
+function cached_fft_convolve!(cache_ref::Base.RefValue, dest::AbstractMatrix, src::AbstractMatrix, kernel::AbstractMatrix)
 
-    frb_x = (size(kernel_p, 1) - 1) ÷ 2 # kernel is (2*frb_x+1, 2*frb_y+1, 1); recover frb_x/frb_y from its size
-    frb_y = (size(kernel_p, 2) - 1) ÷ 2
-    Nx, Ny = size(src_p, 1), size(src_p, 2)
+    frb_x = (size(kernel, 1) - 1) ÷ 2 # kernel is (2*frb_x+1, 2*frb_y+1); recover frb_x/frb_y from its size
+    frb_y = (size(kernel, 2) - 1) ÷ 2
+    Nx, Ny = size(src, 1), size(src, 2)
     c = get_fft_conv_cache!(cache_ref, Nx, Ny, frb_x, frb_y) # (re)allocates only if size/frb changed since the last call
 
-    fill_padded_src!(c.padded_src, view(src_p, :, :, 1), frb_x, frb_y)
-    fill_padded_kernel!(c.padded_kernel, view(kernel_p, :, :, 1), frb_x, frb_y, c.full_size)
+    fill_padded_src!(c.padded_src, src, frb_x, frb_y)
+    fill_padded_kernel!(c.padded_kernel, kernel, frb_x, frb_y, c.full_size)
 
     mul!(c.Fsrc, c.plan, c.padded_src)      # forward FFT of the padded source
     mul!(c.Fkern, c.plan, c.padded_kernel)  # forward FFT of the wrapped kernel
@@ -163,6 +167,6 @@ function cached_fft_convolve!(cache_ref::Base.RefValue, dest::AbstractArray, src
     mul!(c.result_full, c.inv_plan, c.Fresult) # inverse FFT back to the padded spatial domain
 
     # crop back to the original (Nx, Ny) region, discarding the frb_x/frb_y-cell border used for padding
-    view(dest_p, :, :, 1) .= @view c.result_full[frb_x+1:frb_x+Nx, frb_y+1:frb_y+Ny]
+    dest .= @view c.result_full[frb_x+1:frb_x+Nx, frb_y+1:frb_y+Ny]
     return nothing
 end

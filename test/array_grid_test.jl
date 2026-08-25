@@ -41,6 +41,8 @@ array_field_values(field) = field  # ArrayHydroGrid fields are already plain arr
         @test all(isfinite, array_field_values(state.N))
         @test all(isfinite, array_field_values(state.W))
         @test all(>=(0.0), array_field_values(state.N))
+        # Default water_thickness_algorithm is DarcyWeisbachThickness(), clamped to [Wmin, Wmax] --
+        # see the equivalent comment in runtests.jl for the full per-algorithm coverage there.
         @test all(w -> model.Wmin <= w <= model.Wmax, array_field_values(state.W))
     end
 
@@ -119,11 +121,23 @@ array_field_values(field) = field  # ArrayHydroGrid fields are already plain arr
     @testset "ArrayHydroGrid vs OGRectHydroGrid numerical agreement" begin
         # Same physical setup on both grid backends should give the same steady-state result,
         # since the underlying physics code is grid-agnostic (see grid.jl's interface).
+        #
+        # Uses the model's default longcoupwater (5.0, stress-gradient-coupling smoothing on) and a
+        # mixed kappa pattern deliberately: this is a regression test for a real bug where
+        # OGRectHydroGrid's convolve! (grid.jl) passed Field.data -- which includes Oceananigans'
+        # own halo padding around the (Nx, Ny) interior -- straight to cached_fft_convolve!
+        # (fft_convolution.jl), which infers its logical domain size from the array's own shape and
+        # so silently convolved over the halo-inflated domain instead of the real one. That corrupted
+        # abs_grad_phi0_s (confirmed by an isolated comparison: up to several hundred percent off)
+        # and, downstream, q/S_inf/H/W -- but not state.N in the uniform-kappa, longcoupwater=0
+        # configuration the previous version of this test used, since N happened to saturate at its
+        # sigmat*Po/Po clamp regardless. Checking q/S_inf/H/W directly, with kappa varying (so H's
+        # hard/soft blend is actually exercised) and the default longcoupwater, is what catches it.
         Nx, Ny = 5, 5
         mask = ones(Nx, Ny)
         h    = [500.0 - 5.0 * i for i in 1:Nx, j in 1:Ny]
         b    = [-100.0 - 2.0 * j for i in 1:Nx, j in 1:Ny]
-        kappa   = zeros(Nx, Ny)
+        kappa   = [mod(i + j, 2) == 0 ? 0.0 : 0.7 for i in 1:Nx, j in 1:Ny]
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), Nx, Ny)
         A_visc  = fill(1e-24, Nx, Ny)
         mdot    = fill(1e-6, Nx, Ny)
@@ -138,10 +152,40 @@ array_field_values(field) = field  # ArrayHydroGrid fields are already plain arr
         model_o = KazmierczakHydroModel(grid_o, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
         run!(SteadyStateSimulation(model_o, grid_o, state_o))
 
-        N_a = array_field_values(state_a.N)
-        N_o = field_values(state_o.N)
+        @test isapprox(array_field_values(state_a.N), field_values(state_o.N); rtol = 1e-8)
+        @test isapprox(array_field_values(state_a.W), field_values(state_o.W); rtol = 1e-8)
+        @test isapprox(array_field_values(model_a.q), field_values(model_o.q); rtol = 1e-8)
+        @test isapprox(array_field_values(model_a.H), field_values(model_o.H); rtol = 1e-8)
+        @test isapprox(array_field_values(model_a.S_inf), field_values(model_o.S_inf); rtol = 1e-8)
+        @test isapprox(array_field_values(model_a.abs_grad_phi0_s), field_values(model_o.abs_grad_phi0_s); rtol = 1e-8)
+    end
 
-        @test isapprox(N_a, N_o; rtol = 1e-8)
+    @testset "convolve! grid-backend agreement and mass conservation" begin
+        # Lower-level, direct regression test for the convolve! bug described above -- isolates the
+        # convolution itself from the rest of the physics. A normalized kernel convolved with
+        # "replicate" (edge-extended) boundary padding must conserve the sum of the field (nothing
+        # enters or leaves through a replicated edge), and OGRectHydroGrid's FFT path must agree with
+        # ArrayHydroGrid's imfilter! path to floating-point precision, not just qualitatively.
+        Nx, Ny = 5, 5
+        src = [Float64(i + j) for i in 1:Nx, j in 1:Ny]
+
+        k = 3 # kernel radius comparable to the grid size, like the model's default longcoupwater does on a small domain -- this is what made the bug's effect large enough to be obvious
+        kernel = [max(0.0, 1.0 - sqrt((i - k - 1)^2 + (j - k - 1)^2) / k) for i in 1:2k+1, j in 1:2k+1]
+        kernel ./= sum(kernel)
+
+        grid_a = ArrayHydroGrid(Nx, Ny, (0.0, 500.0), (0.0, 500.0))
+        dest_a = zeros(Nx, Ny)
+        convolve!(grid_a, dest_a, src, kernel)
+
+        grid_o = OGRectHydroGrid(Nx, Ny, (0.0, 500.0), (0.0, 500.0))
+        src_o  = FastHydrology.alloc_field(grid_o, src)
+        dest_o = FastHydrology.alloc_field(grid_o)
+        convolve!(grid_o, dest_o, src_o, kernel)
+        dest_o_vals = field_values(dest_o)
+
+        @test isapprox(sum(dest_a), sum(src); rtol = 1e-10)
+        @test isapprox(sum(dest_o_vals), sum(src); rtol = 1e-10)
+        @test isapprox(dest_a, dest_o_vals; rtol = 1e-8)
     end
 
 end

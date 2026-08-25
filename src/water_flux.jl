@@ -50,8 +50,11 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     # gradients, so it stays fixed regardless of the dissipation-melt branch taken below.
     dx = grid.dx
     dy = grid.dy
+    # x*x rather than x^2.0: Float64^Float64 dispatches to libm's pow() per element (~17x slower
+    # than a plain multiply, benchmarked), and x^2 (integer literal) hits the literal_pow issue
+    # noted on DarcyWeisbachThickness below -- x*x is both the fast path and Oceananigans-safe.
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
-                       (sqrt(model.minus_grad_phi0_sx^2.0 + model.minus_grad_phi0_sy^2.0) + 1e-15)
+                       (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + 1e-15)
 
     resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law)
 
@@ -79,8 +82,9 @@ end
 $(TYPEDSIGNATURES)
 
 Computes psi_out for the current sweep, dispatching on `model.psi_out_algorithm`
-(`RecursivePsiOut()` or `IterativePsiOut()` -- see `AbstractPsiOutAlgorithm`'s docstring in
-model.jl) to either the recursive `update_psi_out!` or the stack-based `update_psi_out_iterative!`.
+(`RecursivePsiOut()`, `IterativePsiOut()`, or `TopologicalPsiOut()` -- see
+`AbstractPsiOutAlgorithm`'s docstring in model.jl) to the recursive `update_psi_out!`, the
+stack-based `update_psi_out_iterative!`, or the sorted single-pass `update_psi_out_topological!`.
 Every `resolve_q!` method calls this instead of `update_psi_out!` directly, so the algorithm choice
 applies uniformly regardless of which sliding law/dissipation-melt combination is active.
 """
@@ -92,6 +96,9 @@ route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::Hyd
 
 route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::IterativePsiOut) =
     update_psi_out_iterative!(model, grid, state)
+
+route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, algorithm::TopologicalPsiOut) =
+    update_psi_out_topological!(model, grid, state, algorithm.allow_cycles)
 
 
 """
@@ -236,15 +243,83 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Update the water layer thickness W that is part of the HydroState. See Eq. (8) from Kazmierczak et al 2022.
+Update the water layer thickness `state.W`, dispatching on `model.water_thickness_algorithm`
+(`ConduitThickness()`, `ArealConduitThickness()`, `DarcyWeisbachThickness()`, or `LaminarThickness()`
+-- see `AbstractWaterThicknessAlgorithm`'s docstring in model.jl) to whichever single closure is
+selected, so only that closure's fields are touched each call.
+
+Must run after `update_N!` (specifically after its `update_H!`/`update_S_inf!` calls), not before --
+`ConduitThickness`/`ArealConduitThickness` read `model.H`/`model.S_inf`, which `update_N!` is what
+keeps current. `update_steady_state!` in run.jl calls `update_q!`, then `update_N!`, then `update_W!`
+in that order for this reason; `state.W` itself feeds back into nothing else in the model, so it is
+safe to compute last.
 """
 function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+    update_W!(model, grid, state, model.water_thickness_algorithm)
+    return nothing
+end
 
+
+"""
+$(TYPEDSIGNATURES)
+
+`ConduitThickness`: report the kappa-blended local conduit depth `model.H` (already kept current by
+`update_H!`, called from `update_N!`) as `state.W`, unclamped. See `AbstractWaterThicknessAlgorithm`'s
+docstring in model.jl for why this is the default and why it isn't clamped to `[Wmin, Wmax]`.
+"""
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::ConduitThickness)
+    state.W .= model.H
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`ArealConduitThickness`: report `model.S_inf / model.l_c` -- the conduit cross-section smeared over
+the inter-conduit spacing -- as `state.W`, unclamped. See `AbstractWaterThicknessAlgorithm`'s
+docstring in model.jl for the derivation and why `S_inf` (not `H`) is the right numerator.
+"""
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::ArealConduitThickness)
+    @. state.W = model.S_inf / model.l_c
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`DarcyWeisbachThickness` (`KazmierczakHydroModel`'s default `water_thickness_algorithm`): invert the
+turbulent parallel-plate Darcy-Weisbach closure for a wide slot, `d = (f*rho_w*q^2 /
+(4*abs_grad_phi0))^(1/3)`, using the local (unsmoothed) potential gradient -- matching the convention
+`update_S_inf!` already uses, rather than the domain-mean smoothed gradient `LaminarThickness` uses.
+The turbulent analogue of `LaminarThickness` below, and the closure consistent with K24's own
+turbulent-flow assumption for `q` (unlike `LaminarThickness`) -- clamped to `[Wmin, Wmax]` since it
+represents the same kind of thin-sheet quantity. The `+ 1e-15` guards degenerate cells where
+`abs_grad_phi0` is exactly zero (e.g. flat cells outside the glacier extent). Uses `q*q` rather than
+`q^2.0`: `Float64^Float64` dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a
+plain multiply for no numerical difference, and `q^2` (integer literal) hits a separate issue --
+`@.`'s `literal_pow` rewrite isn't supported by Oceananigans' `AbstractOperation` broadcasting.
+"""
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::DarcyWeisbachThickness)
+    @. state.W = min(model.Wmax, max(model.Wmin,
+        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + 1e-15))^(1/3)))
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`LaminarThickness`: the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al 2009 Eq. 2),
+using a single domain-mean smoothed gradient magnitude rather than the local one, clamped to `[Wmin,
+Wmax]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet closure -- see
+`AbstractWaterThicknessAlgorithm`'s docstring in model.jl for why it is not the default.
+"""
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LaminarThickness)
     abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
     @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
-
     return nothing
-
 end
 
 
@@ -319,7 +394,8 @@ function update_potential_gradients!(model::KazmierczakHydroModel, grid::Abstrac
     fill_halo!(model.minus_grad_phi0_x, grid)
     fill_halo!(model.minus_grad_phi0_y, grid)
 
-    @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x^2.0 + model.minus_grad_phi0_y^2.0)
+    # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
+    @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
     fill_halo!(model.abs_grad_phi0, grid)
 
     return nothing
@@ -609,6 +685,138 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
                 model.psi_out[si, sj] = max(0.0, model.psi_out[si, sj])
                 pop!(stack)
             end
+        end
+    end
+
+    return nothing
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Single-pass counterpart to [`update_psi_out!`](@ref)/[`update_psi_out_iterative!`](@ref): builds the
+exact same dependency graph `accumulate_psi_out!` traverses recursively -- cell A is upstream of
+adjacent cell B (an edge A -> B) iff `w > 0` for that pair -- then processes it with Kahn's algorithm
+(a BFS ordered by in-degree) instead of recursion. This is exact *only* when that graph is genuinely
+acyclic; see `TopologicalPsiOut`'s docstring in model.jl for why real ice-sheet data isn't reliably
+acyclic (confirmed on the real Thwaites-2km dataset at any `longcoupwater`, not just when smoothing is
+on) and for the `allow_cycles` field this function's `allow_cycles::Bool` argument comes from.
+
+`w` is evaluated once per cell here, from that cell's own gradient toward each neighbour it flows
+into, rather than once per neighbour pair from the receiving cell's side as `accumulate_psi_out!`
+does -- algebraically the identical test (`w(A->B)` using A's gradient dotted with the A->B direction
+equals `accumulate_psi_out!`'s `w` using B's neighbour-indexed lookup of A's gradient dotted with the
+B->A direction, since dotting with the negated direction just flips the sign twice), just rearranged
+so each cell's outgoing edges can be built from its own data in one pass, without needing to iterate
+every cell from every neighbour's perspective twice.
+
+A cycle leaves `remaining_in_degree` unable to reach zero for the cells inside it, so they never get
+enqueued. `processed < total_masked` detects this: with `allow_cycles = false` (the default) it
+throws an error rather than proceeding with a wrong field -- confirmed on the real Thwaites-2km
+dataset that a cycle-affected run's `q` can correlate at ~0 against `RecursivePsiOut`'s, i.e. this is
+not a rare-edge-case-safe thing to silently degrade through. With `allow_cycles = true`, it instead
+warns (once per sweep) and leaves cells inside a cycle with whatever partial upstream contributions
+they received from outside it before it stalled (their own `mdot_total` source never added) -- the
+same "locally truncated but finite" philosophy as `max_psi_out_calls`'s cutoff for the other two
+algorithms.
+
+Unlike `update_psi_out!`/`update_psi_out_iterative!`, this never needs `model.max_psi_out_calls`:
+every grounded cell is enqueued at most once by construction, so there is no unbounded
+recursion/traversal to cap in the first place.
+"""
+function update_psi_out_topological!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, allow_cycles::Bool)
+
+    Nx = grid.Nx
+    Ny = grid.Ny
+    dx = grid.dx
+    dy = grid.dy
+    T = eltype(model.phi0)
+
+    model.psi_out .= 0.0 # accumulated via += below as upstream neighbours are processed, so must start clean
+
+    dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+    # Build this cell's outgoing edges (up to 4: which of its masked neighbours it flows into, and
+    # with what weight) and every masked cell's in-degree (how many masked neighbours flow into it),
+    # in one O(N) pass.
+    out_targets = Matrix{Vector{Tuple{Int, Int, T}}}(undef, Nx, Ny)
+    in_degree = zeros(Int, Nx, Ny)
+    total_masked = 0
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+        out_targets[i, j] = Tuple{Int, Int, T}[]
+    end
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+
+        state.mask[i, j] == 1.0 || continue
+        total_masked += 1
+
+        for (di, dj) in dirs
+
+            ni, nj = i + di, j + dj
+
+            # Off the edge of the domain: no neighbouring cell, so no contribution can cross out
+            # (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
+            (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
+            state.mask[ni, nj] == 1.0 || continue
+
+            w = (model.minus_grad_phi0_sx[i, j] * di + model.minus_grad_phi0_sy[i, j] * dj) / (model.abs_grad_phi0_s[i, j] + 1e-15)
+
+            if w > 0
+                push!(out_targets[i, j], (ni, nj, w))
+                in_degree[ni, nj] += 1
+            end
+
+        end
+
+    end
+
+    # Kahn's algorithm: a plain Vector used as an array-backed queue (push at the end, read via an
+    # advancing `head` index) rather than `popfirst!`, which is O(N) per call on a Vector and would
+    # make the whole sweep O(N^2).
+    queue = Tuple{Int, Int}[]
+    sizehint!(queue, total_masked)
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if state.mask[i, j] == 1.0 && in_degree[i, j] == 0
+            push!(queue, (i, j))
+        end
+    end
+
+    remaining_in_degree = in_degree # no cells are re-enqueued, so it's safe to decrement in place
+    processed = 0
+
+    head = 1
+    @inbounds while head <= length(queue)
+
+        i, j = queue[head]
+        head += 1
+        processed += 1
+
+        # All upstream contributions are already folded in via the += below, by construction (this
+        # cell only reached the queue once every upstream neighbour had already been processed) --
+        # so what's left is to add this cell's own source term and clamp.
+        model.psi_out[i, j] = max(0.0, model.psi_out[i, j] + model.mdot_total[i, j] * dx * dy / model.rho_w)
+
+        for (ni, nj, w) in out_targets[i, j]
+            model.psi_out[ni, nj] += model.psi_out[i, j] * w
+            remaining_in_degree[ni, nj] -= 1
+            if remaining_in_degree[ni, nj] == 0
+                push!(queue, (ni, nj))
+            end
+        end
+
+    end
+
+    if processed < total_masked
+        n_stuck = total_masked - processed
+        if allow_cycles
+            @warn "update_psi_out_topological! left $n_stuck grounded cell(s) unprocessed this sweep (a genuine cycle in the flow-direction graph) -- allow_cycles = true, so continuing with those cells left at only their partial upstream contributions (their own source term was never added). Pass RecursivePsiOut()/IterativePsiOut() instead if this matters for your domain." maxlog=1
+        else
+            error("update_psi_out_topological! found a cycle in the flow-direction graph: $n_stuck of $total_masked grounded cell(s) never reached in-degree zero. This is expected whenever longcoupwater != 0 (the smoothed gradient the routing weight uses is not guaranteed to be a conservative field -- see TopologicalPsiOut's docstring in model.jl) and TopologicalPsiOut is only exact when this graph is acyclic. Either use longcoupwater = 0, switch to RecursivePsiOut()/IterativePsiOut(), or pass TopologicalPsiOut(allow_cycles = true) to accept a locally-truncated-but-finite result instead of this error.")
         end
     end
 

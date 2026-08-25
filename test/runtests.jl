@@ -46,7 +46,44 @@ field_values(field) = interior(field, :, :, 1)
         @test all(isfinite, field_values(state.N))
         @test all(isfinite, field_values(state.W))
         @test all(>=(0.0), field_values(state.N))
+        # Default water_thickness_algorithm is DarcyWeisbachThickness(), clamped to [Wmin, Wmax];
+        # the full per-algorithm behaviour (including the two unclamped closures) is checked below.
         @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
+    end
+
+    @testset "water_thickness_algorithm keyword selects the update_W! closure" begin
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        # ConduitThickness/ArealConduitThickness are unclamped (they report real conduit-scale
+        # depths, not a thin-sheet approximation), so only finiteness/non-negativity applies.
+        # DarcyWeisbachThickness/LaminarThickness both represent a thin sheet and are clamped to
+        # [Wmin, Wmax] -- see AbstractWaterThicknessAlgorithm's docstring in model.jl.
+        for (algorithm, clamped) in (
+            (ConduitThickness(), false),
+            (ArealConduitThickness(), false),
+            (DarcyWeisbachThickness(), true),
+            (LaminarThickness(), true),
+        )
+            state = HydroState(grid, mask, h, b)
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                           water_thickness_algorithm = algorithm, dissipation_verbose = false)
+            sim = SteadyStateSimulation(model, grid, state)
+            run!(sim)
+
+            @test all(isfinite, field_values(state.W))
+            @test all(>=(0.0), field_values(state.W))
+            if clamped
+                @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
+            end
+        end
     end
 
     @testset "KazmierczakHydroModel q clamp is per-year 1e5, not raw 1e5" begin
@@ -304,6 +341,85 @@ field_values(field) = interior(field, :, :, 1)
 
         @test field_values(model_iterative.q)[mask .== 1] == field_values(model_recursive.q)[mask .== 1]
         @test field_values(state_iterative.N)[mask .== 1] == field_values(state_recursive.N)[mask .== 1]
+    end
+
+    @testset "TopologicalPsiOut matches RecursivePsiOut on acyclic (idealized) grids" begin
+        # TopologicalPsiOut (Kahn's algorithm over the flow-direction dependency graph) is only exact
+        # when that graph is genuinely acyclic -- true on smooth, monotonic synthetic grids like this
+        # one, but NOT reliably true on real ice-sheet data (confirmed by explicit cycle detection on
+        # a real Thwaites-2km dataset, at any longcoupwater -- see TopologicalPsiOut's docstring in
+        # model.jl). This test only establishes exactness on the idealized case; it is not evidence
+        # that TopologicalPsiOut is safe on real data, which is exactly why it errors by default
+        # (allow_cycles = false) rather than silently degrading -- see the dedicated cycle-detection
+        # testset below for that safety mechanism itself.
+        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
+        b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
+
+        kappa   = zeros(12, 12)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
+        A_visc  = fill(1e-24, 12, 12)
+        mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+
+        for longcoupwater in (5.0, 0.0) # the model's default (smoothing on) and smoothing off
+            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), longcoupwater)
+            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), longcoupwater)
+
+            state_recursive   = HydroState(grid, mask, h, b)
+            state_topological = HydroState(grid, mask, h, b)
+
+            run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
+            run!(SteadyStateSimulation(model_topological, grid, state_topological))
+
+            @test isapprox(field_values(model_topological.q)[mask .== 1], field_values(model_recursive.q)[mask .== 1]; rtol = 1e-10)
+            @test isapprox(field_values(state_topological.N)[mask .== 1], field_values(state_recursive.N)[mask .== 1]; rtol = 1e-10)
+        end
+    end
+
+    @testset "TopologicalPsiOut cycle detection" begin
+        # Deterministic unit test of the cycle-safety mechanism itself: real cycles in the
+        # flow-direction graph are a real (if data-dependent) occurrence -- see the testset above --
+        # but constructing one from legitimate h/b inputs isn't straightforward, so this directly
+        # forces a mutual edge between two adjacent cells by overwriting their post-smoothing gradient
+        # fields after the normal update_q! pre-routing steps have run, then calls
+        # update_psi_out_topological! on that doctored state.
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+        state = HydroState(grid, mask, h, b)
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        FastHydrology.update_phi0!(model, grid, state)
+        FastHydrology.potential_filling!(model, grid, state)
+        FastHydrology.update_potential_gradients!(model, grid)
+        FastHydrology.update_smoothed_potential_gradients!(model, grid, state)
+        FastHydrology.update_tau_b!(model, state, model.sliding_law)
+        model.mdot_total .= model.mdot
+
+        # Force cells (2,2) and (3,2) to flow into each other: (2,2)'s gradient points toward (3,2)
+        # (+x direction, i.e. minus_grad_phi0_sx > 0) and (3,2)'s gradient points back toward (2,2)
+        # (-x direction), each with zero y-component so only the x-direction test matters.
+        interior(model.minus_grad_phi0_sx, :, :, 1)[2, 2] = 1.0
+        interior(model.minus_grad_phi0_sy, :, :, 1)[2, 2] = 0.0
+        interior(model.abs_grad_phi0_s, :, :, 1)[2, 2] = 1.0
+        interior(model.minus_grad_phi0_sx, :, :, 1)[3, 2] = -1.0
+        interior(model.minus_grad_phi0_sy, :, :, 1)[3, 2] = 0.0
+        interior(model.abs_grad_phi0_s, :, :, 1)[3, 2] = 1.0
+
+        @test_throws ErrorException FastHydrology.update_psi_out_topological!(model, grid, state, false)
+
+        # allow_cycles = true: same doctored (2,2)<->(3,2) cycle, but this time it should complete
+        # (with a warning, not an error) and leave every other cell -- outside the forced cycle --
+        # finite, since only (2,2)/(3,2) themselves are inside it.
+        @test_logs (:warn, r"cycle") FastHydrology.update_psi_out_topological!(model, grid, state, true)
+        @test all(isfinite, field_values(model.psi_out))
     end
 
     @testset "HABHydroModel steady state" begin

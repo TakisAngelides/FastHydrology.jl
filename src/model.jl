@@ -44,9 +44,50 @@ multiple dispatch at compile time via `route_psi_out!` in water_flux.jl, the sam
   potentially before, `max_psi_out_calls` ever binds (that cap limits total cells visited per sweep,
   not recursion depth along any one chain).
 - `IterativePsiOut` has no such requirement (its "stack" is a plain `Vector`, bounded only by heap
-  memory), at the cost of that ~30-40x slowdown. Prefer it for large/convoluted domains, or whenever
-  running under a constrained/unknown stack limit (CI, HPC job schedulers, etc.) where raising
-  `ulimit -s` isn't an option.
+  memory), at the cost of that ~30-40x slowdown. Both `RecursivePsiOut` and `IterativePsiOut` are, at
+  bottom, the same graph traversal (a DFS with an explicit or implicit stack, revisiting cells to fold
+  child contributions back in) -- neither exploits the fact that the underlying dependency graph has
+  no cycles.
+
+`TopologicalPsiOut` is a genuinely different algorithm, not just a different traversal strategy for
+the same one: since `psi_out[i,j]` only ever depends on hydraulically-upstream neighbours (`w > 0`),
+*if* the dependency graph those `w > 0` edges define is a DAG, it can be processed in one O(N) pass
+via Kahn's algorithm (a BFS ordered by in-degree: a cell becomes ready once every upstream neighbour
+that flows into it has already been finalized, at which point its own contribution is added to
+whichever neighbours *it* flows into and their remaining in-degree is decremented, in turn making
+more cells ready) -- no recursion, no explicit revisit stack, and no need for `max_psi_out_calls`.
+
+The load-bearing word above is "if". `w` is evaluated from `minus_grad_phi0_sx/sy` -- the *smoothed*
+gradient (from `update_smoothed_potential_gradients!`'s stress-gradient-coupling convolution) when
+`longcoupwater != 0`, or the raw central-difference gradient (from `update_potential_gradients!`)
+when `longcoupwater == 0` -- and neither is guaranteed to be a true conservative/gradient-derived
+vector field once normalized per cell, so the graph they define is not guaranteed acyclic. It *is*
+acyclic on every idealized synthetic test grid used in this package's own test suite (smooth,
+monotonic sloped surfaces), at any `longcoupwater`. It is **not** acyclic on the real Thwaites-2km
+dataset used to develop this function, confirmed by explicit DFS cycle detection (not inferred) --
+and, contrary to an earlier version of this docstring's claim, this is true regardless of
+`longcoupwater`: cycles affect roughly half of all grounded cells at the model's default
+`longcoupwater = 5.0`, but *more* than half (37514 of 51945) with smoothing turned off entirely
+(`longcoupwater = 0`), and persist at a coarsened ~8km version of the same grid too (2573 of 3242).
+Real, noisy topography is apparently enough on its own to produce local circulation in a
+per-cell-normalized central-difference gradient field -- this is not specific to the
+stress-gradient-coupling smoothing step. There is currently no known setting that makes this
+algorithm reliably exact on real (non-idealized) ice-sheet data.
+
+Recursion-based traversal doesn't actually solve the underlying problem either --
+`RecursivePsiOut`/`IterativePsiOut` silently return an early, incomplete snapshot for a cell that's
+already mid-computation when a cycle loops back to it, giving some order-dependent approximate value
+with no warning at all -- but it never leaves a cell entirely unprocessed the way a topological sort
+must, so it doesn't fail visibly. Given that, this implementation treats a detected cycle as a hard
+error by default (`TopologicalPsiOut()`, `allow_cycles = false`): silently returning a badly wrong
+field (in the case that surfaced this, q correlation against `RecursivePsiOut` collapsed from -0.03
+to ~0.53 depending on configuration, neither acceptable) is worse than failing loudly. Pass
+`allow_cycles = true` to instead get the old "locally truncated but finite" behaviour -- cells inside
+a cycle keep only their partial upstream contributions from outside it (their own source term never
+added) -- with a warning (once per sweep) instead of an error. In practice, expect this algorithm to
+error on any real (non-idealized) domain; it is exact and useful on synthetic/idealized grids, or on
+a real domain a caller has independently verified to be acyclic for their specific gradient field.
+Prefer `RecursivePsiOut`/`IterativePsiOut` for real ice-sheet data.
 """
 abstract type AbstractPsiOutAlgorithm end
 
@@ -70,6 +111,99 @@ rather than the native call stack, so it has no recursion-depth limit -- at the 
 ~30-40x slowdown. See [`AbstractPsiOutAlgorithm`](@ref)'s docstring for the full trade-off.
 """
 struct IterativePsiOut <: AbstractPsiOutAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Route psi_out with a single-pass topological sort (Kahn's algorithm) over the actual flow-direction
+dependency graph (`update_psi_out_topological!`), rather than traversing it via recursion/an explicit
+revisit stack. Exact (matches `RecursivePsiOut`/`IterativePsiOut` to floating-point precision) only
+when that graph is genuinely acyclic -- true on every idealized synthetic test grid in this package's
+test suite, but confirmed **not** true (real cycles, at any `longcoupwater`) on the real Thwaites-2km
+dataset used to develop this function. See [`AbstractPsiOutAlgorithm`](@ref)'s docstring for the full
+story, including why `longcoupwater = 0` does not make this reliably safe on real data either.
+
+# Fields
+- `allow_cycles::Bool`: if `false` (the default), a detected cycle throws an error rather than
+  silently returning a wrong field. If `true`, falls back to the "locally truncated but finite"
+  behaviour instead (a warning, not an error) -- cells inside a cycle keep only their partial
+  upstream contributions.
+"""
+struct TopologicalPsiOut <: AbstractPsiOutAlgorithm
+    allow_cycles::Bool
+end
+TopologicalPsiOut(; allow_cycles = false) = TopologicalPsiOut(allow_cycles)
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Trait selecting which closure `update_W!` uses to compute the reportable subglacial water thickness
+`state.W` (see `KazmierczakHydroModel`'s `water_thickness_algorithm` keyword). Stored as a type
+parameter, resolved by multiple dispatch at compile time -- the same pattern as
+`AbstractPsiOutAlgorithm`/`AbstractDissipationMelt` above -- so only the selected closure's fields
+are touched each call, not all four.
+
+The four closures answer different physical questions and are not interchangeable:
+- [`DarcyWeisbachThickness`](@ref) (the default): inverts the turbulent parallel-plate
+  Darcy-Weisbach closure for a wide slot -- the turbulent analogue of the laminar Le Brocq/Weertman
+  closure below, and the closure consistent with K24's own turbulent-flow assumption for `q` -- using
+  the model's own distributed flux `q` and *local, unsmoothed* potential gradient (matching the
+  convention `update_S_inf!` already uses): `d = (f*rho_w*q^2 / (4*abs_grad_phi0))^(1/3)`. Clamped to
+  `[Wmin, Wmax]`, since it represents a thin-sheet quantity.
+- [`ConduitThickness`](@ref): the local water depth *inside* K24's own turbulent conduit, `model.H`
+  -- already computed by `update_H!` for `N_inf` (kappa-blended between the hard-bed `H_hard =
+  sqrt(S_inf)` and soft-bed `H_soft` geometries), so this closure costs nothing beyond a copy. Not
+  clamped to `[Wmin, Wmax]`: those bounds were chosen for a thin distributed sheet, and a real
+  conduit's depth can legitimately exceed them.
+- [`ArealConduitThickness`](@ref): `S_inf / l_c`, the conduit's cross-sectional area smeared over the
+  inter-conduit spacing -- a grid-cell-averaged "equivalent film thickness" comparable to a sheet
+  model's W, derived from the same turbulent Manning-Strickler `S_inf` that drives `N_inf`. Bed-type
+  independent (kappa only blends H's shape assumption, not S_inf itself) and, like
+  `ConduitThickness`, not clamped to `[Wmin, Wmax]` for the same reason.
+- [`LaminarThickness`](@ref): the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al
+  2009 Eq. 2), `d = (12*eta_w*q / abs_grad_phi0_s_mean)^(1/3)`, using a single domain-mean smoothed
+  gradient rather than the local one. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's
+  laminar sheet closure, but physically inconsistent with K24's own turbulent-flow assumption for
+  `q` -- not the default, and not recommended as "the" reported thickness for a K24 run. Clamped to
+  `[Wmin, Wmax]`.
+"""
+abstract type AbstractWaterThicknessAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Report `model.H` (the kappa-blended local conduit depth) as `state.W`. See
+[`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for the full comparison against the other
+three closures.
+"""
+struct ConduitThickness <: AbstractWaterThicknessAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Report `model.S_inf / model.l_c` (the conduit cross-section smeared over the inter-conduit spacing)
+as `state.W`. See [`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for the full comparison.
+"""
+struct ArealConduitThickness <: AbstractWaterThicknessAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Report the turbulent Darcy-Weisbach sheet-flow inversion `(f*rho_w*q^2 / (4*abs_grad_phi0))^(1/3)` as
+`state.W`, clamped to `[Wmin, Wmax]`. `KazmierczakHydroModel`'s default `water_thickness_algorithm`.
+See [`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for the full comparison.
+"""
+struct DarcyWeisbachThickness <: AbstractWaterThicknessAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Report the original laminar Le Brocq/Weertman sheet-flow inversion `(12*eta_w*q /
+abs_grad_phi0_s_mean)^(1/3)` as `state.W`, clamped to `[Wmin, Wmax]`. See
+[`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for why this is kept but not the default.
+"""
+struct LaminarThickness <: AbstractWaterThicknessAlgorithm end
 
 
 """
@@ -192,7 +326,7 @@ once the model is constructed and never touched again during a solve. Split out 
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_i           ::T    # Density of ice [kg/m3]
@@ -209,8 +343,9 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     l_c             ::T    # Distance between conduits [m]
     K               ::T    # Conductivity coefficient in Darcy-Weisbach relation
     eta_w           ::T    # Dynamic viscosity of water [Pa s]
-    Wmin            ::T    # Minimum subglacial water layer thickness [m]
-    Wmax            ::T    # Maximum subglacial water layer thickness [m]
+    Wmin            ::T    # Minimum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness)
+    Wmax            ::T    # Maximum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness)
+    water_thickness_algorithm ::WT # ConduitThickness()/ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
     longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure
     q_min           ::T    # Minimum allowed value for the distributed water flux
@@ -297,8 +432,8 @@ if a field is inserted out of order.
 `workspace`, so nothing in water_flux.jl/effective_pressure.jl/sliding_law.jl/run.jl needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm} <: AbstractHydroModel
-    params    ::KazmierczakParams{T, D, L, P}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm} <: AbstractHydroModel
+    params    ::KazmierczakParams{T, D, L, P, WT}
     workspace ::KazmierczakWorkspace{A}
 end
 
@@ -345,6 +480,11 @@ The `psi_out_algorithm` keyword (`RecursivePsiOut()` by default) selects which f
 implementation `resolve_q!` uses each sweep to compute psi_out -- see the `AbstractPsiOutAlgorithm`
 docstring above for the `RecursivePsiOut`/`IterativePsiOut` speed-vs-stack-robustness trade-off.
 
+The `water_thickness_algorithm` keyword (`DarcyWeisbachThickness()` by default) selects which closure
+`update_W!` uses to compute the reportable `state.W` -- see the `AbstractWaterThicknessAlgorithm`
+docstring above for the four available closures (`ConduitThickness`, `ArealConduitThickness`,
+`DarcyWeisbachThickness`, `LaminarThickness`) and how they differ.
+
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
 # Arguments
@@ -379,6 +519,7 @@ function KazmierczakHydroModel(
     eta_w         = perYear2perSecond(1.8e-3),
     Wmin          = 1e-8,
     Wmax          = 0.015,
+    water_thickness_algorithm = DarcyWeisbachThickness(),
     longcoupwater = 5.0,
     sigmat        = 0.02,
     q_min         = 0.0,
@@ -469,7 +610,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, longcoupwater, sigmat, q_min, q_max, fill_iters,
+        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
     )

@@ -319,11 +319,22 @@ function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; sca
 end
 
 function convolve!(grid::OGRectHydroGrid, dest, src, kernel)
-    # kernel arrives 2D (see the default convolve! docstring); cached_fft_convolve! indexes its
-    # third argument with a trailing singleton dimension to match dest.data/src.data's (Nx,Ny,1)
-    # Oceananigans layout, so reshape (no copy) rather than pushing the (Nx,Ny,1) shape onto callers.
-    kernel3d = reshape(kernel, size(kernel, 1), size(kernel, 2), 1)
-    cached_fft_convolve!(grid.conv_cache, dest.data, src.data, kernel3d)
+    # Must NOT pass dest.data/src.data directly: Field.data carries Oceananigans' own halo padding
+    # around the (Nx, Ny) interior (e.g. (7,7,1) storage for a (5,5) grid with the default halo =
+    # (1,1)), and cached_fft_convolve! derives its logical domain size from its src argument's own
+    # shape -- handed .data directly, it would silently convolve over the inflated (Nx+2,Ny+2) region
+    # (garbage/boundary-condition-filled halo cells included as if they were real data) and crop back
+    # using that wrong size, corrupting every cell, not just the boundary ones. Confirmed by comparing
+    # against a brute-force replicate-padded reference: passing .data diverged by up to several
+    # hundred percent; interior(_, :, :, 1) -- which already gives a clean, correctly-(Nx,Ny)-sized
+    # view -- matches to floating-point precision.
+    #
+    # Passed straight through with no intermediate copy: cached_fft_convolve! only ever reads src (via
+    # a broadcast into its own cached padded buffer) and writes dest (via a broadcast out of its own
+    # cached result buffer), so these views are exactly as good as a plain-Array copy would be for
+    # that purpose, at zero extra allocation -- unlike an earlier version of this function, which
+    # allocated a fresh (Nx,Ny,1) Array for each of src/dest on every call before finding this out.
+    cached_fft_convolve!(grid.conv_cache, interior(dest, :, :, 1), interior(src, :, :, 1), kernel)
     return nothing
 end
 
