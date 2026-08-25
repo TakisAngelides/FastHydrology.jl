@@ -355,6 +355,8 @@ Works with any concrete subtype of AbstractHydroGrid -- changing the grid does n
 - `A_visc_in::AbstractArray{<:AbstractFloat}`: Ice flow law rate factor (Glen's A) [Pa^-n s^-1]
 - `mdot_in::AbstractArray{<:AbstractFloat}`: complete mass basal melt rate per unit area [Kg / m^2 / s]
 """
+const KAZMIERCZAK_DEFAULT_L_W = 3.34e5 # Latent heat of fusion for ice [J/kg], shared default for both KazmierczakHydroModel constructors below
+
 function KazmierczakHydroModel(
     grid::AbstractHydroGrid,
     kappa_in::AbstractArray{<:AbstractFloat},
@@ -364,7 +366,7 @@ function KazmierczakHydroModel(
     rho_w         = 1000.0,
     rho_i         = 917.0,
     g             = 9.81,
-    L_w           = 3.34e5,
+    L_w           = KAZMIERCZAK_DEFAULT_L_W,
     n             = 3.0,
     h_b           = 0.1,
     alpha         = 5/4,
@@ -523,10 +525,14 @@ function KazmierczakHydroModel(
     A_visc_in::AbstractArray{<:AbstractFloat},
     G_in::AbstractArray{<:AbstractFloat},
     q_T_in::AbstractArray{<:AbstractFloat};
-    L_w = 3.34e5,
+    L_w = KAZMIERCZAK_DEFAULT_L_W,
     kwargs...
 )
-    mdot_in = (G_in .- q_T_in) ./ L_w
+    # T-converted here to match exactly what the primary constructor below does with L_w internally
+    # (`L_w = T(L_w)`) -- dividing by the raw, un-converted L_w instead could give mdot a different
+    # precision than the L_w used everywhere else in the model if grid.dx's type isn't Float64.
+    T = typeof(grid.dx)
+    mdot_in = (G_in .- q_T_in) ./ T(L_w)
     return KazmierczakHydroModel(grid, kappa_in, abs_v_b_in, A_visc_in, mdot_in; L_w = L_w, kwargs...)
 end
 
