@@ -33,10 +33,10 @@ $(TYPEDSIGNATURES)
 
 Update the model and state variables for the Kazmierczak et al 2024 model steady-state calculation.
 We specifically update first the distributed water flux q, then the effective pressure N, and then the
-water layer thickness W -- W must come after N because two of its closures (`ConduitThickness`,
-`ArealConduitThickness`; see `AbstractWaterThicknessAlgorithm` in model.jl) read `model.H`/`model.S_inf`,
-which `update_N!` (via its own `update_H!`/`update_S_inf!` calls) is what keeps current. `state.W`
-itself feeds back into nothing else in the model, so computing it last is safe.
+water layer thickness W -- W must come after N because its `ArealConduitThickness` closure (see
+`AbstractWaterThicknessAlgorithm` in model.jl) reads `model.S_inf`, which `update_N!` (via its own
+`update_S_inf!` call) is what keeps current. `state.W` itself feeds back into nothing else in the
+model, so computing it last is safe.
 
 When `model.sliding_law` is N-dependent (see water_flux.jl's `resolve_q!`), `update_q!` already
 converges q and N together internally, so the explicit `update_N!`/`update_W!` calls below just

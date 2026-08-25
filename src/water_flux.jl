@@ -244,31 +244,18 @@ end
 $(TYPEDSIGNATURES)
 
 Update the water layer thickness `state.W`, dispatching on `model.water_thickness_algorithm`
-(`ConduitThickness()`, `ArealConduitThickness()`, `DarcyWeisbachThickness()`, or `LaminarThickness()`
--- see `AbstractWaterThicknessAlgorithm`'s docstring in model.jl) to whichever single closure is
-selected, so only that closure's fields are touched each call.
+(`ArealConduitThickness()`, `DarcyWeisbachThickness()`, or `LaminarThickness()` -- see
+`AbstractWaterThicknessAlgorithm`'s docstring in model.jl) to whichever single closure is selected,
+so only that closure's fields are touched each call.
 
-Must run after `update_N!` (specifically after its `update_H!`/`update_S_inf!` calls), not before --
-`ConduitThickness`/`ArealConduitThickness` read `model.H`/`model.S_inf`, which `update_N!` is what
-keeps current. `update_steady_state!` in run.jl calls `update_q!`, then `update_N!`, then `update_W!`
-in that order for this reason; `state.W` itself feeds back into nothing else in the model, so it is
-safe to compute last.
+Must run after `update_N!` (specifically after its `update_S_inf!` call), not before --
+`ArealConduitThickness` reads `model.S_inf`, which `update_N!` is what keeps current.
+`update_steady_state!` in run.jl calls `update_q!`, then `update_N!`, then `update_W!` in that order
+for this reason; `state.W` itself feeds back into nothing else in the model, so it is safe to compute
+last.
 """
 function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     update_W!(model, grid, state, model.water_thickness_algorithm)
-    return nothing
-end
-
-
-"""
-$(TYPEDSIGNATURES)
-
-`ConduitThickness`: report the kappa-blended local conduit depth `model.H` (already kept current by
-`update_H!`, called from `update_N!`) as `state.W`, unclamped. See `AbstractWaterThicknessAlgorithm`'s
-docstring in model.jl for why this is the default and why it isn't clamped to `[Wmin, Wmax]`.
-"""
-function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::ConduitThickness)
-    state.W .= model.H
     return nothing
 end
 
@@ -291,19 +278,38 @@ $(TYPEDSIGNATURES)
 
 `DarcyWeisbachThickness` (`KazmierczakHydroModel`'s default `water_thickness_algorithm`): invert the
 turbulent parallel-plate Darcy-Weisbach closure for a wide slot, `d = (f*rho_w*q^2 /
-(4*abs_grad_phi0))^(1/3)`, using the local (unsmoothed) potential gradient -- matching the convention
-`update_S_inf!` already uses, rather than the domain-mean smoothed gradient `LaminarThickness` uses.
-The turbulent analogue of `LaminarThickness` below, and the closure consistent with K24's own
-turbulent-flow assumption for `q` (unlike `LaminarThickness`) -- clamped to `[Wmin, Wmax]` since it
-represents the same kind of thin-sheet quantity. The `+ 1e-15` guards degenerate cells where
-`abs_grad_phi0` is exactly zero (e.g. flat cells outside the glacier extent). Uses `q*q` rather than
-`q^2.0`: `Float64^Float64` dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a
-plain multiply for no numerical difference, and `q^2` (integer literal) hits a separate issue --
-`@.`'s `literal_pow` rewrite isn't supported by Oceananigans' `AbstractOperation` broadcasting.
+(4*abs_grad_phi0))^(1/3)`. `model.f` here is the same Darcy-Weisbach friction factor K24's own
+conduit closure uses (folded into `K` by `update_S_inf!`) -- one shared parameter, not a second one
+introduced for this closure, since both derive from the same underlying physics (Schoof 2010/Clarke
+1996); see `f`'s field comment on `KazmierczakParams` in model.jl. Uses a domain-wide masked mean of
+the potential gradient by default
+(`gradient_convention = MeanGradient()`, the same averaging convention `LaminarThickness` uses, kept
+consistent between the package's two sheet-flow closures -- see `AbstractGradientConvention`'s
+docstring in model.jl), or, with `gradient_convention = LocalGradient()`, the local, per-cell
+gradient instead (matching the convention `update_S_inf!` uses). The turbulent analogue of
+`LaminarThickness` below, and the closure consistent with K24's own turbulent-flow assumption for `q`
+(unlike `LaminarThickness`) -- clamped to `[Wmin, Wmax]` since it represents the same kind of
+thin-sheet quantity. The `+ 1e-15` guards degenerate cells where `abs_grad_phi0` is exactly zero
+(e.g. flat cells outside the glacier extent). Uses `q*q` rather than `q^2.0`: `Float64^Float64`
+dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a plain multiply for no
+numerical difference, and `q^2` (integer literal) hits a separate issue -- `@.`'s `literal_pow`
+rewrite isn't supported by Oceananigans' `AbstractOperation` broadcasting.
 """
-function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::DarcyWeisbachThickness)
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, algorithm::DarcyWeisbachThickness)
+    update_W_darcy_weisbach!(model, grid, state, algorithm.gradient_convention)
+    return nothing
+end
+
+function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
     @. state.W = min(model.Wmax, max(model.Wmin,
         (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + 1e-15))^(1/3)))
+    return nothing
+end
+
+function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
+    abs_grad_phi0_mean = masked_mean(grid, model.abs_grad_phi0, state.mask)
+    @. state.W = min(model.Wmax, max(model.Wmin,
+        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + 1e-15))^(1/3)))
     return nothing
 end
 
@@ -312,13 +318,30 @@ end
 $(TYPEDSIGNATURES)
 
 `LaminarThickness`: the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al 2009 Eq. 2),
-using a single domain-mean smoothed gradient magnitude rather than the local one, clamped to `[Wmin,
-Wmax]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet closure -- see
-`AbstractWaterThicknessAlgorithm`'s docstring in model.jl for why it is not the default.
+clamped to `[Wmin, Wmax]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet
+closure -- see `AbstractWaterThicknessAlgorithm`'s docstring in model.jl for why this closure is not
+the default (`DarcyWeisbachThickness` is). Uses a single domain-mean smoothed gradient magnitude by
+default (`gradient_convention = MeanGradient()`), faithfully matching Kori-ULB's own
+`mean(gdsmag(...))` in `SubWaterFlux.m`, and matching `DarcyWeisbachThickness`'s own default too (kept
+consistent between the package's two sheet-flow closures); pass `gradient_convention =
+LocalGradient()` for the local-per-cell-gradient variant instead, e.g. to isolate how much of a
+closure's spatial pattern comes from that domain-mean averaging versus from its own physics --
+`DarcyWeisbachThickness`'s `gradient_convention` runs the identical comparison for the turbulent
+closure.
 """
-function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LaminarThickness)
+function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, algorithm::LaminarThickness)
+    update_W_laminar!(model, grid, state, algorithm.gradient_convention)
+    return nothing
+end
+
+function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
     abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
     @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
+    return nothing
+end
+
+function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
+    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + 1e-15))^(1/3)))
     return nothing
 end
 

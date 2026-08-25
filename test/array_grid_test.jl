@@ -41,9 +41,8 @@ array_field_values(field) = field  # ArrayHydroGrid fields are already plain arr
         @test all(isfinite, array_field_values(state.N))
         @test all(isfinite, array_field_values(state.W))
         @test all(>=(0.0), array_field_values(state.N))
-        # Default water_thickness_algorithm is DarcyWeisbachThickness(), clamped to [Wmin, Wmax] --
-        # see the equivalent comment in runtests.jl for the full per-algorithm coverage there.
-        @test all(w -> model.Wmin <= w <= model.Wmax, array_field_values(state.W))
+        @test all(>=(0.0), array_field_values(state.W))
+        # Wmin/Wmax default to 0.0/Inf (no clamp) -- see the equivalent comment in runtests.jl.
     end
 
     @testset "KazmierczakHydroModel dissipation melt term" begin

@@ -46,9 +46,10 @@ field_values(field) = interior(field, :, :, 1)
         @test all(isfinite, field_values(state.N))
         @test all(isfinite, field_values(state.W))
         @test all(>=(0.0), field_values(state.N))
-        # Default water_thickness_algorithm is DarcyWeisbachThickness(), clamped to [Wmin, Wmax];
-        # the full per-algorithm behaviour (including the two unclamped closures) is checked below.
-        @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
+        @test all(>=(0.0), field_values(state.W))
+        # Wmin/Wmax default to 0.0/Inf (no clamp -- see KazmierczakHydroModel's docstring), so there's
+        # no clamp bound to check against defaults here; the water_thickness_algorithm testset below
+        # passes explicit KORI-ULB-matching Wmin/Wmax to actually exercise the clamping logic.
     end
 
     @testset "water_thickness_algorithm keyword selects the update_W! closure" begin
@@ -62,19 +63,28 @@ field_values(field) = interior(field, :, :, 1)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
 
-        # ConduitThickness/ArealConduitThickness are unclamped (they report real conduit-scale
-        # depths, not a thin-sheet approximation), so only finiteness/non-negativity applies.
-        # DarcyWeisbachThickness/LaminarThickness both represent a thin sheet and are clamped to
-        # [Wmin, Wmax] -- see AbstractWaterThicknessAlgorithm's docstring in model.jl.
+        # ArealConduitThickness is unclamped (it reports a real conduit-scale areal depth, not a
+        # thin-sheet approximation), so only finiteness/non-negativity applies. DarcyWeisbachThickness
+        # (both its default LocalGradient() and its MeanGradient() diagnostic variant) and
+        # LaminarThickness (both gradient_convention options) all represent a thin sheet and are
+        # clamped to [Wmin, Wmax] -- see AbstractWaterThicknessAlgorithm's docstring in model.jl.
+        # There is deliberately no ConduitThickness option: model.H is a local conduit depth, not an
+        # areal quantity, so it is not offered as a state.W closure (see
+        # AbstractWaterThicknessAlgorithm's docstring) -- use model.H directly if you want that
+        # quantity.
         for (algorithm, clamped) in (
-            (ConduitThickness(), false),
             (ArealConduitThickness(), false),
             (DarcyWeisbachThickness(), true),
+            (DarcyWeisbachThickness(gradient_convention = MeanGradient()), true),
             (LaminarThickness(), true),
+            (LaminarThickness(gradient_convention = LocalGradient()), true),
         )
             state = HydroState(grid, mask, h, b)
+            # Wmin/Wmax passed explicitly (KORI-ULB's own Wdmin/Wdmax) to actually exercise the
+            # clamping logic below -- they default to 0.0/Inf (no clamp) otherwise.
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
-                                           water_thickness_algorithm = algorithm, dissipation_verbose = false)
+                                           water_thickness_algorithm = algorithm, dissipation_verbose = false,
+                                           Wmin = 1e-8, Wmax = 0.015)
             sim = SteadyStateSimulation(model, grid, state)
             run!(sim)
 
@@ -103,11 +113,14 @@ field_values(field) = interior(field, :, :, 1)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1.0, 5, 5)  # extreme -- forces the routing algorithm well past the clamp
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        # q_max defaults to Inf (no clamp) since KazmierczakHydroModel no longer applies KORI-ULB's
+        # bounds unasked -- pass it explicitly here, since that's exactly the value this regression
+        # test exists to check the unit conversion of.
+        q_max = perYear2perSecond(1e5)
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; q_max, dissipation_verbose = false)
 
         run!(SteadyStateSimulation(model, grid, state))
 
-        q_max = perYear2perSecond(1e5)
         @test all(<=(q_max), field_values(model.q))
         @test any(>=(q_max - 1e-12), field_values(model.q))
     end
