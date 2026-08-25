@@ -27,8 +27,8 @@ end
 $(TYPEDSIGNATURES)
 
 The constructor to the struct for the HydroState. The user must provide inputs for the ice thickness h, the bedrock elevation b,
-the melt rate per unit area in the x-y plane [Kg m-2 s-1], and the mask which should take the value 1 for grounded ice. The remaining
-fields of the state are initialized to zero, specifically the effective pressure N [Pa] and water layer thickness W [m].
+and the mask which should take the value 1 for grounded ice. The remaining fields of the state are initialized to zero, specifically
+the effective pressure N [Pa] and water layer thickness W [m].
 
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 

@@ -1,11 +1,47 @@
 """
 $(TYPEDSIGNATURES)
 
+Compute the bed hardness field `κ` (0: hard, 1: soft) from the bed elevation `b` according to
+`bed_rheology` (`:hard`, `:soft`, `:mixed`, or `:mixed_smooth`).
+"""
+function initialize_κ(Nx, Ny, b; bed_rheology)
+
+    T = eltype(b)
+
+    if bed_rheology == :hard
+        κ = zeros(T, Nx, Ny)
+    elseif bed_rheology == :soft
+        κ = ones(T, Nx, Ny)
+    elseif bed_rheology == :mixed
+        κ = zeros(T, Nx, Ny)
+        κ[b .< -1000] .= T(1.0)
+    elseif bed_rheology == :mixed_smooth
+        κ = zeros(T, Nx, Ny)
+        for j in 1:Ny
+            for i in 1:Nx
+                if b[i, j] <= -1500
+                    κ[i, j] = 1
+                elseif b[i, j] <= -500
+                    κ[i, j] = (b[i, j] - (-500))/(-1500 - (-500))
+                end
+            end
+        end
+    end
+
+    return κ
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Load a `.mat` file from the Kazmierczak et al. (2024) Thwaites hydrology output
 and return the processed fields needed for the simulation.
 
 # Arguments
 - `path::String`: path to the `.mat` file.
+- `bed_rheology`: bed hardness rule used to compute `κ` (`:hard`, `:soft`, `:mixed`, or `:mixed_smooth`; default `:hard`).
 
 # Returns
 - `Nx, Ny`: grid dimensions.
@@ -15,7 +51,14 @@ and return the processed fields needed for the simulation.
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
 - `A_visc`: viscocity parameter in Glen's flow law.
-- `ṁ`: basal melt rate per unit area (kg m⁻² s⁻¹).
+- `G`: geothermal heat flux (W m⁻²), for `KazmierczakHydroModel`'s `G_in`/`q_T_in` constructor (Eq. 3 of
+  Kazmierczak et al 2024).
+- `q_T`: conductive heat flux into the ice at the bed (W m⁻²). The source file has no field for this term
+  (only relevant for cold-based ice), so it is returned as zero everywhere -- pass a real field yourself if
+  your bed isn't uniformly temperate.
+- `ṁ`: complete basal melt rate per unit area (kg m⁻² s⁻¹), i.e. the source model's own converged Eq. 3
+  output (already includes its own frictional-heating and, likely, dissipation terms) -- for
+  `KazmierczakHydroModel`'s `mdot_in` constructor, normally paired with `sliding_law = NoSlidingLaw()`.
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_Kazmierczak(path::String; bed_rheology = :hard)
@@ -40,43 +83,19 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
     # background with narrow low-N channels this model actually produces once fixed).
     A_visc = perYear2perSecond.(data["A"])
     ṁ = perYear2perSecond.(data["Bmelt"]) .* 1000 # They stored this variable in per year units and as ṁ/ρ_w so we multiply by ρ_w = 1000 to get ṁ
+    # `G` (geothermal heat flux) is stored directly in W/m^2 -- values run 0.086-0.14 here, squarely in the
+    # plausible range for Antarctica, so unlike ub/A/Bmelt above it needs no unit conversion.
+    G = data["G"]
+    q_T = zeros(eltype(G), Nx, Ny)
 
     # Note: x and y are swapped in the file, and converted from km to m
-    xc = Km2m.(data["y"]) 
+    xc = Km2m.(data["y"])
     yc = Km2m.(data["x"])
     xlims, ylims = compute_lims(xc, yc)
 
-    function initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
-        
-        T = eltype(b)
+    κ = initialize_κ(Nx, Ny, b; bed_rheology)
 
-        if bed_rheology == :hard 
-            κ = zeros(T, Nx, Ny) 
-        elseif bed_rheology == :soft
-            κ = ones(T, Nx, Ny)
-        elseif bed_rheology == :mixed
-            κ = zeros(T, Nx, Ny)
-            κ[b .< -1000] .= T(1.0)
-        elseif bed_rheology == :mixed_smooth
-            κ = zeros(T, Nx, Ny)
-            for j in 1:Ny
-                for i in 1:Nx
-                    if b[i, j] <= -1500
-                        κ[i, j] = 1
-                    elseif b[i, j] <= -500
-                        κ[i, j] = (b[i, j] - (-500))/(-1500 - (-500))
-                    end
-                end
-            end
-        end
-
-        return κ
-
-    end
-
-    κ = initialize_κ!(Nx, Ny, b; bed_rheology)
-
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ
 
 end
 
@@ -88,7 +107,7 @@ Load an NCDatasets file from the yelmox and return the processed fields needed f
 
 # Arguments
 - `path::String`: path to the `.nc` file.
-- `resolution::Int`: either 16 or 32 km resolution
+- `bed_rheology`: bed hardness rule used to compute `κ` (`:hard`, `:soft`, `:mixed`, or `:mixed_smooth`; default `:mixed_smooth`).
 
 # Returns
 - `Nx, Ny`: grid dimensions.
@@ -98,7 +117,13 @@ Load an NCDatasets file from the yelmox and return the processed fields needed f
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
 - `A_visc`: viscocity parameter in Glen's flow law.
-- `ṁ`: basal melt rate per unit area (Kg m⁻² s⁻¹).
+- `G`: geothermal heat flux (W m⁻²), for `KazmierczakHydroModel`'s `G_in`/`q_T_in` constructor (Eq. 3 of
+  Kazmierczak et al 2024).
+- `q_T`: conductive heat flux into the ice at the bed (W m⁻²), Yelmo's own `Q_ice_b`, for the same
+  constructor.
+- `ṁ`: complete basal melt rate per unit area (Kg m⁻² s⁻¹), i.e. Yelmo's own converged basal mass balance
+  (already includes its own frictional-heating term `Q_b`) -- for `KazmierczakHydroModel`'s `mdot_in`
+  constructor, normally paired with `sliding_law = NoSlidingLaw()`.
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_yelmox(path::String; bed_rheology = :mixed_smooth)
@@ -132,38 +157,15 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     # rate divided by rho_w. Negative bmb is mass loss (melting), hence the sign flip to get a melt
     # rate; rho_ice = 917.0 matches Yelmo.jl's own default rho_ice constant (YelmoConst.jl).
     ṁ = perYear2perSecond.(reshape(-ds["bmb"][:], Nx, Ny)) .* 917.0
-   
-    function initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
-        
-        T = eltype(b)
+    # Q_geo/Q_ice_b are already instantaneous heat fluxes (not ice-equivalent thickness rates like
+    # bmb above), so unlike ux_b/ATT/bmb they need no per-year conversion -- only Q_geo's stated
+    # "mW m^-2" units need scaling to the W/m^2 this model works in.
+    G = reshape(ds["Q_geo"][:], Nx, Ny) ./ 1000.0
+    q_T = reshape(ds["Q_ice_b"][:], Nx, Ny)
 
-        if bed_rheology == :hard 
-            κ = zeros(T, Nx, Ny) 
-        elseif bed_rheology == :soft
-            κ = ones(T, Nx, Ny)
-        elseif bed_rheology == :mixed
-            κ = zeros(T, Nx, Ny)
-            κ[b .< -1000] .= T(1.0)
-        elseif bed_rheology == :mixed_smooth
-            κ = zeros(T, Nx, Ny)
-            for j in 1:Ny
-                for i in 1:Nx
-                    if b[i, j] <= -1500
-                        κ[i, j] = 1
-                    elseif b[i, j] <= -500
-                        κ[i, j] = (b[i, j] - (-500))/(-1500 - (-500))
-                    end
-                end
-            end
-        end
+    κ = initialize_κ(Nx, Ny, b; bed_rheology)
 
-        return κ
-
-    end
-
-    κ = initialize_κ!(Nx, Ny, b; bed_rheology = bed_rheology)
-
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ
 
 end
 

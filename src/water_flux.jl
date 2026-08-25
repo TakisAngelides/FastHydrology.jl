@@ -178,8 +178,8 @@ $(TYPEDSIGNATURES)
 With an N-dependent sliding law (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`), tau_b
 depends on N, which is itself downstream of q -- so q and N form a joint fixed point regardless of
 `model.dissipation_melt`. Each sweep: recompute tau_b from the current N, add it (plus the
-dissipation term, if `model.dissipation_melt` is on) to the water source, route q, then update W
-and N from the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
+dissipation term, if `model.dissipation_melt` is on) to the water source, route q, then update N from 
+the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
 changing (each relative to its own peak magnitude) to within `model.coupling_rtol`, capped at
 `model.max_coupling_iters` sweeps. If `model.coupling_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
@@ -207,7 +207,6 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         route_psi_out!(model, grid, state)
         @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
-        update_W!(model, grid, state)
         update_N!(model, grid, state)
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)

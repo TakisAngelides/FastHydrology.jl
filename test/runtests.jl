@@ -336,12 +336,13 @@ field_values(field) = interior(field, :, :, 1)
                 "ub"    => fill(100.0, Nx, Ny),
                 "A"     => fill(1e-24, Nx, Ny),
                 "Bmelt" => fill(0.1, Nx, Ny),
+                "G"     => fill(0.1, Nx, Ny),
                 "x"     => collect(0.0:1.0:(Ny - 1)),
                 "y"     => collect(0.0:1.0:(Nx - 1)),
             ))
 
             for bed_rheology in (:hard, :soft, :mixed, :mixed_smooth)
-                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ =
+                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ =
                     load_Kazmierczak(path; bed_rheology = bed_rheology)
                 @test Nx_out == Nx
                 @test Ny_out == Ny
@@ -384,10 +385,12 @@ field_values(field) = interior(field, :, :, 1)
                 defVar(ds, "uy_b", fill(50.0, Nx, Ny), ("xc", "yc"))
                 defVar(ds, "ATT", fill(1e-24, Nx, Ny, 1), ("xc", "yc", "layer"))
                 defVar(ds, "bmb", fill(0.1, Nx, Ny), ("xc", "yc"))
+                defVar(ds, "Q_geo", fill(60.0, Nx, Ny), ("xc", "yc"))
+                defVar(ds, "Q_ice_b", fill(0.05, Nx, Ny), ("xc", "yc"))
             end
 
             for bed_rheology in (:hard, :soft, :mixed, :mixed_smooth)
-                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ =
+                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ =
                     load_yelmox(path; bed_rheology = bed_rheology)
                 @test Nx_out == Nx
                 @test Ny_out == Ny

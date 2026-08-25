@@ -21,7 +21,7 @@ using CairoMakie
 
 T = Float64
 path = joinpath(@__DIR__, "input", "Kazmierczak2024", "THWAITES2km_m3_HAB_toto.mat")
-Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ = load_Kazmierczak(path)
+Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ = load_Kazmierczak(path)
 
 # Prepare a grid using the Oceananigans rectilinear grid, and visualize it.
 grid = OGRectHydroGrid(Nx, Ny, xlims, ylims; T = T)

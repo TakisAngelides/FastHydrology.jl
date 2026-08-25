@@ -26,7 +26,7 @@ using CairoMakie
 
 T = Float64
 path = joinpath(@__DIR__, "input", "Kazmierczak2024", "THWAITES2km_m3_HAB_toto.mat")
-Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, ṁ, κ = load_Kazmierczak(path; bed_rheology = :hard)
+Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ = load_Kazmierczak(path; bed_rheology = :hard)
 
 # Prepare a grid using the Oceananigans rectilinear grid, and visualize it.
 grid = OGRectHydroGrid(Nx, Ny, xlims, ylims; T = T)
@@ -80,6 +80,24 @@ run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
 model_sliding.tau_b .*= 1e-6 # makes tau_b [MPa]
 model_sliding.tau_b .= mask_field(model_sliding.tau_b, state_sliding.mask, NaN)
 fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stress tau_b [MPa]", transpose_data = true, colorrange = extrema(filter(!isnan, model_sliding.tau_b.data)))
+
+# ## Computing the melt rate faithfully from Eq. 3
+#
+# ṁ above is `load_Kazmierczak`'s `Bmelt` field: KORI-ULB's own converged melt-rate output for this
+# Thwaites run, which already bakes in that model's own frictional-heating estimate. Passing it to
+# `mdot_in` above only stays free of double-counting because `sliding_law = NoSlidingLaw()` is the
+# default -- no frictional term is added by FastHydrology on top of it.
+#
+# If you'd rather have FastHydrology compute the melt rate itself, faithfully to Eq. 3 (background
+# term `(G - q_T)/L_w`, with the frictional-heating and dissipation terms added on top dynamically,
+# same as above), use the other `KazmierczakHydroModel` constructor: `G` and `q_T` (both [W/m^2]) instead
+# of ṁ. `load_Kazmierczak` returns a real geothermal flux field `G`; it has no `q_T` field of its own,
+# so `load_Kazmierczak` returns it as zero everywhere (the usual temperate-bed assumption) -- both are
+# mandatory arguments precisely so that assumption has to be made explicit, not silent.
+model_from_G = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
+                                      sliding_law = sliding_law, dissipation_verbose = false, coupling_verbose = false)
+state_from_G = HydroState(grid, mask, h, b)
+run!(SteadyStateSimulation(model_from_G, grid, state_from_G))
 ```
 
 ## Results
