@@ -41,7 +41,11 @@ mdot    = fill(1e-6, Nx, Ny)                          # basal melt rate [kg m⁻
 # ever touch the grid through `alloc_field` and `grid.Nx`/`grid.Ny`/`grid.dx`/`grid.dy`, never
 # Oceananigans directly.
 
-model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+# `longcoupwater` (the stress-gradient-coupling smoothing width) has no safe default that works
+# for every grid resolution, so it must be passed explicitly or `KazmierczakHydroModel` warns and
+# falls back to 5.0 -- see its docstring for how to choose a value from your own grid's resolution
+# relative to ice thickness. 5.0 is well resolved at this grid's 1 km spacing.
+model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 5.0, dissipation_verbose = false)
 state = HydroState(grid, mask, h, b)
 
 sim = SteadyStateSimulation(model, grid, state)

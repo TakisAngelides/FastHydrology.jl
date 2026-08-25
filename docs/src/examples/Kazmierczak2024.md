@@ -41,7 +41,17 @@ fig = visualize_grid(grid)
 # generality. It can be turned off with `dissipation_melt = false` to reproduce the paper's
 # original water balance exactly. We also silence the per-call Picard convergence printout here
 # with `dissipation_verbose = false`.
-model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ; dissipation_verbose = false)
+#
+# `longcoupwater` (the stress-gradient-coupling smoothing width) has no safe default that works
+# for every grid resolution, so it must be passed explicitly or `KazmierczakHydroModel` warns and
+# falls back to 5.0 -- see its docstring for how to choose a value from your own grid's resolution
+# relative to ice thickness. 5.0 is appropriate for this dataset's 2 km grid.
+#
+# `state.W`'s closure (`water_thickness_algorithm`, default `DarcyWeisbachThickness()`) and its
+# numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`, all no-op by default -- nothing is
+# clamped unless you ask for it) are left at their defaults here; see the API reference for the
+# other closures (`ArealConduitThickness`, `LaminarThickness`) and KORI-ULB's own bound values.
+model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ; longcoupwater = 5.0, dissipation_verbose = false)
 state = HydroState(grid, mask, h, b)
 sim   = SteadyStateSimulation(model, grid, state)
 run!(sim)
@@ -54,7 +64,7 @@ state.N .= mask_field(state.N, state.mask, NaN)
 state.W .= mask_field(state.W, state.mask, NaN)
 
 fig_q = visualize_field(model.q; plot_title = "Distributed water flux q [10⁴ m² a⁻¹]", transpose_data = true, colorrange = (0, 10))
-fig_W = visualize_field(state.W; plot_title = "Water thickness W [m]", transpose_data = true, colorrange = extrema(filter(!isnan, state.W.data)))
+fig_W = visualize_field(state.W; plot_title = "Water thickness W [m] (DarcyWeisbachThickness)", transpose_data = true, colorrange = extrema(filter(!isnan, state.W.data)))
 fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, colorrange = (0, 10))
 
 # ## Adding a basal sliding law
@@ -73,7 +83,8 @@ fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", tran
 # parameters below (`c_till`, `q`, `u0`) are illustrative, not calibrated to Thwaites.
 sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
 model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ;
-                                       sliding_law = sliding_law, dissipation_verbose = false, coupling_verbose = false)
+                                       sliding_law = sliding_law, longcoupwater = 5.0,
+                                       dissipation_verbose = false, coupling_verbose = false)
 state_sliding = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
 
@@ -95,7 +106,8 @@ fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stres
 # so `load_Kazmierczak` returns it as zero everywhere (the usual temperate-bed assumption) -- both are
 # mandatory arguments precisely so that assumption has to be made explicit, not silent.
 model_from_G = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
-                                      sliding_law = sliding_law, dissipation_verbose = false, coupling_verbose = false)
+                                      sliding_law = sliding_law, longcoupwater = 5.0,
+                                      dissipation_verbose = false, coupling_verbose = false)
 state_from_G = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_from_G, grid, state_from_G))
 ```
