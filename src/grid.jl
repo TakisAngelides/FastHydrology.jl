@@ -66,8 +66,17 @@ $(TYPEDSIGNATURES)
 A grid backed by plain `Array`s -- no Oceananigans dependency. `Nx`, `Ny`, `dx`, `dy` are cached at
 construction time, same as `OGRectHydroGrid`, so generic code can read them directly.
 
-Needs no overrides of the grid interface beyond `alloc_field`: `fill_halo!` is a no-op (fields carry
-no separate halo storage), and the default plain-array implementations of `convolve!`,
+`conv_cache` holds FFT plans/buffers for `convolve!` (see fft_convolution.jl), same role and same
+lazy-build-on-first-use behaviour as `OGRectHydroGrid`'s own `conv_cache` -- see its docstring.
+`cached_fft_convolve!` is grid-agnostic (its `dest`/`src`/`kernel` arguments are plain
+`AbstractMatrix`, nothing Oceananigans-specific), so `ArrayHydroGrid` reuses it directly instead of
+falling back to the generic `convolve!` default below (which calls `ImageFiltering.imfilter!` --
+confirmed by profiling to allocate its FFT plans and padded/complex buffers fresh on every call,
+~20 MB on a realistic grid, since it exposes no hook to reuse them across the repeated calls one
+coupled simulation makes).
+
+Needs no other overrides of the grid interface beyond `alloc_field`: `fill_halo!` is a no-op
+(fields carry no separate halo storage), and the default plain-array implementations of
 `masked_mean`, `minus_gradient_x!`/`minus_gradient_y!`, etc. already operate correctly on the
 `Array`s this type allocates.
 """
@@ -76,6 +85,7 @@ struct ArrayHydroGrid{T <: AbstractFloat} <: AbstractHydroGrid
     Ny::Int
     dx::T
     dy::T
+    conv_cache::Base.RefValue{Any}
 end
 
 
@@ -104,7 +114,7 @@ function ArrayHydroGrid(Nx::I, Ny::I, xlims, ylims; T = Float64) where {I <: Int
     dx = T(xlims[2] - xlims[1]) / Nx
     dy = T(ylims[2] - ylims[1]) / Ny
 
-    return ArrayHydroGrid(Nx, Ny, dx, dy)
+    return ArrayHydroGrid(Nx, Ny, dx, dy, Ref{Any}(nothing))
 end
 
 
@@ -157,12 +167,22 @@ Convolve `src` with `kernel` and write the result into `dest`, both cell-centere
 
 Unlike the other grid-interface functions above, this one has a real default implementation
 rather than an `error` stub: it assumes `dest`/`src` already behave like plain arrays, which holds
-for most simple grid backends. Override it, as done below for `OGRectHydroGrid`, only for grid
-backends whose fields wrap a different underlying array storage (so that `imfilter!`, which knows
-nothing about that wrapper, can be handed the raw array instead).
+for most simple grid backends. This default calls `ImageFiltering.imfilter!` directly, which
+allocates fresh FFT plans and padded/complex buffers on every call (no caching hook available) --
+fine for a grid backend that only convolves occasionally, but both concrete grid types this package
+ships (`ArrayHydroGrid`, `OGRectHydroGrid`) override this instead with a `conv_cache`-backed call to
+`cached_fft_convolve!` (fft_convolution.jl), since `update_smoothed_potential_gradients!` calls this
+every solve of a coupled simulation. A new grid backend whose fields behave like plain arrays can
+either accept this default (if convolution is rare for it) or add its own `conv_cache` field and
+override, following the same pattern.
 """
 function convolve!(grid::AbstractHydroGrid, dest, src, kernel)
     imfilter!(dest, src, centered(kernel))
+    return nothing
+end
+
+function convolve!(grid::ArrayHydroGrid, dest, src, kernel)
+    cached_fft_convolve!(grid.conv_cache, dest, src, kernel)
     return nothing
 end
 
@@ -212,37 +232,63 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Return the mean of `field` restricted to cells where `mask` equals 1.
+Return the list of `CartesianIndex`es where `mask` equals 1, for use with `masked_mean`/
+`masked_max_abs`/`masked_max_abs_diff` below. Callers that call those functions repeatedly on the
+*same* mask within one scope (e.g. `resolve_q!`'s Picard/coupling loop in water_flux.jl, which calls
+them up to `max_dissipation_iters`/`max_coupling_iters` times per solve) should compute this once as
+a local variable and reuse it, rather than letting each call recompute `mask .== 1` from scratch --
+that recomputation is real, measured cost (confirmed: cutting it saves ~9x memory and ~35% time on a
+realistic `OGRectHydroGrid` solve). Deliberately NOT cached on `HydroState`/`KazmierczakParams`
+across separate `resolve_q!` calls: the grounded-cell count changes as a coupled ice-flow model's
+mask evolves timestep to timestep, so a persistent cache would need active invalidation to avoid
+going stale, and -- since its length varies as the grounded-cell count does, unlike every other
+field on `HydroState`, which are all fixed `(Nx, Ny)` arrays whose contents can be updated in place
+with zero extra allocation -- caching it would reintroduce exactly the kind of avoidable GC pressure
+this exists to eliminate, just at a per-timestep rather than per-iteration frequency. Computing it
+fresh once per `resolve_q!` call keeps all of the benefit within one solve with none of that risk.
+"""
+grounded_indices(grid::AbstractHydroGrid, mask) = findall(==(1), mask)
+
+"""
+$(TYPEDSIGNATURES)
+
+Return the mean of `field` restricted to grounded cells, given `idx` (see `grounded_indices`
+above).
 
 As with `convolve!`, the default here assumes `field` already behaves like a plain array; override
 it, as done below for `OGRectHydroGrid`, for grid backends whose fields wrap a different underlying
 array storage.
 """
-function masked_mean(grid::AbstractHydroGrid, field, mask)
-    return mean(@views field[mask .== 1])
+function masked_mean(grid::AbstractHydroGrid, field, idx)
+    return mean(@views field[idx])
 end
 
 
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs.(a .- b)`, restricted to cells where `mask` equals 1. Used to check
-convergence of fixed-point iterations (e.g. the dissipation-melt Picard loop in `update_q!`)
-without assuming `a`/`b` behave like plain arrays outside the masked reduction itself.
+Return the maximum of `abs(a[i] - b[i])` over grounded cells `i` (see `grounded_indices`'s
+docstring for `idx`). Used to check convergence of fixed-point iterations (e.g. the
+dissipation-melt Picard loop in `update_q!`) without assuming `a`/`b` behave like plain arrays
+outside the masked reduction itself. Written as `maximum(f, idx)`, not
+`maximum(abs.(a[idx] .- b[idx]))`, so the per-cell `abs` fuses into the reduction instead of
+materializing an intermediate array.
 """
-function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, mask)
-    return maximum(abs.(@views a[mask .== 1] .- b[mask .== 1]))
+function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, idx)
+    return maximum(i -> abs(a[i] - b[i]), idx)
 end
 
 
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs.(field)`, restricted to cells where `mask` equals 1. Paired with
-`masked_max_abs_diff` to build a relative convergence tolerance.
+Return the maximum of `abs(field[i])` over grounded cells `i` (see `grounded_indices`'s docstring
+for `idx`). Paired with `masked_max_abs_diff` to build a relative convergence tolerance. Fuses the
+`abs` into the reduction rather than allocating an intermediate array, same reasoning as
+`masked_max_abs_diff` above.
 """
-function masked_max_abs(grid::AbstractHydroGrid, field, mask)
-    return maximum(abs.(@views field[mask .== 1]))
+function masked_max_abs(grid::AbstractHydroGrid, field, idx)
+    return maximum(i -> abs(field[i]), idx)
 end
 
 
@@ -301,16 +347,21 @@ function minus_gradient_y!(::OGRectHydroGrid, dest, field)
     return nothing
 end
 
-function masked_mean(grid::OGRectHydroGrid, field, mask)
-    return mean(@views interior(field, :, :, 1)[mask .== 1])
+grounded_indices(grid::OGRectHydroGrid, mask) = findall(==(1), interior(mask, :, :, 1))
+
+function masked_mean(grid::OGRectHydroGrid, field, idx)
+    return mean(@views interior(field, :, :, 1)[idx])
 end
 
-function masked_max_abs_diff(grid::OGRectHydroGrid, a, b, mask)
-    return maximum(abs.(@views interior(a, :, :, 1)[mask .== 1] .- interior(b, :, :, 1)[mask .== 1]))
+function masked_max_abs_diff(grid::OGRectHydroGrid, a, b, idx)
+    ai = interior(a, :, :, 1)
+    bi = interior(b, :, :, 1)
+    return maximum(i -> abs(ai[i] - bi[i]), idx)
 end
 
-function masked_max_abs(grid::OGRectHydroGrid, field, mask)
-    return maximum(abs.(@views interior(field, :, :, 1)[mask .== 1]))
+function masked_max_abs(grid::OGRectHydroGrid, field, idx)
+    fi = interior(field, :, :, 1)
+    return maximum(i -> abs(fi[i]), idx)
 end
 
 function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; scale = true)
