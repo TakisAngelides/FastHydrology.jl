@@ -232,63 +232,65 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Return the list of `CartesianIndex`es where `mask` equals 1, for use with `masked_mean`/
-`masked_max_abs`/`masked_max_abs_diff` below. Callers that call those functions repeatedly on the
-*same* mask within one scope (e.g. `resolve_q!`'s Picard/coupling loop in water_flux.jl, which calls
-them up to `max_dissipation_iters`/`max_coupling_iters` times per solve) should compute this once as
-a local variable and reuse it, rather than letting each call recompute `mask .== 1` from scratch --
-that recomputation is real, measured cost (confirmed: cutting it saves ~9x memory and ~35% time on a
-realistic `OGRectHydroGrid` solve). Deliberately NOT cached on `HydroState`/`KazmierczakParams`
-across separate `resolve_q!` calls: the grounded-cell count changes as a coupled ice-flow model's
-mask evolves timestep to timestep, so a persistent cache would need active invalidation to avoid
-going stale, and -- since its length varies as the grounded-cell count does, unlike every other
-field on `HydroState`, which are all fixed `(Nx, Ny)` arrays whose contents can be updated in place
-with zero extra allocation -- caching it would reintroduce exactly the kind of avoidable GC pressure
-this exists to eliminate, just at a per-timestep rather than per-iteration frequency. Computing it
-fresh once per `resolve_q!` call keeps all of the benefit within one solve with none of that risk.
-"""
-grounded_indices(grid::AbstractHydroGrid, mask) = findall(==(1), mask)
+Return the mean of `field` restricted to cells where `mask == 1`. Fuses the mask check into the
+reduction (branchless, via `ifelse`, so it vectorizes) instead of materializing a list of grounded
+indices first -- benchmarked faster than the earlier `findall(==(1), mask)` + index-list approach
+at every grounded-fraction tested (1%-95%), including when amortized over the several masked_*
+calls per Picard/coupling iteration in `resolve_q!` (water_flux.jl): `findall`'s vector-growth cost
+and the scattered (non-sequential) memory access of indexing through a `CartesianIndex` list both
+lose to a single dense, branchless pass over `field`/`mask` together, even though the dense pass
+touches every cell rather than just the grounded ones.
 
+As with `convolve!`, the default here assumes `field`/`mask` already behave like plain arrays;
+override it, as done below for `OGRectHydroGrid`, for grid backends whose fields wrap a different
+underlying array storage.
 """
-$(TYPEDSIGNATURES)
-
-Return the mean of `field` restricted to grounded cells, given `idx` (see `grounded_indices`
-above).
-
-As with `convolve!`, the default here assumes `field` already behaves like a plain array; override
-it, as done below for `OGRectHydroGrid`, for grid backends whose fields wrap a different underlying
-array storage.
-"""
-function masked_mean(grid::AbstractHydroGrid, field, idx)
-    return mean(@views field[idx])
+function masked_mean(grid::AbstractHydroGrid, field, mask)
+    s = zero(eltype(field))
+    cnt = 0
+    @inbounds @simd for i in eachindex(field, mask)
+        m = mask[i] == 1
+        s   += ifelse(m, field[i], zero(eltype(field)))
+        cnt += ifelse(m, 1, 0)
+    end
+    return s / cnt
 end
 
 
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs(a[i] - b[i])` over grounded cells `i` (see `grounded_indices`'s
-docstring for `idx`). Used to check convergence of fixed-point iterations (e.g. the
-dissipation-melt Picard loop in `update_q!`) without assuming `a`/`b` behave like plain arrays
-outside the masked reduction itself. Written as `maximum(f, idx)`, not
-`maximum(abs.(a[idx] .- b[idx]))`, so the per-cell `abs` fuses into the reduction instead of
-materializing an intermediate array.
+Return the maximum of `abs(a[i] - b[i])` over cells where `mask == 1`. Used to check convergence of
+fixed-point iterations (e.g. the dissipation-melt Picard loop in `update_q!`). Same fused,
+branchless reduction as `masked_mean` above -- see its docstring for why this beats precomputing a
+grounded-index list.
 """
-function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, idx)
-    return maximum(i -> abs(a[i] - b[i]), idx)
+function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, mask)
+    best = zero(eltype(a))
+    @inbounds @simd for i in eachindex(a, b, mask)
+        m = mask[i] == 1
+        v = ifelse(m, abs(a[i] - b[i]), zero(eltype(a)))
+        best = ifelse(v > best, v, best)
+    end
+    return best
 end
 
 
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs(field[i])` over grounded cells `i` (see `grounded_indices`'s docstring
-for `idx`). Paired with `masked_max_abs_diff` to build a relative convergence tolerance. Fuses the
-`abs` into the reduction rather than allocating an intermediate array, same reasoning as
-`masked_max_abs_diff` above.
+Return the maximum of `abs(field[i])` over cells where `mask == 1`. Paired with
+`masked_max_abs_diff` to build a relative convergence tolerance. Same fused, branchless reduction
+as `masked_mean` above -- see its docstring for why this beats precomputing a grounded-index list.
 """
-function masked_max_abs(grid::AbstractHydroGrid, field, idx)
-    return maximum(i -> abs(field[i]), idx)
+function masked_max_abs(grid::AbstractHydroGrid, field, mask)
+    best = zero(eltype(field))
+    @inbounds @simd for i in eachindex(field, mask)
+        m = mask[i] == 1
+        v = ifelse(m, abs(field[i]), zero(eltype(field)))
+        best = ifelse(v > best, v, best)
+    end
+    return best
 end
 
 
@@ -347,21 +349,58 @@ function minus_gradient_y!(::OGRectHydroGrid, dest, field)
     return nothing
 end
 
-grounded_indices(grid::OGRectHydroGrid, mask) = findall(==(1), interior(mask, :, :, 1))
 
-function masked_mean(grid::OGRectHydroGrid, field, idx)
-    return mean(@views interior(field, :, :, 1)[idx])
+# `field[i, j, 1]` on an Oceananigans `Field` is already halo-aware -- it returns exactly the same
+# value as `interior(field, :, :, 1)[i, j]`, since the field's underlying storage is an OffsetArray
+# whose index 1 lands on the first interior cell (confirmed: for a (Nx,Ny) field with any halo size,
+# direct (i,j,1) indexing over i in 1:Nx, j in 1:Ny reproduces `interior(...)` exactly). So the loop
+# below skips `interior(...)` entirely rather than paying for it up front and indexing the result.
+#
+# It also avoids `eachindex(interior(field,:,:,1), interior(mask,:,:,1))` on principle, not just to
+# skip the `interior` call: `interior(...)` returns a `SubArray` that does not support fast linear
+# indexing, so `eachindex` on it returns `CartesianIndices`, and `@simd for i in <CartesianIndices>`
+# falls through to a generic, non-specializing iteration path -- confirmed by profiling to fully
+# lose type inference (every intermediate boxed to `Any`) and allocate ~6 times per cell instead of
+# running allocation-free. A plain nested `for j in 1:Ny; @simd for i in 1:Nx` loop with direct
+# (i,j,1) indexing sidesteps that trap entirely.
+function masked_mean(grid::OGRectHydroGrid, field, mask)
+    Nx, Ny = grid.Nx, grid.Ny
+    s = zero(eltype(field))
+    cnt = 0
+    @inbounds for j in 1:Ny
+        @simd for i in 1:Nx
+            m = mask[i, j, 1] == 1
+            s   += ifelse(m, field[i, j, 1], zero(eltype(field)))
+            cnt += ifelse(m, 1, 0)
+        end
+    end
+    return s / cnt
 end
 
-function masked_max_abs_diff(grid::OGRectHydroGrid, a, b, idx)
-    ai = interior(a, :, :, 1)
-    bi = interior(b, :, :, 1)
-    return maximum(i -> abs(ai[i] - bi[i]), idx)
+function masked_max_abs_diff(grid::OGRectHydroGrid, a, b, mask)
+    Nx, Ny = grid.Nx, grid.Ny
+    best = zero(eltype(a))
+    @inbounds for j in 1:Ny
+        @simd for i in 1:Nx
+            m = mask[i, j, 1] == 1
+            v = ifelse(m, abs(a[i, j, 1] - b[i, j, 1]), zero(eltype(a)))
+            best = ifelse(v > best, v, best)
+        end
+    end
+    return best
 end
 
-function masked_max_abs(grid::OGRectHydroGrid, field, idx)
-    fi = interior(field, :, :, 1)
-    return maximum(i -> abs(fi[i]), idx)
+function masked_max_abs(grid::OGRectHydroGrid, field, mask)
+    Nx, Ny = grid.Nx, grid.Ny
+    best = zero(eltype(field))
+    @inbounds for j in 1:Ny
+        @simd for i in 1:Nx
+            m = mask[i, j, 1] == 1
+            v = ifelse(m, abs(field[i, j, 1]), zero(eltype(field)))
+            best = ifelse(v > best, v, best)
+        end
+    end
+    return best
 end
 
 function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; scale = true)

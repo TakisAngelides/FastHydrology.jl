@@ -144,14 +144,6 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     update_tau_b!(model, state, sliding_law)
 
-    # Computed once per resolve_q! call, not cached on state: the loop below calls
-    # masked_max_abs/masked_max_abs_diff up to max_dissipation_iters times, and each used to
-    # recompute mask .== 1 from scratch -- real, measured cost (see grounded_indices' docstring in
-    # grid.jl). A local variable gets the same benefit within this one solve without persisting
-    # anything across separate resolve_q! calls, so there's nothing to go stale as mask evolves
-    # timestep to timestep in a coupled simulation.
-    idx = grounded_indices(grid, state.mask)
-
     for iter in 1:model.max_dissipation_iters
 
         model.q_prev .= model.q
@@ -167,8 +159,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
-        q_scale = max(masked_max_abs(grid, model.q, idx), 1e-15)
-        if masked_max_abs_diff(grid, model.q, model.q_prev, idx) <= model.dissipation_rtol * q_scale
+        q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
+        if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
             converged = true
             n_iters   = iter
             break
@@ -210,10 +202,6 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
     converged  = false
     n_iters    = model.max_coupling_iters
 
-    # See the equivalent comment in the DissipationMeltOn/Union{NoSlidingLaw,WeertmanSlidingLaw}
-    # method above -- same reasoning, local to this one resolve_q! call.
-    idx = grounded_indices(grid, state.mask)
-
     for iter in 1:model.max_coupling_iters
 
         model.q_prev .= model.q
@@ -228,10 +216,10 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         update_N!(model, grid, state)
 
-        q_scale = max(masked_max_abs(grid, model.q, idx), 1e-15)
-        N_scale = max(masked_max_abs(grid, state.N, idx), 1e-15)
-        q_converged = masked_max_abs_diff(grid, model.q, model.q_prev, idx) <= model.coupling_rtol * q_scale
-        N_converged = masked_max_abs_diff(grid, state.N, model.N_prev, idx) <= model.coupling_rtol * N_scale
+        q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
+        N_scale = max(masked_max_abs(grid, state.N, state.mask), 1e-15)
+        q_converged = masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.coupling_rtol * q_scale
+        N_converged = masked_max_abs_diff(grid, state.N, model.N_prev, state.mask) <= model.coupling_rtol * N_scale
 
         if q_converged && N_converged
             converged = true
@@ -319,7 +307,7 @@ function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHy
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
-    abs_grad_phi0_mean = masked_mean(grid, model.abs_grad_phi0, grounded_indices(grid, state.mask))
+    abs_grad_phi0_mean = masked_mean(grid, model.abs_grad_phi0, state.mask)
     @. state.W = min(model.Wmax, max(model.Wmin,
         (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + 1e-15))^(1/3)))
     return nothing
@@ -347,7 +335,7 @@ function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
 end
 
 function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
-    abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, grounded_indices(grid, state.mask))
+    abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
     @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
     return nothing
 end
@@ -456,7 +444,7 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     end
 
     # Average grounded-ice thickness
-    h_avg = max(masked_mean(grid, model.h, grounded_indices(grid, state.mask)), 10.0)
+    h_avg = max(masked_mean(grid, model.h, state.mask), 10.0)
 
     # Grid spacing in each direction. The kernel below computes each cell's distance from the
     # center using dx and dy separately, rather than collapsing both to a single isotropic
