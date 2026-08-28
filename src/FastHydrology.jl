@@ -32,6 +32,7 @@ export minus_gradient_x!, minus_gradient_y!
 
 # model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
+export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly
 export AbstractSlidingLaw, NoSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw
 export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut
 export AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness

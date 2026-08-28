@@ -376,13 +376,45 @@ convert_sliding_law(::Type{T}, law::RegularizedCoulombSlidingLaw) where {T <: Ab
 """
 $(TYPEDSIGNATURES)
 
+Trait controlling which opening terms `update_N_inf!` includes in Eq. (5b)/(6a) of Kazmierczak et al
+2024, and which `Q_c` `update_H!` uses in Eq. (9) -- i.e. whether the model is left free to switch
+between efficient and inefficient drainage (the paper's default behaviour) or is forced to produce
+one or the other throughout, as in the paper's Sect. 3.2. Stored as a type parameter and resolved by
+multiple dispatch, the same pattern as `AbstractDissipationMelt` and `AbstractPsiOutAlgorithm` above.
+
+- `BothDrainage()` (default): both the sliding-over-obstacles opening term (||v_b||h_b, inefficient)
+  and the melt-driven opening term (Q_w||grad(phi)||/(rho_i*L_w), efficient) are included in Eq.
+  (5b), and `update_H!` uses the model's configured `Q_c` unchanged -- the paper's normal automatic
+  switch between drainage types based on the local water flux.
+- `EfficientOnly()`: the sliding opening term is dropped from Eq. (5b)/(6a), and `update_H!` is given
+  `Q_c = 0` so that Eq. (9)'s exp(-Q/Q_c) -> 0 for any Q > 0, forcing the soft-bed conduit geometry to
+  the canal/efficient case (H_soft -> H_0) everywhere.
+- `InefficientOnly()`: the melt opening term is dropped from Eq. (5b), and `update_H!` is given
+  `Q_c = Inf` so that exp(-Q/Q_c) -> 1, forcing the soft-bed conduit geometry to the inter-clastic-
+  film/inefficient case (H_soft -> sqrt(S_inf)/F_till) everywhere.
+
+Note the Q_c -> 0 / Q_c -> Inf assignment above is the *corrected* version of the paper's own Sect.
+3.2 description (as published, it prescribes Q_c = Inf for the entirely-efficient case and Q_c = 0
+for the entirely-inefficient case); the authors confirmed by email that this is a typo and the two
+are swapped, which also matches Eq. (9) directly -- the exp(-Q/Q_c) limits above only work out this
+way around.
+"""
+abstract type AbstractDrainageMode end
+struct BothDrainage    <: AbstractDrainageMode end
+struct EfficientOnly   <: AbstractDrainageMode end
+struct InefficientOnly <: AbstractDrainageMode end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Physical constants and solver configuration for `KazmierczakHydroModel` -- everything that is fixed
 once the model is constructed and never touched again during a solve. Split out from
 `KazmierczakWorkspace` (the mutable array buffers) so the two can be reasoned about and constructed
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_i           ::T    # Density of ice [kg/m3]
@@ -395,6 +427,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     f               ::T    # Darcy-Weisbach friction factor. Shared by K24's own conduit closure (folded into K = (2/pi)^(1/4)*sqrt((pi+2)/(rho_w*f)), which drives S_inf/H/N_inf) and DarcyWeisbachThickness's sheet-flow inversion (used directly) -- one parameter, not two, since both derive from the same Darcy-Weisbach physics (Schoof 2010/Clarke 1996)
     F_till          ::T    # Till compressibility/yield factor for soft-bed transition
     Q_c             ::T    # Threshold discharge for laminar-to-turbulent transition [m3/s]
+    drainage_mode   ::M    # BothDrainage()/EfficientOnly()/InefficientOnly(): which opening terms update_N_inf! includes and which effective Q_c update_H! uses -- see AbstractDrainageMode
     H_0             ::T    # Thickness of canals for soft bed deformation [m]
     l_c             ::T    # Distance between conduits [m]
     K               ::T    # Conductivity coefficient in Darcy-Weisbach relation
@@ -488,8 +521,8 @@ if a field is inserted out of order.
 `workspace`, so nothing in water_flux.jl/effective_pressure.jl/sliding_law.jl/run.jl needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm} <: AbstractHydroModel
-    params    ::KazmierczakParams{T, D, L, P, WT}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode} <: AbstractHydroModel
+    params    ::KazmierczakParams{T, D, L, P, WT, M}
     workspace ::KazmierczakWorkspace{A}
 end
 
@@ -591,6 +624,7 @@ function KazmierczakHydroModel(
     f             = 0.1,                          # Darcy-Weisbach friction factor -- shared between K (S_inf/H/N_inf) and DarcyWeisbachThickness, not a separate value for each; see KazmierczakParams' field comment
     F_till        = 1.1,                          # Till compressibility/yield factor for soft-bed transition
     Q_c           = 1.0,                          # Threshold discharge for laminar-to-turbulent transition [m3/s]
+    drainage_mode = BothDrainage(),               # BothDrainage()/EfficientOnly()/InefficientOnly(): which opening terms update_N_inf! includes and which effective Q_c update_H! uses -- see AbstractDrainageMode
     H_0           = 0.1,                          # Thickness of canals for soft bed deformation [m]
     l_c           = 10000.0,                      # Distance between conduits [m]
     eta_w         = perYear2perSecond(1.8e-3),     # Dynamic viscosity of water [Pa s] -- matches KORI-ULB's own par.waterviscosity, not literal SI water viscosity
@@ -699,7 +733,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters,
+        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
     )
