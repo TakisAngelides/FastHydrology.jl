@@ -297,34 +297,38 @@ end
 """
 $(TYPEDSIGNATURES)
 
-The actual masked-overwrite logic, shared by every `overwrite_where!` grid method below: given
-plain arrays (or a scalar for `src`), overwrite `dest` wherever `predicate(cond)` holds with
-`scale .* src` (restricted to the same cells if `src` is array-like).
-"""
-function _overwrite_where!(dest, cond, predicate, src, scale)
-    sel = predicate.(cond)
-    if src isa Number
-        @views dest[sel] .= scale * src
-    else
-        @views dest[sel] .= scale .* src[sel]
-    end
-    return nothing
-end
-
-
-"""
-$(TYPEDSIGNATURES)
-
-Overwrite cells of `dest` for which `predicate(cond)` holds with `scale .* src`, where `dest` and
+Overwrite cells of `dest` for which `predicate(cond)` holds with `scale * src`, where `dest` and
 `cond` are cell-centered fields on `grid`, `predicate` is a one-argument function (e.g. `==(0.0)`),
-and `src` is either a scalar or another cell-centered field on `grid`.
+and `src` is a scalar. Fused into a single branchless (`ifelse`) pass rather than building the
+intermediate boolean mask array `predicate.(cond)` and assigning through it -- same reasoning as
+`masked_mean` above: this runs inside `update_S_inf!`/`update_N_inf!` (effective_pressure.jl), which
+`update_N!` calls up to `model.max_coupling_iters` times per solve for N-dependent sliding laws, so
+avoiding a fresh full-size allocation every call is real, measured cost there.
 
 As with `convolve!` and `masked_mean`, the default here assumes fields already behave like plain
 arrays; override it, as done below for `OGRectHydroGrid`, for grid backends whose fields wrap a
 different underlying array storage.
 """
+function overwrite_where!(grid::AbstractHydroGrid, dest, cond, predicate, src::Number; scale = true)
+    val = scale * src
+    @inbounds @simd for i in eachindex(dest, cond)
+        dest[i] = ifelse(predicate(cond[i]), val, dest[i])
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Overwrite cells of `dest` for which `predicate(cond)` holds with `scale .* src`, where `dest`,
+`cond`, and `src` are all cell-centered fields on `grid`. See the scalar-`src` method above for why
+this is a fused branchless pass rather than a boolean-mask assignment.
+"""
 function overwrite_where!(grid::AbstractHydroGrid, dest, cond, predicate, src; scale = true)
-    _overwrite_where!(dest, cond, predicate, src, scale)
+    @inbounds @simd for i in eachindex(dest, cond, src)
+        dest[i] = ifelse(predicate(cond[i]), scale * src[i], dest[i])
+    end
+    return nothing
 end
 
 
@@ -403,9 +407,25 @@ function masked_max_abs(grid::OGRectHydroGrid, field, mask)
     return best
 end
 
+function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src::Number; scale = true)
+    Nx, Ny = grid.Nx, grid.Ny
+    val = scale * src
+    @inbounds for j in 1:Ny
+        @simd for i in 1:Nx
+            dest[i, j, 1] = ifelse(predicate(cond[i, j, 1]), val, dest[i, j, 1])
+        end
+    end
+    return nothing
+end
+
 function overwrite_where!(grid::OGRectHydroGrid, dest, cond, predicate, src; scale = true)
-    src_arr = src isa Number ? src : interior(src, :, :, 1)
-    _overwrite_where!(interior(dest, :, :, 1), interior(cond, :, :, 1), predicate, src_arr, scale)
+    Nx, Ny = grid.Nx, grid.Ny
+    @inbounds for j in 1:Ny
+        @simd for i in 1:Nx
+            dest[i, j, 1] = ifelse(predicate(cond[i, j, 1]), scale * src[i, j, 1], dest[i, j, 1])
+        end
+    end
+    return nothing
 end
 
 function convolve!(grid::OGRectHydroGrid, dest, src, kernel)
