@@ -106,6 +106,40 @@ yourself:
 - [Coupling to Shakti.jl](@ref ShaktiCoupling)
 - [Plain-array grid (no Oceananigans)](@ref ArrayGrid)
 
+## Checkpointing and periodic output
+
+A coupled driver (e.g. an ice-flow model calling [`run!`](@ref) on a [`SteadyStateSimulation`](@ref)
+once per iteration of its own timestep loop) owns the only loop in that pattern -- FastHydrology's
+own models are steady-state and have no internal loop of their own (see [Models](@ref) above), so
+periodic output/checkpointing is driven from the caller's loop, not from inside FastHydrology:
+
+```julia
+writer = NetCDFOutputWriter(output_path, grid, [:N, :W])
+
+for k in 1:n_steps
+    # ... update sim.state from e.g. an ice-flow model's current geometry ...
+    run!(sim)
+    write_output!(writer, k, elapsed_time, (N = sim.state.N, W = sim.state.W))
+    if k % checkpoint_every == 0
+        save_checkpoint(checkpoint_path, sim.state, k, elapsed_time)
+    end
+end
+close_output!(writer)
+```
+
+[`write_output!`](@ref) appends one time-slice to a NetCDF file with an unlimited `time` dimension
+and flushes it to disk immediately, so a run killed mid-loop (e.g. a SLURM job hitting its
+wall-time limit) leaves every slice written before the kill intact and readable, instead of losing
+everything the way writing a single result file at the very end does. [`save_checkpoint`](@ref)/
+[`load_checkpoint!`](@ref) separately save/restore a full [`AbstractHydroState`](@ref)'s fields, so
+a restarted job can resume the driver's own loop at the right step/time; pass `resume_step` to
+[`NetCDFOutputWriter`](@ref) when reopening an output file after a restart, to drop any slices the
+crashed run wrote past the last checkpoint actually resumed from (avoiding duplicates once the loop
+replays those steps). See [Output & Checkpointing](@ref) for the full API, including why this is a
+manually-driven utility rather than a `checkpoint_every` keyword on `run!` itself --
+[`TimeSimulation`](@ref)'s only model ([`ShaktiHydroModel`](@ref)) already gets this from
+`Shakti.run!` directly.
+
 ## Package structure
 
 The package is organized around four abstractions:
@@ -155,6 +189,12 @@ implement `alloc_field`.
 - `plotting.jl` -- [`mask_field`](@ref), plus stub declarations for
   [`visualize_field`](@ref)/[`visualize_grid`](@ref) (their implementations live in
   `../ext/FastHydrologyMakieExt.jl`, see below).
+- `checkpoint.jl` -- [`save_checkpoint`](@ref)/[`load_checkpoint!`](@ref), saving/restoring an
+  [`AbstractHydroState`](@ref)'s fields (as NetCDF) for a coupled driver's own loop to resume
+  from.
+- `output.jl` -- [`AbstractOutputWriter`](@ref)/[`NetCDFOutputWriter`](@ref), writing named
+  fields to a NetCDF file one time-slice at a time (unlimited `time` dimension, flushed to disk
+  on every write), with `resume_step` support for continuing an existing file after a restart.
 - `../ext/FastHydrologyShaktiExt.jl` -- package extension adding the `run!`/`step!` methods that
   make [`ShaktiHydroModel`](@ref) actually runnable, active only once `Shakti` is loaded alongside
   `FastHydrology`.

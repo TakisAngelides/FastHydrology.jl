@@ -163,6 +163,31 @@ step!
 update_steady_state!
 ```
 
+## Output & Checkpointing
+
+FastHydrology's own models are steady-state (see [Model](@ref)) and own no internal time loop, so
+periodic output/checkpointing is a manually-driven utility rather than a keyword baked into
+[`run!`](@ref) -- a caller's own loop (typically a coupled driver, e.g. an ice-flow model calling
+`run!` once per iteration) decides when to call [`write_output!`](@ref)/[`save_checkpoint`](@ref).
+[`NetCDFOutputWriter`](@ref) records named fields to a NetCDF file one time-slice at a time along
+an unlimited `time` dimension, flushed to disk on every write, so a killed run keeps every slice
+written before the kill. [`save_checkpoint`](@ref)/[`load_checkpoint!`](@ref) separately save/
+restore a full [`AbstractHydroState`](@ref)'s fields (generic over any subtype via `fieldnames`),
+so a restarted driver can resume its own loop at the right step/time. See
+[Checkpointing and periodic output](@ref) on the front page for a runnable pattern, and
+[`AbstractOutputWriter`](@ref)'s docstring for why [`TimeSimulation`](@ref)'s only model
+([`ShaktiHydroModel`](@ref)) doesn't need this -- `Shakti.run!` already has its own equivalent
+machinery.
+
+```@docs
+AbstractOutputWriter
+NetCDFOutputWriter
+write_output!
+close_output!
+save_checkpoint
+load_checkpoint!
+```
+
 ## Water Flux
 
 Functions specific to [`KazmierczakHydroModel`](@ref) that compute the geometric potential,
