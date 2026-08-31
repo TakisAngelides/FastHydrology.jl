@@ -553,5 +553,8 @@ end
 # ArrayHydroGrid has no naming collisions requiring its own module).
 include("array_grid_test.jl")
 
+# Reuses field_values/interior and the run! helpers from above, same reasoning as array_grid_test.jl.
+include("output_checkpoint_test.jl")
+
 # Own module (see shakti_ext_test.jl) since FastHydrology and Shakti both export `run!`.
 include("shakti_ext_test.jl")

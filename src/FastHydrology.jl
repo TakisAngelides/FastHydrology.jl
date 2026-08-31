@@ -23,6 +23,8 @@ include("effective_pressure.jl")
 include("data_loaders.jl")
 include("utilities.jl")
 include("plotting.jl")
+include("checkpoint.jl")
+include("output.jl")
 
 # grid.jl
 export AbstractHydroGrid, OGRectHydroGrid, ArrayHydroGrid
@@ -68,5 +70,11 @@ export compute_lims, perYear2perSecond, perSecond2perYear, Km2m
 
 # plotting.jl
 export visualize_grid, visualize_field, mask_field
+
+# checkpoint.jl
+export save_checkpoint, load_checkpoint!
+
+# output.jl
+export AbstractOutputWriter, NetCDFOutputWriter, write_output!, close_output!
 
 end

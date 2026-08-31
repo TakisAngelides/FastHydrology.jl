@@ -9,4 +9,5 @@ docs/src/examples/input/
 !/test/Project.toml
 !/test/runtests.jl
 !/test/array_grid_test.jl
+!/test/output_checkpoint_test.jl
 !/test/shakti_ext_test.jl
