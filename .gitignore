@@ -2,12 +2,12 @@
 .DS_Store
 docs/src/examples/input/
 
-# Only the maintained test suite is tracked under test/ (runtests.jl plus the files it includes,
-# and the test-only Project.toml). Everything else -- exploratory/one-off scripts, real datasets,
-# generated figures -- is ignored wholesale so new scratch folders never need a new .gitignore line.
+# Only the maintained test suite is tracked under test/ (runtests.jl, the test-only Project.toml,
+# and everything under common/ and models/, mirroring src/'s layout). Everything else --
+# exploratory/one-off scripts, real datasets, generated figures -- is ignored wholesale so new
+# scratch folders never need a new .gitignore line.
 /test/*
 !/test/Project.toml
 !/test/runtests.jl
-!/test/array_grid_test.jl
-!/test/output_checkpoint_test.jl
-!/test/shakti_ext_test.jl
+!/test/common
+!/test/models
