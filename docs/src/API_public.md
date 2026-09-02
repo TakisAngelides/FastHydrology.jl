@@ -274,6 +274,13 @@ Functions that compute effective pressure `N`, the quantity that couples subglac
 sliding. `update_N!` is defined for both models (with different physics in each case); the
 remaining functions are shared or model-specific sub-steps used to build it up.
 
+[`KazmierczakHydroModel`](@ref)'s `update_N_inf!`/`update_H!` additionally select which opening
+terms and effective `Q_c` to use via `model.drainage_mode` ([`AbstractDrainageMode`](@ref), set
+with the `drainage_mode` keyword): [`BothDrainage`](@ref) (the default) leaves the model free to
+switch between efficient and inefficient drainage automatically; [`EfficientOnly`](@ref)/
+[`InefficientOnly`](@ref) force it to one regime throughout, reproducing Sect. 3.2 of Kazmierczak
+et al 2024.
+
 ```@docs
 update_N!
 update_Po!
@@ -282,6 +289,10 @@ update_S_inf!
 update_N_inf!
 update_Q!
 update_p_w!
+AbstractDrainageMode
+BothDrainage
+EfficientOnly
+InefficientOnly
 ```
 
 ## Data Loading
