@@ -32,6 +32,11 @@ Two models are implemented so far, sharing the same grid/state/simulation infras
     keyword -- see [Sliding Laws](@ref), two of whose laws (`PowerPlasticSlidingLaw`,
     `RegularizedCoulombSlidingLaw`) are written to match the sliding laws implemented in
     [Yelmo.jl](https://github.com/palma-ice/yelmo) for coupled ice-dynamics use.
+  - **Drainage mode** -- automatically switches between efficient (channelized) and inefficient
+    (distributed) drainage by default, based on the local water flux; can instead be forced to one
+    regime throughout the domain via the `drainage_mode` keyword
+    ([`AbstractDrainageMode`](@ref) and its subtypes [`BothDrainage`](@ref)/
+    [`EfficientOnly`](@ref)/[`InefficientOnly`](@ref)), reproducing Sect. 3.2 of the paper.
   - **Defaults** -- numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`) default to no-op
     values (nothing is clamped unless you ask for it), with KORI-ULB's own values available as
     explicit opt-ins. `longcoupwater` has no such safe no-op default and emits a warning explaining
