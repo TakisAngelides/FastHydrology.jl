@@ -23,11 +23,15 @@ include("common/output.jl")
 include("common/utilities.jl")
 include("common/plotting.jl")
 
+include("models/kazmierczak2024/model.jl")
+include("models/kazmierczak2024/sliding_law.jl")
+include("models/kazmierczak2024/water_flux.jl")
+include("models/kazmierczak2024/effective_pressure.jl")
+include("models/kazmierczak2024/run.jl")
+include("models/kazmierczak2024/data_loaders.jl")
+
 include("model.jl")
-include("sliding_law.jl")
-include("water_flux.jl")
 include("effective_pressure.jl")
-include("data_loaders.jl")
 include("run.jl")
 
 # grid.jl
