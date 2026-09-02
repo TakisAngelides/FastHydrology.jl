@@ -6,7 +6,7 @@ Defined for all models that carry a Po field and share the same rho_i, g constan
 """
 function update_Po!(model::AbstractHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    @. model.Po = max(model.rho_i * model.g * state.h, 1e5)
+    @. model.Po = model.rho_i * model.g * state.h
     fill_halo!(model.Po, grid)
 
     return nothing

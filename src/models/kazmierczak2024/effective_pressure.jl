@@ -20,6 +20,16 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     # sqrt(pi) must be precomputed outside the broadcast; see update_p_w! for why.
     sqrt_pi = sqrt(pi)
     @. state.N = max(0.0, erf(sqrt_pi * model.phi0 / (2 * model.N_inf)) * model.N_inf)
+
+    # N_inf == 0 makes the erf argument diverge (Inf, or 0/0 -> NaN when phi0 == 0 too --
+    # e.g. flat, ungrounded cells where h == b == 0, so Po == 0). This used to be masked by
+    # update_Po!'s old 1e5 floor, which kept N_inf away from exactly 0 in practice; it's
+    # reachable on its own now that sigmat = 0.0 is the default (N_inf's lower clamp bound
+    # sigmat*Po is 0 too). Physically, zero far-field effective pressure should give zero N,
+    # so resolve the indeterminate form in favor of that limit rather than propagating NaN,
+    # the same overwrite_where! pattern update_S_inf!/update_N_inf! already use for their
+    # own 0/0 cells.
+    overwrite_where!(grid, state.N, model.N_inf, ==(0.0), 0.0)
     fill_halo!(state.N, grid)
 
     return nothing
