@@ -10,21 +10,25 @@ using DocStringExtensions
 using MAT
 using NCDatasets
 
-include("grid.jl")
-include("operations.jl")
-include("fft_convolution.jl")
+include("common/grid.jl")
+include("common/operations.jl")
+include("common/fft_convolution.jl")
+include("common/model.jl")
+include("common/state.jl")
+include("common/simulation.jl")
+include("common/effective_pressure.jl")
+include("common/run.jl")
+include("common/checkpoint.jl")
+include("common/output.jl")
+include("common/utilities.jl")
+include("common/plotting.jl")
+
 include("model.jl")
 include("sliding_law.jl")
-include("state.jl")
-include("simulation.jl")
-include("run.jl")
 include("water_flux.jl")
 include("effective_pressure.jl")
 include("data_loaders.jl")
-include("utilities.jl")
-include("plotting.jl")
-include("checkpoint.jl")
-include("output.jl")
+include("run.jl")
 
 # grid.jl
 export AbstractHydroGrid, OGRectHydroGrid, ArrayHydroGrid
