@@ -30,17 +30,19 @@ include("models/kazmierczak2024/effective_pressure.jl")
 include("models/kazmierczak2024/run.jl")
 include("models/kazmierczak2024/data_loaders.jl")
 
-include("model.jl")
-include("effective_pressure.jl")
-include("run.jl")
+include("models/hab/model.jl")
+include("models/hab/effective_pressure.jl")
+include("models/hab/run.jl")
 
-# grid.jl
+include("models/shakti/model.jl")
+
+# common/grid.jl
 export AbstractHydroGrid, OGRectHydroGrid, ArrayHydroGrid
 export fill_halo!, alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
 export minus_gradient_x!, minus_gradient_y!
 
-# model.jl
+# common/model.jl, models/kazmierczak2024/model.jl, models/hab/model.jl, models/shakti/model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly
 export AbstractSlidingLaw, NoSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw
@@ -48,41 +50,41 @@ export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsi
 export AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness
 export AbstractGradientConvention, LocalGradient, MeanGradient
 
-# sliding_law.jl
+# models/kazmierczak2024/sliding_law.jl
 export calc_tau_b, update_tau_b!
 
-# state.jl
+# common/state.jl
 export AbstractHydroState, HydroState
 
-# simulations.jl
+# common/simulation.jl
 export AbstractSimulation, TimeSimulation, SteadyStateSimulation
 
-# run.jl
+# common/run.jl, models/kazmierczak2024/run.jl, models/hab/run.jl
 export run!, step!, update_steady_state!
 
-# water_flux.jl
+# models/kazmierczak2024/water_flux.jl
 export update_q!, update_W!
 export update_phi0!, potential_filling!
 export update_potential_gradients!, update_smoothed_potential_gradients!
 export accumulate_psi_out!, update_psi_out!, update_psi_out_iterative!, route_psi_out!
 
-# effective_pressure.jl
+# common/effective_pressure.jl, models/kazmierczak2024/effective_pressure.jl, models/hab/effective_pressure.jl
 export update_N!, update_Po!, update_p_w!
 export update_H!, update_S_inf!, update_N_inf!, update_Q!
 
-# data_loaders
+# models/kazmierczak2024/data_loaders.jl
 export load_Kazmierczak, load_yelmox
 
-# utilities.jl
+# common/utilities.jl
 export compute_lims, perYear2perSecond, perSecond2perYear, Km2m
 
-# plotting.jl
+# common/plotting.jl
 export visualize_grid, visualize_field, mask_field
 
-# checkpoint.jl
+# common/checkpoint.jl
 export save_checkpoint, load_checkpoint!
 
-# output.jl
+# common/output.jl
 export AbstractOutputWriter, NetCDFOutputWriter, write_output!, close_output!
 
 end
