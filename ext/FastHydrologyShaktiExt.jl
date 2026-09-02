@@ -1,7 +1,7 @@
 """
 Package extension activated automatically once both `FastHydrology` and `Shakti` are loaded
 (`using FastHydrology, Shakti`). Adds the `run!`/`step!` methods that let a `TimeSimulation`
-wrapping a `ShaktiHydroModel` (see `src/model.jl`) actually run, by delegating to `Shakti.run!`/
+wrapping a `ShaktiHydroModel` (see `src/models/shakti/model.jl`) actually run, by delegating to `Shakti.run!`/
 `Shakti.step!` -- Shakti's own `run!` already handles the whole time loop, checkpointing, and
 observer output, so there is nothing else to reimplement for that entry point. `step!` exists
 separately for callers that need to drive the loop themselves, e.g. a coupled ice flow model that

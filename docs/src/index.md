@@ -162,47 +162,110 @@ implement `alloc_field`.
 
 ### Source layout
 
+`src/` is split into `common/` (infrastructure shared by every model) and `models/<name>/` (one
+folder per hydrology model), so it's clear at a glance which files are shared and which files a
+new model needs to add.
+
+**`src/common/`** -- shared infrastructure, touched by every model:
+
 - `grid.jl` -- the grid abstraction and its `OGRectHydroGrid`/`ArrayHydroGrid` implementations.
 - `operations.jl` -- registers `min`, `max`, `erf` as broadcastable Oceananigans field operations.
 - `fft_convolution.jl` -- a cached, plan-reusing FFT convolution (used by the stress-gradient
-  coupling smoothing in `water_flux.jl`) that avoids ImageFiltering.jl's per-call allocation.
-  `grid.jl`'s [`convolve!`](@ref) passes it `interior(...)` views of the Oceananigans `Field`s
-  directly (not `Field.data`, which carries halo padding `cached_fft_convolve!` would otherwise
-  mistake for real domain) so there is no extra copy either.
-- `model.jl` -- the model structs and their constructors, including [`ShaktiHydroModel`](@ref), and
-  the [`AbstractSlidingLaw`](@ref) hierarchy used by [`KazmierczakHydroModel`](@ref)'s
-  `sliding_law` keyword. [`KazmierczakHydroModel`](@ref) itself composes `KazmierczakParams`
-  (physical constants/solver config) and `KazmierczakWorkspace` (array buffers) behind a
-  transparent `model.<field>` interface, rather than one struct with both flattened together.
-- `sliding_law.jl` -- [`calc_tau_b`](@ref)/[`update_tau_b!`](@ref), turning an
-  [`AbstractSlidingLaw`](@ref) plus the current effective pressure and sliding velocity into a
-  basal shear stress.
+  coupling smoothing in `models/kazmierczak2024/water_flux.jl`) that avoids ImageFiltering.jl's
+  per-call allocation. `grid.jl`'s [`convolve!`](@ref) passes it `interior(...)` views of the
+  Oceananigans `Field`s directly (not `Field.data`, which carries halo padding
+  `cached_fft_convolve!` would otherwise mistake for real domain) so there is no extra copy either.
+- `model.jl` -- just `abstract type AbstractHydroModel end`, the type every model subtypes.
 - `state.jl` -- `HydroState`.
-- `simulation.jl`, `run.jl` -- the simulation abstraction and `run!`/`step!`/`update_steady_state!`
-  ([`step!`](@ref) is a stub with no methods in core -- see below).
-- `water_flux.jl` -- geometric potential, flux routing, and water layer thickness
-  (`KazmierczakHydroModel` only).
-- `effective_pressure.jl` -- effective pressure for both models.
-- `data_loaders.jl` -- `load_Kazmierczak` and `load_yelmox`, for reading `.mat`/`.nc` input data
-  into the arrays the constructors above expect.
-- `utilities.jl` -- unit conversions and grid-geometry helpers.
-- `plotting.jl` -- [`mask_field`](@ref), plus stub declarations for
-  [`visualize_field`](@ref)/[`visualize_grid`](@ref) (their implementations live in
-  `../ext/FastHydrologyMakieExt.jl`, see below).
+- `simulation.jl` -- [`AbstractSimulation`](@ref), [`SteadyStateSimulation`](@ref),
+  [`TimeSimulation`](@ref).
+- `effective_pressure.jl` -- [`update_Po!`](@ref), the one effective-pressure step shared by
+  every model that carries a `Po` field with the same `rho_i`/`g` constants.
+- `run.jl` -- `run!(::SteadyStateSimulation)` and the [`step!`](@ref) stub (`step!` has no
+  methods in core -- see below).
 - `checkpoint.jl` -- [`save_checkpoint`](@ref)/[`load_checkpoint!`](@ref), saving/restoring an
   [`AbstractHydroState`](@ref)'s fields (as NetCDF) for a coupled driver's own loop to resume
   from.
 - `output.jl` -- [`AbstractOutputWriter`](@ref)/[`NetCDFOutputWriter`](@ref), writing named
   fields to a NetCDF file one time-slice at a time (unlimited `time` dimension, flushed to disk
   on every write), with `resume_step` support for continuing an existing file after a restart.
-- `../ext/FastHydrologyShaktiExt.jl` -- package extension adding the `run!`/`step!` methods that
-  make [`ShaktiHydroModel`](@ref) actually runnable, active only once `Shakti` is loaded alongside
+- `utilities.jl` -- unit conversions and grid-geometry helpers.
+- `plotting.jl` -- [`mask_field`](@ref), plus stub declarations for
+  [`visualize_field`](@ref)/[`visualize_grid`](@ref) (their implementations live in
+  `../ext/FastHydrologyMakieExt.jl`, see below).
+
+**`src/models/kazmierczak2024/`** -- the Kazmierczak et al. 2024 model:
+
+- `model.jl` -- [`KazmierczakHydroModel`](@ref) and its constructors, plus the trait types its
+  keywords select between ([`AbstractDissipationMelt`](@ref), [`AbstractPsiOutAlgorithm`](@ref),
+  [`AbstractWaterThicknessAlgorithm`](@ref), [`AbstractGradientConvention`](@ref),
+  [`AbstractDrainageMode`](@ref)). [`KazmierczakHydroModel`](@ref) itself composes
+  `KazmierczakParams` (physical constants/solver config) and `KazmierczakWorkspace` (array
+  buffers) behind a transparent `model.<field>` interface, rather than one struct with both
+  flattened together.
+- `sliding_law.jl` -- [`AbstractSlidingLaw`](@ref) and its subtypes, plus
+  [`calc_tau_b`](@ref)/[`update_tau_b!`](@ref), turning a sliding law and the current effective
+  pressure/sliding velocity into a basal shear stress.
+- `water_flux.jl` -- geometric potential, flux routing, and water layer thickness.
+- `effective_pressure.jl` -- [`update_N!`](@ref), [`update_H!`](@ref), [`update_S_inf!`](@ref),
+  [`update_N_inf!`](@ref), [`update_Q!`](@ref).
+- `run.jl` -- `update_steady_state!(::KazmierczakHydroModel, ...)`.
+- `data_loaders.jl` -- `load_Kazmierczak` and `load_yelmox`, for reading `.mat`/`.nc` input data
+  into the arrays the constructor above expects.
+
+**`src/models/hab/`** -- the height-above-buoyancy model:
+
+- `model.jl` -- [`HABHydroModel`](@ref) and its constructor.
+- `effective_pressure.jl` -- [`update_N!`](@ref), [`update_p_w!`](@ref).
+- `run.jl` -- `update_steady_state!(::HABHydroModel, ...)`.
+
+**`src/models/shakti/`** -- the [`ShaktiHydroModel`](@ref) wrapper:
+
+- `model.jl` -- just the [`ShaktiHydroModel`](@ref) wrapper struct (defined unconditionally, no
+  dependency on `Shakti` itself). The methods that make it actually runnable (`run!`/`step!`)
+  live in `../../../ext/FastHydrologyShaktiExt.jl` instead, since Julia's package-extension
+  mechanism requires extensions to live under `ext/` at the package root -- see that file's own
+  docstring, and [Adding a new model](@ref) below for the pattern this leaves for a future
+  externally-wrapped model.
+
+**`ext/`** -- package extensions, unconditionally at the package root (Julia's extension
+mechanism requires this):
+
+- `FastHydrologyShaktiExt.jl` -- adds the `run!`/`step!` methods that make
+  [`ShaktiHydroModel`](@ref) actually runnable, active only once `Shakti` is loaded alongside
   `FastHydrology`.
-- `../ext/FastHydrologyMakieExt.jl` -- package extension adding
+- `FastHydrologyMakieExt.jl` -- adds
   [`visualize_field`](@ref)/[`visualize_grid`](@ref)'s implementations, active only once a Makie
   backend (e.g. `CairoMakie`) is loaded alongside `FastHydrology`. Kept as an extension rather than
   a hard dependency since CairoMakie is one of the slower-compiling packages in the ecosystem and
   plotting isn't needed to run a simulation.
+
+### Adding a new model
+
+To add a new hydrology model `X`, following the same layout as the existing models:
+
+1. Create `src/models/x/model.jl` defining `XHydroModel <: AbstractHydroModel` and its
+   constructor(s).
+2. Add whichever of these `x/` needs, using the same filenames as `kazmierczak2024/`/`hab/` so
+   the pattern stays recognizable:
+   - `effective_pressure.jl` for an `update_N!(model::XHydroModel, ...)` method -- every
+     steady-state model needs one; `common/effective_pressure.jl`'s [`update_Po!`](@ref) is
+     already available to reuse if `X` carries a `Po` field with the standard `rho_i`/`g`
+     constants.
+   - `run.jl` for `update_steady_state!(model::XHydroModel, ...)` if `X` is steady-state (see
+     `common/run.jl`'s `run!(::SteadyStateSimulation)`, which dispatches to it), or `run!`/`step!`
+     methods on `TimeSimulation{XHydroModel}` if `X` is time-evolving.
+   - `water_flux.jl`, `sliding_law.jl`, `data_loaders.jl`, or any other file `X`'s own physics
+     needs that doesn't belong in `common/`.
+   - If `X` wraps an external package via a weak dependency (the way [`ShaktiHydroModel`](@ref)
+     wraps `Shakti.jl`), keep `model.jl` a thin, unconditionally-defined wrapper struct in
+     `src/models/x/`, and add the methods that make it runnable in a package extension under
+     `ext/` (see `ext/FastHydrologyShaktiExt.jl` for the pattern).
+3. `include(...)` the new files in `src/FastHydrology.jl` under a `# Model: X` banner (see the
+   existing banners for `kazmierczak2024`/`hab`/`shakti`), and add the new exports.
+4. Add `X`'s tests under `test/models/x/`, and `include(...)` them from `test/runtests.jl` (see
+   how `kazmierczak2024`/`hab` are included there).
+5. Update the table in [Models](@ref) above and this Source layout section.
 
 ## Testing
 
@@ -211,10 +274,14 @@ using Pkg
 Pkg.test("FastHydrology")
 ```
 
-The test suite exercises both steady-state models end-to-end, both data loaders across all
+`test/` mirrors the `src/` split above: `test/common/` for grid-backend/checkpoint/output tests
+that exercise the shared infrastructure (using whichever model is a convenient fixture, not
+necessarily testing that model itself), and `test/models/<name>/` for each model's own tests.
+The suite exercises both steady-state models end-to-end, both data loaders across all
 bed-rheology options, regression-tests specific bugs found during development, and (in its own
-`module`, in `test/shakti_ext_test.jl`) [`ShaktiHydroModel`](@ref)'s `run!`/`step!` extension
-methods against a real `Shakti.Simulation`.
+`module`, in `test/models/shakti/shakti_ext_test.jl`) [`ShaktiHydroModel`](@ref)'s `run!`/`step!`
+extension methods against a real `Shakti.Simulation` -- its own module because `FastHydrology`
+and `Shakti` both export `run!`, which `using` both in the same scope would make ambiguous.
 
 ## License
 

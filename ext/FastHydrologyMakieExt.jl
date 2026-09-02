@@ -1,7 +1,7 @@
 """
 Package extension activated automatically once both `FastHydrology` and a Makie backend (e.g.
 `CairoMakie`) are loaded (`using FastHydrology, CairoMakie`). Adds the `visualize_field`/
-`visualize_grid` methods declared as stubs in `src/plotting.jl`.
+`visualize_grid` methods declared as stubs in `src/common/plotting.jl`.
 
 Kept as an extension (rather than a hard `using CairoMakie` in `src/FastHydrology.jl`) because
 CairoMakie is one of the slower-compiling packages in the ecosystem and plotting is not needed for
