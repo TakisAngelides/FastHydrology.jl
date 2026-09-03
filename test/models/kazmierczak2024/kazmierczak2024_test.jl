@@ -146,11 +146,67 @@
         @test all(isfinite, field_values(model_capped.q))
     end
 
+    @testset "KazmierczakHydroModel mdot_includes_friction" begin
+        # mdot_includes_friction toggles whether resolve_q! adds tau_b*v_b/L_w to mdot_total --
+        # independent of sliding_law itself, which only decides how tau_b is computed and whether it
+        # depends on N (see AbstractMdotFriction's docstring in model.jl).
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        mask = ones(5, 5)
+        h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
+        b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
+
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+        weertman = WeertmanSlidingLaw(C = 1e7, q = 1/3)
+
+        model_add  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                            sliding_law = weertman, dissipation_melt = false,
+                                            dissipation_verbose = false, mdot_includes_friction = false)
+        model_skip = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                            sliding_law = weertman, dissipation_melt = false,
+                                            dissipation_verbose = false, mdot_includes_friction = true)
+
+        # The on/off choice is resolved by multiple dispatch on this trait field, not a runtime Bool.
+        @test model_add.mdot_includes_friction  isa FastHydrology.MdotIncludesFrictionOff
+        @test model_skip.mdot_includes_friction isa FastHydrology.MdotIncludesFrictionOn
+
+        run!(SteadyStateSimulation(model_add,  grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_skip, grid, HydroState(grid, mask, h, b)))
+
+        # tau_b itself is identical either way -- only whether it gets added to mdot_total differs.
+        @test field_values(model_add.tau_b) ≈ field_values(model_skip.tau_b)
+        @test all(!=(0.0), field_values(model_add.tau_b))
+
+        # mdot_includes_friction = false (default): tau_b*v_b/L_w is added on top of mdot.
+        @test all(field_values(model_add.mdot_total) .> field_values(model_add.mdot))
+
+        # mdot_includes_friction = true: mdot_total is exactly mdot, unaffected by the (nonzero) tau_b
+        # computed above -- this is the case that used to silently double-count friction.
+        @test field_values(model_skip.mdot_total) == field_values(model_skip.mdot)
+
+        # With an N-dependent sliding law, tau_b/N must still update jointly with q every sweep even
+        # when mdot_includes_friction = true -- only the mdot_total injection is skipped, not the
+        # (q, N) coupling loop itself.
+        reg_coulomb = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
+        model_coupled_skip = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+                                                    sliding_law = reg_coulomb, dissipation_melt = false,
+                                                    dissipation_verbose = false, coupling_verbose = false,
+                                                    mdot_includes_friction = true)
+        state_coupled = HydroState(grid, mask, h, b)
+        run!(SteadyStateSimulation(model_coupled_skip, grid, state_coupled))
+
+        @test field_values(model_coupled_skip.mdot_total) == field_values(model_coupled_skip.mdot)
+        @test all(!=(0.0), field_values(model_coupled_skip.tau_b))
+        @test all(>(0.0), field_values(state_coupled.N))
+    end
+
     @testset "Sliding laws: calc_tau_b" begin
         N  = 1e5   # Pa
         vb = 200.0 / (60^2 * 24 * 365.25)  # m/s
 
-        @test calc_tau_b(NoSlidingLaw(), N, vb) == 0.0
+        @test calc_tau_b(PrescribedFrictionSlidingLaw(), N, vb) == 0.0
 
         law_w = WeertmanSlidingLaw(C = 1e7, q = 1/3)
         @test calc_tau_b(law_w, N, vb) ≈ 1e7 * vb^(1/3)

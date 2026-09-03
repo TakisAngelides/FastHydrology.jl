@@ -99,7 +99,7 @@ ShaktiHydroModel
 
 An [`AbstractSlidingLaw`](@ref) turns [`KazmierczakHydroModel`](@ref)'s basal sliding velocity and
 the current effective pressure into a basal shear stress `tau_b`, used for the frictional-heating
-term `tau_b*v_b` in the melt rate. [`NoSlidingLaw`](@ref) (the default) and
+term `tau_b*v_b` in the melt rate. [`PrescribedFrictionSlidingLaw`](@ref) (the default) and
 [`WeertmanSlidingLaw`](@ref) don't depend on effective pressure, so they add at most a fixed source
 term with no new feedback to resolve. [`PowerPlasticSlidingLaw`](@ref) and
 [`RegularizedCoulombSlidingLaw`](@ref) do depend on effective pressure -- since effective pressure
@@ -109,9 +109,15 @@ nesting a second loop around the first. [`calc_tau_b`](@ref) is the plain scalar
 law (used in tests/diagnostics); [`update_tau_b!`](@ref) is the field-broadcast version actually
 used inside the model.
 
+Whether `tau_b` actually gets added to the melt rate is a separate question from which law computes
+it, controlled by `KazmierczakHydroModel`'s `mdot_includes_friction` keyword -- an externally-supplied
+`mdot` (e.g. from [`load_Kazmierczak`](@ref)/[`load_yelmox`](@ref)) may already include a friction
+estimate of its own, so this keyword lets a real, N-dependent sliding law still drive the coupling
+loop without double-counting it in the melt rate.
+
 ```@docs
 AbstractSlidingLaw
-NoSlidingLaw
+PrescribedFrictionSlidingLaw
 WeertmanSlidingLaw
 PowerPlasticSlidingLaw
 RegularizedCoulombSlidingLaw

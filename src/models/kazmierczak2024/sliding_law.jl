@@ -13,7 +13,7 @@ tau_b*v_b/L_w of the melt rate (Eq. 3, Sec. 2.2.1 of Kazmierczak et al 2024). Se
 function (used for tests/diagnostics on ordinary numbers) -- `update_tau_b!` below is the version
 actually used inside the model's field broadcasts.
 """
-calc_tau_b(::NoSlidingLaw, N, abs_v_b) = zero(abs_v_b)
+calc_tau_b(::PrescribedFrictionSlidingLaw, N, abs_v_b) = zero(abs_v_b)
 
 calc_tau_b(law::WeertmanSlidingLaw, N, abs_v_b) = law.C * abs_v_b^law.q
 
@@ -34,7 +34,7 @@ multi-argument user functions taking a struct argument. Writing the formula with
 (`+`, `*`, `/`, `^`) on fields/arrays and scalar locals, exactly as the rest of this model already
 does (e.g. `update_N_inf!` in effective_pressure.jl), works uniformly for both grid backends.
 """
-function update_tau_b!(model, state, ::NoSlidingLaw)
+function update_tau_b!(model, state, ::PrescribedFrictionSlidingLaw)
     model.tau_b .= 0.0
     return nothing
 end

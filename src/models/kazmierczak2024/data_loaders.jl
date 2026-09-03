@@ -58,7 +58,10 @@ and return the processed fields needed for the simulation.
   your bed isn't uniformly temperate.
 - `ṁ`: complete basal melt rate per unit area (kg m⁻² s⁻¹), i.e. the source model's own converged Eq. 3
   output (already includes its own frictional-heating and, likely, dissipation terms) -- for
-  `KazmierczakHydroModel`'s `mdot_in` constructor, normally paired with `sliding_law = NoSlidingLaw()`.
+  `KazmierczakHydroModel`'s `mdot_in` constructor, normally paired with `sliding_law =
+  PrescribedFrictionSlidingLaw()`. If you want a real sliding law's `tau_b` (e.g. for `(q, N)`
+  coupling) while still using this `ṁ`, pass `mdot_includes_friction = true` so its own frictional
+  heating isn't added a second time -- see `AbstractMdotFriction`'s docstring in model.jl.
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_Kazmierczak(path::String; bed_rheology = :hard)
@@ -123,7 +126,10 @@ Load an NCDatasets file from the yelmox and return the processed fields needed f
   constructor.
 - `ṁ`: complete basal melt rate per unit area (Kg m⁻² s⁻¹), i.e. Yelmo's own converged basal mass balance
   (already includes its own frictional-heating term `Q_b`) -- for `KazmierczakHydroModel`'s `mdot_in`
-  constructor, normally paired with `sliding_law = NoSlidingLaw()`.
+  constructor, normally paired with `sliding_law = PrescribedFrictionSlidingLaw()`. If you want a real
+  sliding law's `tau_b` (e.g. for `(q, N)` coupling) while still using this `ṁ`, pass
+  `mdot_includes_friction = true` so `Q_b` isn't added a second time -- see `AbstractMdotFriction`'s
+  docstring in model.jl.
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_yelmox(path::String; bed_rheology = :mixed_smooth)

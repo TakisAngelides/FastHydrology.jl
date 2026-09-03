@@ -66,11 +66,11 @@ fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", tran
 
 # ## Adding a basal sliding law
 #
-# By default `sliding_law = NoSlidingLaw()`, so `mdot_in` alone is assumed to already be the
-# complete melt rate. Passing a pressure-dependent sliding law instead adds the frictional-heating
-# term tau_b*v_b/L_w (Eq. 3 of Kazmierczak et al 2024) on top of it, computed from a basal shear
-# stress `tau_b(N, v_b)`. Since tau_b then depends on the effective pressure N, which is itself
-# downstream of q, `resolve_q!` widens its Picard loop to solve for q and N jointly rather than
+# By default `sliding_law = PrescribedFrictionSlidingLaw()`, so `mdot_in` alone is assumed to already
+# be the complete melt rate. Passing a pressure-dependent sliding law instead adds the
+# frictional-heating term tau_b*v_b/L_w (Eq. 3 of Kazmierczak et al 2024) on top of it, computed from
+# a basal shear stress `tau_b(N, v_b)`. Since tau_b then depends on the effective pressure N, which is
+# itself downstream of q, `resolve_q!` widens its Picard loop to solve for q and N jointly rather than
 # nesting a second loop around the first -- see the `sliding_law` keyword on `KazmierczakHydroModel`
 # and `resolve_q!`'s docstring for the physics and the loop design.
 #
@@ -78,9 +78,17 @@ fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", tran
 # laws implemented in Yelmo.jl's `basal_dragging.jl` (`beta_method` 1/2/4 and 3/5 respectively), so
 # a future ice-dynamics coupling can configure both sides with numerically matching laws. The
 # parameters below (`c_till`, `q`, `u0`) are illustrative, not calibrated to Thwaites.
+#
+# ṁ above is `load_Kazmierczak`'s `Bmelt` field: KORI-ULB's own converged melt-rate output for this
+# Thwaites run, which already bakes in that model's own frictional-heating estimate. Attaching a real
+# sliding law to it would add tau_b*v_b/L_w a second time unless we say so explicitly --
+# `mdot_includes_friction = true` tells `resolve_q!` to skip that addition while still computing
+# `tau_b`/`N` from `sliding_law` every sweep, so the `(q, N)` coupling loop (and `tau_b` itself, below)
+# are unaffected.
 sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
 model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ;
                                        sliding_law = sliding_law, longcoupwater = 5.0,
+                                       mdot_includes_friction = true,
                                        dissipation_verbose = false, coupling_verbose = false)
 state_sliding = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
@@ -91,17 +99,15 @@ fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stres
 
 # ## Computing the melt rate faithfully from Eq. 3
 #
-# ṁ above is `load_Kazmierczak`'s `Bmelt` field: KORI-ULB's own converged melt-rate output for this
-# Thwaites run, which already bakes in that model's own frictional-heating estimate. Passing it to
-# `mdot_in` above only stays free of double-counting because `sliding_law = NoSlidingLaw()` is the
-# default -- no frictional term is added by FastHydrology on top of it.
-#
-# If you'd rather have FastHydrology compute the melt rate itself, faithfully to Eq. 3 (background
-# term `(G - q_T)/L_w`, with the frictional-heating and dissipation terms added on top dynamically,
-# same as above), use the other `KazmierczakHydroModel` constructor: `G` and `q_T` (both [W/m^2]) instead
-# of ṁ. `load_Kazmierczak` returns a real geothermal flux field `G`; it has no `q_T` field of its own,
-# so `load_Kazmierczak` returns it as zero everywhere (the usual temperate-bed assumption) -- both are
-# mandatory arguments precisely so that assumption has to be made explicit, not silent.
+# `mdot_includes_friction` above avoids double-counting only *within* FastHydrology's own accounting
+# -- it doesn't compute a friction-free melt rate for you. If you'd rather have FastHydrology own the
+# melt-rate physics end-to-end, faithfully to Eq. 3 (background term `(G - q_T)/L_w`, with the
+# frictional-heating and dissipation terms added on top dynamically, same as above but without
+# needing `mdot_includes_friction`), use the other `KazmierczakHydroModel` constructor: `G` and `q_T`
+# (both [W/m^2]) instead of ṁ. `load_Kazmierczak` returns a real geothermal flux field `G`; it has no
+# `q_T` field of its own, so `load_Kazmierczak` returns it as zero everywhere (the usual
+# temperate-bed assumption) -- both are mandatory arguments precisely so that assumption has to be
+# made explicit, not silent.
 model_from_G = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
                                       sliding_law = sliding_law, longcoupwater = 5.0,
                                       dissipation_verbose = false, coupling_verbose = false)

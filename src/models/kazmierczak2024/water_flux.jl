@@ -28,9 +28,16 @@ once q stops changing (relative to its own peak magnitude) to within `model.diss
 depends on the effective pressure N instead, which is itself downstream of q (via `update_N!`, called after `update_q!` in `update_steady_state!`) -- so an N-dependent `model.sliding_law`
 (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`) turns this into a second, coupled fixed point on (q, N). Rather than nesting a second Picard loop around the first (which would fully
 reconverge q for a stale N every outer sweep), we widen the existing loop: each sweep recomputes tau_b from the current N, routes q, and then also updates W and N in place before the next
-sweep, converging jointly. `model.sliding_law`'s type determines which `resolve_q!` method runs: `NoSlidingLaw`/`WeertmanSlidingLaw` do not depend on N (the latter contributes a fixed source
+sweep, converging jointly. `model.sliding_law`'s type determines which `resolve_q!` method runs: `PrescribedFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N (the latter contributes a fixed source
 term, computed but not iterated on), so they fall back to the original q-only dispatch on `model.dissipation_melt`; `AbstractPressureDependentSlidingLaw` always takes the joint (q, N) loop,
 using `model.max_coupling_iters`/`model.coupling_rtol` regardless of `model.dissipation_melt` (which only decides whether the dissipation term is added inside that loop, via `add_dissipation_term!`).
+
+Whether the frictional-heating term actually gets added to `mdot_total` is a separate question from
+which `sliding_law` computes it: `model.mdot_includes_friction` (via `add_friction_term!`) decides
+that, independently of `model.sliding_law`'s own dispatch -- see `AbstractMdotFriction`'s docstring
+in model.jl for why an externally-supplied `mdot` (e.g. `load_Kazmierczak`'s/`load_yelmox`'s `ṁ`)
+needs this to avoid double-counting friction while still allowing a real, N-dependent sliding law to
+drive the `(q, N)` coupling loop.
 """
 function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
@@ -81,6 +88,25 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Add the frictional-heating term tau_b*v_b/L_w to `model.mdot_total` in place. Dispatched on
+`model.mdot_includes_friction` so the "already included" case costs nothing; shared by every
+`resolve_q!` method, independent of `sliding_law`'s own dispatch -- `model.tau_b` is always
+up to date by the time this is called (`update_tau_b!` runs first in every `resolve_q!` method), so
+this only decides whether that value gets added to the water source, never how it's computed. See
+`AbstractMdotFriction`'s docstring in model.jl for why this needs to be a separate knob from
+`sliding_law` itself.
+"""
+add_friction_term!(model::KazmierczakHydroModel, ::MdotIncludesFrictionOn) = nothing
+
+function add_friction_term!(model::KazmierczakHydroModel, ::MdotIncludesFrictionOff)
+    @. model.mdot_total += model.tau_b * model.abs_v_b / model.L_w
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Computes psi_out for the current sweep, dispatching on `model.psi_out_algorithm`
 (`RecursivePsiOut()`, `IterativePsiOut()`, or `TopologicalPsiOut()` -- see
 `AbstractPsiOutAlgorithm`'s docstring in model.jl) to the recursive `update_psi_out!`, the
@@ -104,16 +130,19 @@ route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::Hyd
 """
 $(TYPEDSIGNATURES)
 
-With the dissipation melt term off and an N-independent sliding law (`NoSlidingLaw`, which
+With the dissipation melt term off and an N-independent sliding law (`PrescribedFrictionSlidingLaw`, which
 contributes nothing, or `WeertmanSlidingLaw`, whose tau_b does not depend on N), the water source
 has no dependence on q or N: a single pass through the routing algorithm already gives the exact
-answer.
+answer. `model.mdot_includes_friction` still decides whether tau_b*v_b/L_w gets added (see
+`AbstractMdotFriction`'s docstring in model.jl) -- for `PrescribedFrictionSlidingLaw` tau_b is zero
+either way, but for `WeertmanSlidingLaw` it is not.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOff, sliding_law::Union{NoSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOff, sliding_law::Union{PrescribedFrictionSlidingLaw, WeertmanSlidingLaw})
 
     update_tau_b!(model, state, sliding_law)
-    @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w
+    @. model.mdot_total = model.mdot
+    add_friction_term!(model, model.mdot_includes_friction)
 
     route_psi_out!(model, grid, state)
 
@@ -136,7 +165,7 @@ model.max_dissipation_iters sweeps. If `model.dissipation_verbose` is set, logs 
 took, whether it converged, and after how many iterations.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOn, sliding_law::Union{NoSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOn, sliding_law::Union{PrescribedFrictionSlidingLaw, WeertmanSlidingLaw})
 
     start_time = time()
     converged  = false
@@ -148,11 +177,13 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         model.q_prev .= model.q
 
-        # Total water source: basal melt mdot, the (fixed, for these laws) frictional-heating term,
-        # plus the dissipation melt rate from the current estimate of q (zero on the first sweep,
-        # since model.q carries over from the previous call and starts at zero).
-        @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w +
-                               abs(model.q * model.abs_grad_phi0) / model.L_w
+        # Total water source: basal melt mdot, the (fixed, for these laws) frictional-heating term
+        # (skipped if model.mdot_includes_friction, since mdot already carries it), plus the
+        # dissipation melt rate from the current estimate of q (zero on the first sweep, since
+        # model.q carries over from the previous call and starts at zero).
+        @. model.mdot_total = model.mdot
+        add_friction_term!(model, model.mdot_includes_friction)
+        @. model.mdot_total += abs(model.q * model.abs_grad_phi0) / model.L_w
 
         # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
         route_psi_out!(model, grid, state)
@@ -184,9 +215,12 @@ $(TYPEDSIGNATURES)
 
 With an N-dependent sliding law (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`), tau_b
 depends on N, which is itself downstream of q -- so q and N form a joint fixed point regardless of
-`model.dissipation_melt`. Each sweep: recompute tau_b from the current N, add it (plus the
-dissipation term, if `model.dissipation_melt` is on) to the water source, route q, then update N from 
-the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
+`model.dissipation_melt`. Each sweep: recompute tau_b from the current N, add it to the water source
+unless `model.mdot_includes_friction` says mdot already has it (plus the dissipation term, if
+`model.dissipation_melt` is on), route q, then update N from the new q so the next sweep's tau_b
+uses a fresher N -- tau_b/N keep updating jointly with q every sweep regardless of
+`mdot_includes_friction`, so a real sliding law still couples correctly even when its contribution
+isn't added to mdot_total. Stops once both q and N stop
 changing (each relative to its own peak magnitude) to within `model.coupling_rtol`, capped at
 `model.max_coupling_iters` sweeps. If `model.coupling_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
@@ -208,7 +242,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         model.N_prev .= state.N
 
         update_tau_b!(model, state, sliding_law)
-        @. model.mdot_total = model.mdot + model.tau_b * model.abs_v_b / model.L_w
+        @. model.mdot_total = model.mdot
+        add_friction_term!(model, model.mdot_includes_friction)
         add_dissipation_term!(model, dissipation_melt)
 
         route_psi_out!(model, grid, state)
