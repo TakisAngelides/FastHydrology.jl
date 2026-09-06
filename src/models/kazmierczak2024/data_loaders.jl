@@ -139,8 +139,12 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     Nx = length(ds["xc"])
     Ny = length(ds["yc"])
 
-    xlims = (minimum(ds["xc"][:]), maximum(ds["xc"][:]))
-    ylims = (minimum(ds["yc"][:]), maximum(ds["yc"][:]))
+    # xc/yc carry a "units" = "km" attribute in yelmox restart files (confirmed against
+    # test/Kazmierczak et al 2024/input/yelmox/{32km,16km} restarts, where xc spacing is exactly
+    # 32.0/16.0), so they need the same km -> m conversion as load_Kazmierczak's xc/yc above.
+    xc = Km2m.(ds["xc"][:])
+    yc = Km2m.(ds["yc"][:])
+    xlims, ylims = compute_lims(xc, yc)
 
     mask = reshape(Int.(ds["f_ice"][:] .* ds["f_grnd"][:] .> 0.0), Nx, Ny)
     h = reshape(ds["H_ice"][:], Nx, Ny)

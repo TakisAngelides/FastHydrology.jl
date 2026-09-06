@@ -76,6 +76,15 @@
                     @test all(==(1.0), κ)
                 end
 
+                # Regression test: xc/yc carry a "units" = "km" attribute in real yelmox restart
+                # files, so xlims/ylims must come back converted to meters (dx/dy here is 1.0 in the
+                # synthetic file's raw units, so it must come back as 1000.0 m, not left at O(1) --
+                # a scale of "tens" or less would mean the km -> m conversion was skipped).
+                dx_implied = (xlims[2] - xlims[1]) / Nx
+                dy_implied = (ylims[2] - ylims[1]) / Ny
+                @test dx_implied ≈ 1000.0
+                @test dy_implied ≈ 1000.0
+
                 # Regression test: ux_b/uy_b carry a "units" = "m/yr" attribute in real yelmox
                 # restart files, so abs_v_b = sqrt(ux_b^2 + uy_b^2) must come back converted to m/s.
                 @test all(≈(perYear2perSecond(sqrt(50.0^2 + 50.0^2))), abs_v_b)
