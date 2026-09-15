@@ -130,15 +130,16 @@ route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::Hyd
 """
 $(TYPEDSIGNATURES)
 
-With the dissipation melt term off and an N-independent sliding law (`PrescribedFrictionSlidingLaw`, which
-contributes nothing, or `WeertmanSlidingLaw`, whose tau_b does not depend on N), the water source
-has no dependence on q or N: a single pass through the routing algorithm already gives the exact
-answer. `model.mdot_includes_friction` still decides whether tau_b*v_b/L_w gets added (see
+With the dissipation melt term off and an N-independent sliding law (`PrescribedFrictionSlidingLaw`,
+which contributes nothing; `PrescribedFieldSlidingLaw`, whose tau_b is a fixed externally-supplied
+field; or `WeertmanSlidingLaw`, whose tau_b does not depend on N), the water source has no dependence
+on q or N: a single pass through the routing algorithm already gives the exact answer.
+`model.mdot_includes_friction` still decides whether tau_b*v_b/L_w gets added (see
 `AbstractMdotFriction`'s docstring in model.jl) -- for `PrescribedFrictionSlidingLaw` tau_b is zero
-either way, but for `WeertmanSlidingLaw` it is not.
+either way, but for `PrescribedFieldSlidingLaw`/`WeertmanSlidingLaw` it is not.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOff, sliding_law::Union{PrescribedFrictionSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOff, sliding_law::Union{PrescribedFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw})
 
     update_tau_b!(model, state, sliding_law)
     @. model.mdot_total = model.mdot
@@ -158,14 +159,14 @@ $(TYPEDSIGNATURES)
 
 With the dissipation melt term on and an N-independent sliding law, mdot_total = mdot + tau_b*v_b/L_w
 + |q * grad(phi0)| / L_w depends on q (through the dissipation term only -- tau_b*v_b/L_w is fixed
-for the whole loop since it does not depend on q or, for these two laws, N), so we Picard-iterate:
+for the whole loop since it does not depend on q or, for these laws, N), so we Picard-iterate:
 recompute the source from the current q, re-run the routing algorithm, and stop once q stops
 changing to within model.dissipation_rtol (relative to its own peak magnitude), capped at
 model.max_dissipation_iters sweeps. If `model.dissipation_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOn, sliding_law::Union{PrescribedFrictionSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOn, sliding_law::Union{PrescribedFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw})
 
     start_time = time()
     converged  = false
