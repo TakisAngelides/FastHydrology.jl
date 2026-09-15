@@ -16,8 +16,8 @@ using Shakti
     run!(sim::TimeSimulation{<:ShaktiHydroModel}; kwargs...)
 
 Runs `sim` by delegating straight to `Shakti.run!(sim.model.sim; kwargs...)`. Any keyword accepted
-by `Shakti.run!` (e.g. `checkpoint_every`, `checkpoint_path`, `restart_path`) can be passed through
-here.
+by `Shakti.run!` (e.g. `checkpoint_every`, `checkpoint_path`, `restart_path`, `extend_path`) can be
+passed through here.
 """
 function FastHydrology.run!(sim::FastHydrology.TimeSimulation{<:FastHydrology.ShaktiHydroModel}; kwargs...)
     Shakti.run!(sim.model.sim; kwargs...)
@@ -41,7 +41,7 @@ back e.g. `sim.model.sim.state.N` for the next ice flow step.
 function FastHydrology.step!(sim::FastHydrology.TimeSimulation{<:FastHydrology.ShaktiHydroModel})
     shakti_sim = sim.model.sim
     Shakti.step!(shakti_sim)
-    shakti_sim.total_time[] += shakti_sim.dt
+    shakti_sim.total_time[] += shakti_sim.dt[]
     return nothing
 end
 
