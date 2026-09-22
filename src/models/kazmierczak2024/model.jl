@@ -53,7 +53,7 @@ multiple dispatch at compile time via `route_psi_out!` in water_flux.jl, the sam
 - `RecursivePsiOut` (the default, preserving prior behaviour) is substantially faster (~30-40x
   faster per sweep, benchmarked on Thwaites 2km and pan-Antarctica 8km) since Julia's native call
   stack has far less overhead than an explicit heap-allocated stack. But it recurses as deep as the
-  longest flow-routing chain in the domain, which for real (non-toy) ice-sheet grids can exceed the
+  longest flow-routing chain in the domain, which for real ice-sheet grids can exceed the
   calling process's `ulimit -s` and crash with a `StackOverflowError` -- independent of, and
   potentially before, `max_psi_out_calls` ever binds (that cap limits total cells visited per sweep,
   not recursion depth along any one chain).

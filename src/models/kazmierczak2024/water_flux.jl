@@ -57,11 +57,15 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     # gradients, so it stays fixed regardless of the dissipation-melt branch taken below.
     dx = grid.dx
     dy = grid.dy
+    # eps(T) rather than a bare Float64 literal like 1e-15: keeps this (and every other
+    # division-by-zero guard in this file) in the model's own float type, so a Float32 grid
+    # broadcast doesn't get silently promoted to Float64 by a Float64 literal.
+    T = eltype(model.minus_grad_phi0_sx)
     # x*x rather than x^2.0: Float64^Float64 dispatches to libm's pow() per element (~17x slower
     # than a plain multiply, benchmarked), and x^2 (integer literal) hits the literal_pow issue
     # noted on DarcyWeisbachThickness below -- x*x is both the fast path and Oceananigans-safe.
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
-                       (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + 1e-15)
+                       (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + eps(T))
 
     resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law)
 
@@ -191,7 +195,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
 
-        q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
+        q_scale = max(masked_max_abs(grid, model.q, state.mask), eps(eltype(model.q)))
         if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
             converged = true
             n_iters   = iter
@@ -252,8 +256,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         update_N!(model, grid, state)
 
-        q_scale = max(masked_max_abs(grid, model.q, state.mask), 1e-15)
-        N_scale = max(masked_max_abs(grid, state.N, state.mask), 1e-15)
+        q_scale = max(masked_max_abs(grid, model.q, state.mask), eps(eltype(model.q)))
+        N_scale = max(masked_max_abs(grid, state.N, state.mask), eps(eltype(state.N)))
         q_converged = masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.coupling_rtol * q_scale
         N_converged = masked_max_abs_diff(grid, state.N, model.N_prev, state.mask) <= model.coupling_rtol * N_scale
 
@@ -325,7 +329,7 @@ docstring in model.jl), or, with `gradient_convention = LocalGradient()`, the lo
 gradient instead (matching the convention `update_S_inf!` uses). The turbulent analogue of
 `LaminarThickness` below, and the closure consistent with K24's own turbulent-flow assumption for `q`
 (unlike `LaminarThickness`) -- clamped to `[Wmin, Wmax]` since it represents the same kind of
-thin-sheet quantity. The `+ 1e-15` guards degenerate cells where `abs_grad_phi0` is exactly zero
+thin-sheet quantity. The `+ eps(T)` guards degenerate cells where `abs_grad_phi0` is exactly zero
 (e.g. flat cells outside the glacier extent). Uses `q*q` rather than `q^2.0`: `Float64^Float64`
 dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a plain multiply for no
 numerical difference, and `q^2` (integer literal) hits a separate issue -- `@.`'s `literal_pow`
@@ -337,15 +341,17 @@ function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
+    T = eltype(model.abs_grad_phi0)
     @. state.W = min(model.Wmax, max(model.Wmin,
-        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + 1e-15))^(1/3)))
+        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + eps(T)))^(1/3)))
     return nothing
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
     abs_grad_phi0_mean = masked_mean(grid, model.abs_grad_phi0, state.mask)
+    T = eltype(model.abs_grad_phi0)
     @. state.W = min(model.Wmax, max(model.Wmin,
-        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + 1e-15))^(1/3)))
+        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + eps(T)))^(1/3)))
     return nothing
 end
 
@@ -377,7 +383,8 @@ function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid
 end
 
 function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
-    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + 1e-15))^(1/3)))
+    T = eltype(model.abs_grad_phi0_s)
+    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + eps(T)))^(1/3)))
     return nothing
 end
 
@@ -575,6 +582,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
 
     dx = grid.dx
     dy = grid.dy
+    T = eltype(model.abs_grad_phi0_s)
 
     model.psi_out[i, j] = model.mdot_total[i, j] * dx * dy / model.rho_w
 
@@ -592,7 +600,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         # in (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
         (1 <= ni <= grid.Nx && 1 <= nj <= grid.Ny) || continue
 
-        w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
+        w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + eps(T))
 
         if w > 0
             model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state, call_count) * w
@@ -661,6 +669,7 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
     Ny = grid.Ny
     dx = grid.dx
     dy = grid.dy
+    T = eltype(model.abs_grad_phi0_s)
 
     # Refresh visited cells field
     model.visited .= 0.0
@@ -713,7 +722,7 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
                     continue
                 end
 
-                w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + 1e-15)
+                w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + eps(T))
 
                 if w <= 0
                     stack[end] = (si, sj, sk + 1)
@@ -822,7 +831,7 @@ function update_psi_out_topological!(model::KazmierczakHydroModel, grid::Abstrac
             (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
             state.mask[ni, nj] == 1.0 || continue
 
-            w = (model.minus_grad_phi0_sx[i, j] * di + model.minus_grad_phi0_sy[i, j] * dj) / (model.abs_grad_phi0_s[i, j] + 1e-15)
+            w = (model.minus_grad_phi0_sx[i, j] * di + model.minus_grad_phi0_sy[i, j] * dj) / (model.abs_grad_phi0_s[i, j] + eps(T))
 
             if w > 0
                 push!(out_targets[i, j], (ni, nj, w))

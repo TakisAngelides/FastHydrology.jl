@@ -9,9 +9,7 @@ abstract type AbstractHydroGrid end
 """
 $(TYPEDSIGNATURES)
 
-A struct for the Oceananigans Rectilinear grid. `Nx`, `Ny`, `dx`, `dy` are cached at construction
-time (grid geometry never changes afterwards) so callers can read them directly, e.g. `grid.dx`,
-rather than going through an accessor function.
+A struct for the Oceananigans Rectilinear grid.
 
 `conv_cache` holds FFT plans/buffers for `convolve!` (see fft_convolution.jl), reused across calls
 since the same (image size, kernel size) combination repeats every timestep of a coupled

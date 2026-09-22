@@ -11,7 +11,7 @@ $(TYPEDSIGNATURES)
 
 The struct for the HydroState which includes physical fields important to hydrology.
 """
-mutable struct HydroState{A} <: AbstractHydroState
+struct HydroState{A} <: AbstractHydroState
     # Inputs
     mask ::A  # grounded ice mask (1 = grounded)
     h    ::A  # ice thickness [m]
