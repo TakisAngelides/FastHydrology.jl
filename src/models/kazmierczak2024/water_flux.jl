@@ -59,13 +59,19 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     dy = grid.dy
     # eps(T) rather than a bare Float64 literal like 1e-15: keeps this (and every other
     # division-by-zero guard in this file) in the model's own float type, so a Float32 grid
-    # broadcast doesn't get silently promoted to Float64 by a Float64 literal.
+    # broadcast doesn't get silently promoted to Float64 by a Float64 literal. Computed as a
+    # plain scalar BEFORE the `@.` broadcast, not as a literal `eps(T)` call inside it:
+    # Oceananigans' `@.` macro lifts every function call syntactically inside a Field-valued
+    # broadcast into its own AbstractOperations framework, and `eps` isn't one of the operators
+    # it supports -- writing `eps(T)` directly inside `@.` throws a MethodError deep inside
+    # Oceananigans.AbstractOperations.broadcasted_to_abstract_operation, not from this file.
     T = eltype(model.minus_grad_phi0_sx)
+    epsT = eps(T)
     # x*x rather than x^2.0: Float64^Float64 dispatches to libm's pow() per element (~17x slower
     # than a plain multiply, benchmarked), and x^2 (integer literal) hits the literal_pow issue
     # noted on DarcyWeisbachThickness below -- x*x is both the fast path and Oceananigans-safe.
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
-                       (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + eps(T))
+                       (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + epsT)
 
     resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law)
 
@@ -341,17 +347,22 @@ function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
+    # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note on
+    # why `eps(T)` cannot be written literally inside an Oceananigans `@.` broadcast expression.
     T = eltype(model.abs_grad_phi0)
+    epsT = eps(T)
     @. state.W = min(model.Wmax, max(model.Wmin,
-        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + eps(T)))^(1/3)))
+        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + epsT))^(1/3)))
     return nothing
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
     abs_grad_phi0_mean = masked_mean(grid, model.abs_grad_phi0, state.mask)
+    # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
+    epsT = eps(T)
     @. state.W = min(model.Wmax, max(model.Wmin,
-        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + eps(T)))^(1/3)))
+        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + epsT))^(1/3)))
     return nothing
 end
 
@@ -383,8 +394,10 @@ function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid
 end
 
 function update_W_laminar!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
+    # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0_s)
-    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + eps(T)))^(1/3)))
+    epsT = eps(T)
+    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + epsT))^(1/3)))
     return nothing
 end
 
