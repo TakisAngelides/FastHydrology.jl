@@ -101,13 +101,15 @@ An [`AbstractSlidingLaw`](@ref) turns [`KazmierczakHydroModel`](@ref)'s basal sl
 the current effective pressure into a basal shear stress `tau_b`, used for the frictional-heating
 term `tau_b*v_b` in the melt rate. [`PrescribedFrictionSlidingLaw`](@ref) (the default) and
 [`WeertmanSlidingLaw`](@ref) don't depend on effective pressure, so they add at most a fixed source
-term with no new feedback to resolve. [`PowerPlasticSlidingLaw`](@ref) and
-[`RegularizedCoulombSlidingLaw`](@ref) do depend on effective pressure -- since effective pressure
-is itself downstream of the water flux that the frictional melt term feeds into, `resolve_q!`
-(see [Water Flux](@ref)) widens its existing Picard loop to solve for both jointly rather than
-nesting a second loop around the first. [`calc_tau_b`](@ref) is the plain scalar formula for each
-law (used in tests/diagnostics); [`update_tau_b!`](@ref) is the field-broadcast version actually
-used inside the model.
+term with no new feedback to resolve. [`PowerPlasticSlidingLaw`](@ref),
+[`RegularizedCoulombSlidingLaw`](@ref) and [`ShaktiRegularizedCoulombSlidingLaw`](@ref) do depend on
+effective pressure -- since effective pressure is itself downstream of the water flux that the
+frictional melt term feeds into, `resolve_q!` (see [Water Flux](@ref)) widens its existing Picard
+loop to solve for both jointly rather than nesting a second loop around the first. [`calc_tau_b`](@ref)
+is the plain scalar formula for each law (used in tests/diagnostics) -- except
+[`ShaktiRegularizedCoulombSlidingLaw`](@ref), whose `lambda` is a per-cell field and so has no scalar
+form; [`update_tau_b!`](@ref) is the field-broadcast version actually used inside the model, and the
+only one that type implements.
 
 Whether `tau_b` actually gets added to the melt rate is a separate question from which law computes
 it, controlled by `KazmierczakHydroModel`'s `mdot_includes_friction` keyword -- an externally-supplied
@@ -118,9 +120,12 @@ loop without double-counting it in the melt rate.
 ```@docs
 AbstractSlidingLaw
 PrescribedFrictionSlidingLaw
+PrescribedFieldSlidingLaw
 WeertmanSlidingLaw
 PowerPlasticSlidingLaw
 RegularizedCoulombSlidingLaw
+RegularizedCoulombFieldSlidingLaw
+ShaktiRegularizedCoulombSlidingLaw
 calc_tau_b
 update_tau_b!
 ```

@@ -499,12 +499,20 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
 
     scale = h_avg * model.longcoupwater * 2.0
 
-    # Radius of the cone base (= 4 * h_avg * longcoupwater). The cone hits zero at this distance.
-    # Although this is 2-5x the Kamb & Echelmeyer (1986) coupling length (4-10x ice thickness for ice sheets),
-    # the effective coupling length is the kernel's weighted mean distance from center = width/3
-    # = 4/3 * h_avg * longcoupwater, which for longcoupwater=5 gives ~6.7x ice thickness —
-    # consistent with Kamb & Echelmeyer. At coarse resolution (16-32 km), the coupling length
-    # (6-15 km for 1500 m ice) is smaller than a grid cell, so set longcoupwater = 0.
+    # Radius of the cone base (= 4 * h_avg * longcoupwater). The cone hits zero at this distance,
+    # 2-5x the Kamb & Echelmeyer (1986) coupling length (4-10x ice thickness for ice sheets). The
+    # true effective coupling length is the kernel's *area-weighted* mean distance from center --
+    # i.e. the 2D mass centroid of the cone profile k(r) = max(0, 1 - r/width), weighting k(r) by
+    # the r dr area element a 2D radial integral actually carries (there is more area, hence more
+    # kernel mass, in an annulus further from the center) -- which works out to width/2
+    # = 2 * h_avg * longcoupwater, giving ~10x ice thickness for longcoupwater=5: the *upper edge*
+    # of Kamb & Echelmeyer's range, not comfortably in the middle of it. (Naively averaging k(r)
+    # alone over r without that area weighting, as if it were a 1D profile, gives the smaller
+    # width/3 = 4/3 * h_avg * longcoupwater ~ 6.7x instead -- but that number understates how much
+    # of the kernel's weight actually sits at larger radius once the 2D area growth is accounted
+    # for, so it is not the right quantity to compare against Kamb & Echelmeyer's ice-thickness
+    # multiple.) At coarse resolution (16-32 km), the coupling length (6-15 km for 1500 m ice, from
+    # Kamb & Echelmeyer's literal 4-10x range) is smaller than a grid cell, so set longcoupwater = 0.
     width = 2.0 * scale
 
     # Below Delta_min (the finer of the two spacings), `width` wouldn't resolve to even one grid
