@@ -34,41 +34,38 @@ multi-argument user functions taking a struct argument. Writing the formula with
 (`+`, `*`, `/`, `^`) on fields/arrays and scalar locals, exactly as the rest of this model already
 does (e.g. `update_N_inf!` in effective_pressure.jl), works uniformly for both grid backends.
 """
-function update_tau_b!(model, state, ::PrescribedFrictionSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, ::PrescribedFrictionSlidingLaw)
     model.tau_b .= 0.0
     return nothing
 end
 
-function update_tau_b!(model, state, law::PrescribedFieldSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, law::PrescribedFieldSlidingLaw)
     model.tau_b .= law.tau_b
     return nothing
 end
 
-function update_tau_b!(model, state, law::WeertmanSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, law::WeertmanSlidingLaw)
     C, q = law.C, law.q
     @. model.tau_b = C * model.abs_v_b^q
     return nothing
 end
 
-function update_tau_b!(model, state, law::PowerPlasticSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, law::PowerPlasticSlidingLaw)
     c_till, q, u0 = law.c_till, law.q, law.u0
     @. model.tau_b = c_till * state.N * (model.abs_v_b / u0)^q
     return nothing
 end
 
-function update_tau_b!(model, state, law::RegularizedCoulombSlidingLaw)
+# RegularizedCoulombSlidingLaw (scalar c_till) and RegularizedCoulombFieldSlidingLaw (per-cell
+# c_till) share this one method: the formula is identical, and broadcasting already handles a
+# scalar or a Field for c_till transparently, so there is nothing that actually differs per type.
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, law::Union{RegularizedCoulombSlidingLaw, RegularizedCoulombFieldSlidingLaw})
     c_till, q, u0 = law.c_till, law.q, law.u0
     @. model.tau_b = c_till * state.N * (model.abs_v_b / (model.abs_v_b + u0))^q
     return nothing
 end
 
-function update_tau_b!(model, state, law::RegularizedCoulombFieldSlidingLaw)
-    c_till, q, u0 = law.c_till, law.q, law.u0
-    @. model.tau_b = c_till * state.N * (model.abs_v_b / (model.abs_v_b + u0))^q
-    return nothing
-end
-
-function update_tau_b!(model, state, law::ShaktiRegularizedCoulombSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, law::ShaktiRegularizedCoulombSlidingLaw)
     C, n, inv_n, lambda = law.C, law.n, law.inv_n, law.lambda
     @. model.tau_b = C * state.N * (model.abs_v_b / (model.abs_v_b + abs(state.N)^n * lambda))^inv_n
     return nothing

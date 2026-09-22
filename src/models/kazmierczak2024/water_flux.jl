@@ -191,10 +191,12 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         # Total water source: basal melt mdot, the (fixed, for these laws) frictional-heating term
         # (skipped if model.mdot_includes_friction, since mdot already carries it), plus the
         # dissipation melt rate from the current estimate of q (zero on the first sweep, since
-        # model.q carries over from the previous call and starts at zero).
+        # model.q carries over from the previous call and starts at zero). Routed through
+        # add_dissipation_term! (rather than reimplementing the formula inline) so this stays the
+        # single source of truth for it, matching the N-dependent resolve_q! method below.
         @. model.mdot_total = model.mdot
         add_friction_term!(model, model.mdot_includes_friction)
-        @. model.mdot_total += abs(model.q * model.abs_grad_phi0) / model.L_w
+        add_dissipation_term!(model, DissipationMeltOn())
 
         # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
         route_psi_out!(model, grid, state)
@@ -590,7 +592,13 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
 
     # If the neighbour does not have grounded ice then return 0
     if state.mask[i, j] != 1.0
-        return 0.0
+        # zero(eltype(...)), not a bare 0.0 literal: this function's other return paths
+        # (model.psi_out[i, j]) already return in model's own float type, and a bare Float64
+        # literal here would make the return type Union{Float32, Float64} for a Float32 model --
+        # confirmed via @code_warntype -- taxing every recursive call in this, the default and
+        # documented-"30-40x faster" RecursivePsiOut hot path, with a dynamic dispatch/union-split
+        # that a Float64 model never pays (0.0 already being a Float64 there).
+        return zero(eltype(model.psi_out))
     end
 
     # If the neighbour has been visited then the psi_out has already been calculated for that cell

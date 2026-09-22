@@ -7,8 +7,12 @@
 $(TYPEDSIGNATURES)
 
 The height above buoyancy (HAB) hydrology model described in Sec. 2.1.1 of Kazmierczak et al 2022 (https://doi.org/10.5194/tc-16-4537-2022).
+
+Not `mutable`: nothing ever reassigns a field of this struct, only the contents of the `Po`/`p_w`
+arrays it holds (`model.p_w .= ...`, never `model.p_w = ...`) -- same reasoning as
+`KazmierczakWorkspace` in `models/kazmierczak2024/model.jl` and `HydroState` in `common/state.jl`.
 """
-mutable struct HABHydroModel{T <: AbstractFloat, A} <: AbstractHydroModel
+struct HABHydroModel{T <: AbstractFloat, A} <: AbstractHydroModel
 
     # Model constants
     rho_sw ::T  # Density of sea water [kg/m3]

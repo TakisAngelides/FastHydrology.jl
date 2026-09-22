@@ -26,6 +26,8 @@ function initialize_κ(Nx, Ny, b; bed_rheology)
                 end
             end
         end
+    else
+        error("initialize_κ: unrecognized bed_rheology = $(repr(bed_rheology)) (expected :hard, :soft, :mixed, or :mixed_smooth)")
     end
 
     return κ
