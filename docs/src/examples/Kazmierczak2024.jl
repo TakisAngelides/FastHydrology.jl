@@ -39,16 +39,17 @@ fig = visualize_grid(grid)
 # original water balance exactly. We also silence the per-call Picard convergence printout here
 # with `dissipation_verbose = false`.
 #
-# `longcoupwater` (the stress-gradient-coupling smoothing width) has no safe default that works
-# for every grid resolution, so it must be passed explicitly or `KazmierczakHydroModel` warns and
-# falls back to 5.0 -- see its docstring for how to choose a value from your own grid's resolution
-# relative to ice thickness. 5.0 is appropriate for this dataset's 2 km grid.
+# `coupling_length_kamb86` is Kamb & Echelmeyer (1986)'s stress-gradient-coupling length, passed
+# directly as a multiple of ice thickness (~4-10 for ice sheets, ~1-3 for valley/mountain glaciers --
+# see the constructor's docstring). It has no safe default that works for every grid resolution, so it
+# must be passed explicitly or `KazmierczakHydroModel` warns and falls back to 10.0 (the upper edge of
+# the ice-sheet range). 10.0 is appropriate for this dataset's 2 km grid.
 #
 # `state.W`'s closure (`water_thickness_algorithm`, default `DarcyWeisbachThickness()`) and its
 # numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`, all no-op by default -- nothing is
 # clamped unless you ask for it) are left at their defaults here; see the API reference for the
 # other closures (`ArealConduitThickness`, `LaminarThickness`) and KORI-ULB's own bound values.
-model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ; longcoupwater = 5.0, dissipation_verbose = false)
+model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ; coupling_length_kamb86 = 10.0, dissipation_verbose = false)
 state = HydroState(grid, mask, h, b)
 sim   = SteadyStateSimulation(model, grid, state)
 run!(sim)
@@ -87,7 +88,7 @@ fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", tran
 # are unaffected.
 sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
 model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ;
-                                       sliding_law = sliding_law, longcoupwater = 5.0,
+                                       sliding_law = sliding_law, coupling_length_kamb86 = 10.0,
                                        mdot_includes_friction = true,
                                        dissipation_verbose = false, coupling_verbose = false)
 state_sliding = HydroState(grid, mask, h, b)
@@ -109,7 +110,7 @@ fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stres
 # temperate-bed assumption) -- both are mandatory arguments precisely so that assumption has to be
 # made explicit, not silent.
 model_from_G = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
-                                      sliding_law = sliding_law, longcoupwater = 5.0,
+                                      sliding_law = sliding_law, coupling_length_kamb86 = 10.0,
                                       dissipation_verbose = false, coupling_verbose = false)
 state_from_G = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_from_G, grid, state_from_G))

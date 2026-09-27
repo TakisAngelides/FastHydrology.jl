@@ -20,7 +20,7 @@ internal loop of its own to hook a fixed interval into (see `AbstractOutputWrite
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
     A_visc  = fill(1e-24, 5, 5)
     mdot    = fill(1e-6, 5, 5)
-    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 0.0, dissipation_verbose = false)
+    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
     sim = SteadyStateSimulation(model, grid, state)
 
     mktempdir() do dir
@@ -80,7 +80,7 @@ end
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
     A_visc  = fill(1e-24, 5, 5)
     mdot    = fill(1e-6, 5, 5)
-    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 0.0, dissipation_verbose = false)
+    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
     sim = SteadyStateSimulation(model, grid, state)
 
     mktempdir() do dir
@@ -151,7 +151,7 @@ end
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
     A_visc  = fill(1e-24, 5, 5)
     mdot    = fill(1e-6, 5, 5)
-    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 0.0, dissipation_verbose = false)
+    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
     run!(SteadyStateSimulation(model, grid, state))
 
     mktempdir() do dir
@@ -208,7 +208,7 @@ end
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
     A_visc  = fill(1e-24, 5, 5)
     mdot    = fill(1e-6, 5, 5)
-    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 0.0, dissipation_verbose = false)
+    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
     run!(SteadyStateSimulation(model, grid, state))
 
     mktempdir() do dir
@@ -237,7 +237,7 @@ end
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
     A_visc  = fill(1e-24, 5, 5)
     mdot    = fill(1e-6, 5, 5)
-    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; longcoupwater = 0.0, dissipation_verbose = false)
+    model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
     run!(SteadyStateSimulation(model, grid, state))
 
     mktempdir() do dir

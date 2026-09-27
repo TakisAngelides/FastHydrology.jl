@@ -599,7 +599,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     Wmin            ::T    # Minimum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to 0.0 (no floor) -- pass 1e-8 for KORI-ULB's own Wdmin if you want that bound back
     Wmax            ::T    # Maximum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to Inf (no ceiling) -- pass 0.015 for KORI-ULB's own Wdmax if you want that bound back
     water_thickness_algorithm ::WT # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
-    longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients. No safe no-op default (see the constructor's docstring); warns if left unspecified
+    longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients -- KORI-ULB's own internal parameter, unchanged in meaning. Set via the constructor's `coupling_length_kamb86` keyword (longcoupwater = coupling_length_kamb86 / 2), not directly -- see that keyword's docstring for why
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure. Defaults to 0.0 (no floor) -- pass 0.02 for KORI-ULB's own value if you want that bound back
     q_min           ::T    # Minimum allowed value for the distributed water flux
     q_max           ::T    # Maximum allowed value for the distributed water flux. Defaults to Inf (no ceiling) -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap if you want that bound back
@@ -761,8 +761,33 @@ default is a real tradeoff, not a free one:
 `update_W!`'s docstring in water_flux.jl) that feeds back into nothing else in the model, so an
 unclamped value there can't itself destabilize the rest of a solve.
 
-`longcoupwater` has no such no-op default -- see its own field comment on `KazmierczakParams` and the
-`@warn` this constructor emits if it's left unspecified.
+The constructor has no `longcoupwater` keyword directly -- pass `coupling_length_kamb86` instead.
+`longcoupwater` itself (the field on `KazmierczakParams`, and the quantity `update_smoothed_potential_gradients!`
+in water_flux.jl actually uses) keeps its original meaning unchanged, matching KORI-ULB's own internal
+parameter of the same name; only the constructor's *public entry point* to it has moved. This is because
+`longcoupwater` alone was never Kamb & Echelmeyer (1986)'s number directly: the kernel's true (2D
+area-weighted) effective coupling length works out to `2 * longcoupwater * mean_ice_thickness`, not
+`longcoupwater * mean_ice_thickness` -- see the derivation in `update_smoothed_potential_gradients!`
+(water_flux.jl) and the field comment on `KazmierczakParams`. `coupling_length_kamb86` is defined so it
+*is* that number directly: `longcoupwater = coupling_length_kamb86 / 2`, so effective coupling length =
+`coupling_length_kamb86 * mean_ice_thickness` exactly, and the caller never has to work out the factor
+of 2 themselves.
+
+`coupling_length_kamb86` has no numerically safe no-op default (its correct value genuinely depends on
+grid resolution relative to ice thickness), so leaving it unspecified emits a `@warn` and falls back to
+`10.0` -- the upper edge of Kamb & Echelmeyer (1986)'s theoretical range for ice sheets. Their full set
+of ranges:
+- Ice sheets: ~4 to 10 ice thicknesses.
+- Valley/mountain glaciers: a shorter ~1 to 3 ice thicknesses -- lateral drag against the valley walls
+  transmits stress locally instead of over a long distance, so the coupling length is shorter than an
+  unconfined ice sheet's.
+- A glacier in surge: even longer, ~12 ice thicknesses.
+
+Pick a value from whichever range matches your setting, or `0.0` to disable the smoothing entirely
+(must be `>= 0`; a negative value throws an `ArgumentError`). See the `@warn` this constructor emits if
+`coupling_length_kamb86` is left unspecified for how to tell, from your own grid resolution, when the
+resulting coupling length is too small for your grid to resolve at all (in which case `0.0` is the
+honest choice, not a value the grid can't represent).
 
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
@@ -800,7 +825,7 @@ function KazmierczakHydroModel(
     Wmin          = 0.0,                          # Minimum subglacial water layer thickness [m]; no floor by default -- pass 1e-8 for KORI-ULB's own Wdmin
     Wmax          = Inf,                          # Maximum subglacial water layer thickness [m]; no ceiling by default -- pass 0.015 for KORI-ULB's own Wdmax
     water_thickness_algorithm = DarcyWeisbachThickness(), # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
-    longcoupwater = nothing,                      # Stress-gradient-coupling smoothing width; no safe no-op default, so leaving this unspecified defaults to 5.0 and emits a @warn explaining how to choose it
+    coupling_length_kamb86 = nothing,             # Kamb & Echelmeyer (1986) stress-gradient-coupling length, as a direct multiple of mean ice thickness (>= 0; 0 disables the smoothing); no safe no-op default, so leaving this unspecified defaults to 10.0 and emits a @warn explaining how to choose it
     sigmat        = 0.0,                          # Effective pressure lower bound as fraction of overburden pressure; no floor by default -- pass 0.02 for KORI-ULB's own value
     q_min         = 0.0,                          # Minimum allowed value for the distributed water flux
     q_max         = Inf,                          # Maximum allowed value for the distributed water flux; no ceiling by default -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap
@@ -844,17 +869,23 @@ function KazmierczakHydroModel(
     Wmin          = T(Wmin)
     Wmax          = T(Wmax)
 
-    # longcoupwater has no numerically-safe "no-op" default the way Wmin/Wmax/q_max/sigmat do (see
-    # this constructor's docstring): its correct value genuinely depends on grid resolution relative
-    # to ice thickness, and silently picking a value the grid can't resolve produces different (not
-    # obviously wrong) physics rather than an out-of-range number, so there's no way to make an
+    # coupling_length_kamb86 has no numerically-safe "no-op" default the way Wmin/Wmax/q_max/sigmat do
+    # (see this constructor's docstring): its correct value genuinely depends on grid resolution
+    # relative to ice thickness, and silently picking a value the grid can't resolve produces different
+    # (not obviously wrong) physics rather than an out-of-range number, so there's no way to make an
     # oblivious default "safe" the way clamping the others off does. Warn instead, but only if the
     # caller didn't actively choose a value themselves.
-    if longcoupwater === nothing
-        longcoupwater = 5.0
-        @warn "longcoupwater not specified, defaulting to $longcoupwater. This sets the width of the stress-gradient-coupling smoothing kernel applied to the hydraulic potential gradient (update_smoothed_potential_gradients!): effective coupling length ≈ 2 * longcoupwater * mean_ice_thickness ≈ $(round(2*longcoupwater, digits=2))x ice thickness at this value -- the upper edge of Kamb & Echelmeyer (1986)'s stated 4-10x ice-thickness range, not the middle of it. Choose it based on your grid resolution: if that coupling length is smaller than your grid spacing (dx/dy), the smoothing can't be resolved and should be turned off (longcoupwater = 0) rather than left at a value the grid can't represent -- e.g. at 16-32 km resolution with ~1500 m ice, the coupling length (6-15 km) is already smaller than one grid cell. Pass longcoupwater explicitly (0.0 to disable smoothing, or your own estimate) to silence this warning."
+    if coupling_length_kamb86 === nothing
+        coupling_length_kamb86 = 10.0
+        @warn "coupling_length_kamb86 not specified, defaulting to $coupling_length_kamb86. This directly sets Kamb & Echelmeyer (1986)'s stress-gradient-coupling length as a multiple of mean grounded-ice thickness (update_smoothed_potential_gradients!): effective coupling length = coupling_length_kamb86 * mean_ice_thickness = $(coupling_length_kamb86)x ice thickness at this value -- the upper edge of Kamb & Echelmeyer (1986)'s theoretical range for ice sheets (~4-10x ice thickness; a shorter ~1-3x for valley/mountain glaciers instead, where lateral drag against the valley walls transmits stress locally rather than over a long distance, and an even longer ~12x for a glacier in surge). This is the kernel's 2D area-weighted effective width (the right quantity to compare against Kamb & Echelmeyer's number, since the smoothing kernel is a genuine 2D kernel, not a 1D profile); a naive 1D average over radius would understate it at ~2/3 of this. Choose it based on your grid resolution: if the resulting coupling length is smaller than your grid spacing (dx/dy), the smoothing can't be resolved and should be turned off (coupling_length_kamb86 = 0) rather than left at a value the grid can't represent -- e.g. at 16-32 km resolution with ~1500 m ice, even the ice-sheet range's coupling length (6-15 km) is already smaller than one grid cell. Pass coupling_length_kamb86 explicitly (0.0 to disable smoothing, ~4-10 for ice sheets, ~1-3 for valley/mountain glaciers, ~12 for a surging glacier, or your own estimate) to silence this warning."
+    elseif coupling_length_kamb86 < 0
+        throw(ArgumentError("coupling_length_kamb86 must be >= 0 (got $coupling_length_kamb86): it is Kamb & Echelmeyer (1986)'s stress-gradient-coupling length as a multiple of ice thickness, which is not a signed quantity -- 0 disables the smoothing entirely, it is not itself negative"))
     end
-    longcoupwater = T(longcoupwater)
+    # longcoupwater is KORI-ULB's own internal parameter (unchanged meaning, see the field comment on
+    # KazmierczakParams); the 2D area-weighted effective coupling length works out to
+    # 2 * longcoupwater * mean_ice_thickness (not 1x), so dividing by 2 here is what makes
+    # coupling_length_kamb86 equal Kamb & Echelmeyer's ice-thickness multiple directly.
+    longcoupwater = T(coupling_length_kamb86) / T(2)
 
     sigmat        = T(sigmat)
     q_min         = T(q_min)

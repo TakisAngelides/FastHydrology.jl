@@ -405,9 +405,9 @@
         A_visc  = fill(1e-24, 12, 12)
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
 
-        for longcoupwater in (5.0, 0.0) # the model's default (smoothing on) and smoothing off
-            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), longcoupwater)
-            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), longcoupwater)
+        for coupling_length_kamb86 in (10.0, 0.0) # the model's default (smoothing on) and smoothing off
+            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86)
+            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86)
 
             state_recursive   = HydroState(grid, mask, h, b)
             state_topological = HydroState(grid, mask, h, b)
@@ -463,4 +463,35 @@
         # finite, since only (2,2)/(3,2) themselves are inside it.
         @test_logs (:warn, r"cycle") FastHydrology.update_psi_out_topological!(model, grid, state, true)
         @test all(isfinite, field_values(model.psi_out))
+    end
+
+    @testset "coupling_length_kamb86 maps onto Kamb & Echelmeyer's ice-thickness multiple" begin
+        # coupling_length_kamb86 (not longcoupwater) is the public keyword: it *is* Kamb & Echelmeyer's
+        # (1986) stress-gradient-coupling length, expressed directly as a multiple of ice thickness.
+        # longcoupwater itself keeps its original, KORI-ULB-matching meaning internally
+        # (longcoupwater = coupling_length_kamb86 / 2, since the kernel's true 2D area-weighted
+        # effective coupling length works out to 2 * longcoupwater * mean_ice_thickness -- see
+        # update_smoothed_potential_gradients! in water_flux.jl).
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        kappa   = zeros(5, 5)
+        abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
+        A_visc  = fill(1e-24, 5, 5)
+        mdot    = fill(1e-6, 5, 5)
+
+        for coupling_length_kamb86 in (0.0, 1.5, 4.0, 7.0, 10.0, 12.0)
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86, dissipation_verbose = false)
+            @test model.longcoupwater == coupling_length_kamb86 / 2
+        end
+
+        # Leaving it unspecified warns and falls back to the upper edge of Kamb & Echelmeyer's
+        # ice-sheet range (10.0), i.e. longcoupwater = 5.0 internally -- the model's original default.
+        local model_default
+        @test_logs (:warn, r"coupling_length_kamb86 not specified") match_mode=:any begin
+            model_default = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        end
+        @test model_default.longcoupwater == 5.0
+
+        # Negative values aren't physical (it is a length multiple, not a signed quantity) and are
+        # rejected rather than silently accepted.
+        @test_throws ArgumentError KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = -1.0, dissipation_verbose = false)
     end
