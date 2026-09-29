@@ -188,24 +188,64 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Write `-∂field/∂x` into the 2D array `dest` from the 2D array `field` (both `Nx × Ny`, spacing `dx`).
+Shared by every grid backend's `minus_gradient_x!` so they cannot drift apart.
+
+Interior cells use a centred difference `(f[i+1] - f[i-1]) / 2dx`. The two domain-edge columns use a
+one-sided difference over the single available cell, `(f[2] - f[1]) / dx` at `i = 1` and
+`(f[Nx] - f[Nx-1]) / dx` at `i = Nx`, i.e. the full first-order gradient. (Replicating the edge cell as
+a ghost value instead and keeping the `2dx` denominator gives exactly half the gradient at the edge.)
+A single-column domain (`Nx == 1`) has no gradient and gives 0.
+"""
+function minus_gradient_x_kernel!(dest, field, Nx, Ny, dx)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if Nx == 1
+            dest[i, j] = zero(eltype(dest))
+        elseif i == 1
+            dest[i, j] = -(field[2, j] - field[1, j]) / dx
+        elseif i == Nx
+            dest[i, j] = -(field[Nx, j] - field[Nx - 1, j]) / dx
+        else
+            dest[i, j] = -(field[i + 1, j] - field[i - 1, j]) / (2dx)
+        end
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The `y` counterpart of [`minus_gradient_x_kernel!`](@ref): centred in the interior, one-sided
+(full-gradient) at `j = 1` and `j = Ny`, 0 when `Ny == 1`.
+"""
+function minus_gradient_y_kernel!(dest, field, Nx, Ny, dy)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if Ny == 1
+            dest[i, j] = zero(eltype(dest))
+        elseif j == 1
+            dest[i, j] = -(field[i, 2] - field[i, 1]) / dy
+        elseif j == Ny
+            dest[i, j] = -(field[i, Ny] - field[i, Ny - 1]) / dy
+        else
+            dest[i, j] = -(field[i, j + 1] - field[i, j - 1]) / (2dy)
+        end
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
 Write `-∂field/∂x` into `dest`, both cell-centered fields on `grid`.
 
-The default here assumes `field`/`dest` already behave like plain arrays and computes a central
-difference, clamping the neighbour index at the domain edges (i.e. edge-replicating) rather than
-reading from an explicit halo. This matches Oceananigans' own default zero-flux boundary condition
-at `Bounded` edges (verified empirically: with halo cells filled by `fill_halo_regions!`,
-`OGRectHydroGrid`'s override below produces the same values as this formula would if given
-edge-replicated ghost cells). Override this, as done below for `OGRectHydroGrid`, for grid
-backends whose fields wrap a different underlying array storage.
+The default here assumes `field`/`dest` already behave like plain arrays and applies
+[`minus_gradient_x_kernel!`](@ref): centred differences in the interior and one-sided differences at
+the domain edges, so edge cells get the full gradient rather than a halved one. `OGRectHydroGrid`
+overrides this only to hand the kernel the fields' interior views; it uses the same kernel, so both
+backends agree exactly.
 """
 function minus_gradient_x!(grid::AbstractHydroGrid, dest, field)
-    Nx, Ny = grid.Nx, grid.Ny
-    dx = grid.dx
-    @inbounds for j in 1:Ny, i in 1:Nx
-        im1 = max(i - 1, 1)
-        ip1 = min(i + 1, Nx)
-        dest[i, j] = -(field[ip1, j] - field[im1, j]) / (2dx)
-    end
+    minus_gradient_x_kernel!(dest, field, grid.Nx, grid.Ny, grid.dx)
     return nothing
 end
 
@@ -216,13 +256,7 @@ Write `-∂field/∂y` into `dest`, both cell-centered fields on `grid`. See `mi
 details on the default (plain-array) implementation.
 """
 function minus_gradient_y!(grid::AbstractHydroGrid, dest, field)
-    Nx, Ny = grid.Nx, grid.Ny
-    dy = grid.dy
-    @inbounds for j in 1:Ny, i in 1:Nx
-        jm1 = max(j - 1, 1)
-        jp1 = min(j + 1, Ny)
-        dest[i, j] = -(field[i, jp1] - field[i, jm1]) / (2dy)
-    end
+    minus_gradient_y_kernel!(dest, field, grid.Nx, grid.Ny, grid.dy)
     return nothing
 end
 
@@ -341,13 +375,15 @@ function fill_halo!(field, ::OGRectHydroGrid)
     fill_halo_regions!(field)
 end
 
-function minus_gradient_x!(::OGRectHydroGrid, dest, field)
-    dest .= -∂x(field)
+# Same kernel as the plain-array default (so edge handling is identical across backends), applied to
+# the fields' interior views. Halos are not touched; callers fill them afterwards as before.
+function minus_gradient_x!(g::OGRectHydroGrid, dest, field)
+    minus_gradient_x_kernel!(interior(dest, :, :, 1), interior(field, :, :, 1), g.Nx, g.Ny, g.dx)
     return nothing
 end
 
-function minus_gradient_y!(::OGRectHydroGrid, dest, field)
-    dest .= -∂y(field)
+function minus_gradient_y!(g::OGRectHydroGrid, dest, field)
+    minus_gradient_y_kernel!(interior(dest, :, :, 1), interior(field, :, :, 1), g.Nx, g.Ny, g.dy)
     return nothing
 end
 

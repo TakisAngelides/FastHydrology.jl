@@ -4,6 +4,7 @@
 # `field_values`/`interior` are already in scope from runtests.jl, which includes this file.
 
 array_field_values(field) = field  # ArrayHydroGrid fields are already plain arrays
+field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
 
 @testset "ArrayHydroGrid" begin
 
@@ -185,6 +186,58 @@ array_field_values(field) = field  # ArrayHydroGrid fields are already plain arr
         @test isapprox(sum(dest_a), sum(src); rtol = 1e-10)
         @test isapprox(sum(dest_o_vals), sum(src); rtol = 1e-10)
         @test isapprox(dest_a, dest_o_vals; rtol = 1e-8)
+    end
+
+    @testset "minus_gradient: edges use full one-sided gradient, backends agree" begin
+        # A linear field must give the exact gradient everywhere -- including the domain-edge rows and
+        # columns, which used to get half of it (edge-replicated ghost cell with a 2dx denominator).
+        Nx, Ny, dx, dy = 6, 5, 200.0, 500.0
+        f = [3.0 * (i * dx) - 2.0 * (j * dy) for i in 1:Nx, j in 1:Ny]
+        grid_a = ArrayHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dy))
+        grid_o = OGRectHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dy))
+
+        gx_a, gy_a = zeros(Nx, Ny), zeros(Nx, Ny)
+        minus_gradient_x!(grid_a, gx_a, f)
+        minus_gradient_y!(grid_a, gy_a, f)
+        @test all(isapprox.(gx_a, -3.0))
+        @test all(isapprox.(gy_a, 2.0))
+
+        f_o, gx_o, gy_o = FastHydrology.alloc_field(grid_o, f), FastHydrology.alloc_field(grid_o), FastHydrology.alloc_field(grid_o)
+        FastHydrology.fill_halo!(f_o, grid_o)
+        minus_gradient_x!(grid_o, gx_o, f_o)
+        minus_gradient_y!(grid_o, gy_o, f_o)
+        @test field_values(gx_o) == gx_a
+        @test field_values(gy_o) == gy_a
+    end
+
+    @testset "routing_weight matches the face-flux geometry for dx != dy" begin
+        # Diagonal flow (sx == sy) on dx = 4dy: 1/5 of the flux leaves through the x-face, 4/5 through
+        # the y-face (face widths dy and dx). The weights sum to 1 and reduce to 1/2, 1/2 for dx == dy.
+        dx, dy = 2000.0, 500.0
+        wx = FastHydrology.routing_weight(1.0, 1.0, 1, 0, dx, dy, 0.0)
+        wy = FastHydrology.routing_weight(1.0, 1.0, 0, 1, dx, dy, 0.0)
+        @test wx ≈ 0.2
+        @test wy ≈ 0.8
+        @test FastHydrology.routing_weight(1.0, 1.0, -1, 0, dx, dy, 0.0) < 0 # upstream side gets nothing
+        @test FastHydrology.routing_weight(1.0, 1.0, 1, 0, 1.0, 1.0, 0.0) ≈ 0.5
+    end
+
+    @testset "potential filling affects routing but not N's potential" begin
+        Nx, Ny = 9, 9
+        h = [600.0 - 8.0 * i for i in 1:Nx, j in 1:Ny]
+        b = fill(-100.0, Nx, Ny)
+        h[5, 5] -= 60.0 # a pit in the potential that filling will raise
+        for G in (ArrayHydroGrid, OGRectHydroGrid)
+            grid = G(Nx, Ny, (0.0, 9000.0), (0.0, 9000.0))
+            state = HydroState(grid, ones(Nx, Ny), h, b)
+            model = KazmierczakHydroModel(grid, zeros(Nx, Ny), fill(1e-6, Nx, Ny), fill(1e-24, Nx, Ny), fill(1e-6, Nx, Ny);
+                                           coupling_length_kamb86 = 0.0)
+            FastHydrology.update_phi0!(model, grid, state)
+            true_phi0 = copy(field_values_any(model.phi0))
+            FastHydrology.potential_filling!(model, grid, state)
+            @test field_values_any(model.phi0) == true_phi0
+            @test field_values_any(model.phi0_filled)[5, 5] > true_phi0[5, 5]
+        end
     end
 
 end

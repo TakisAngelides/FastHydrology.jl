@@ -140,6 +140,28 @@ route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::Hyd
 """
 $(TYPEDSIGNATURES)
 
+Convert the routed flux `psi_out` [m3/s] to the distributed flux `q` [m2/s] via `q = psi_out / corfac`,
+clamped to `[q_min, q_max]`. `corfac` is exactly 0 at a cell whose (smoothed) potential gradient is
+identically zero, so the bare division gave 0/0 = NaN (net-refreezing cell, `psi_out == 0`) or Inf
+(`psi_out > 0`) there, and `max`/`min` propagate NaN. Adding `eps(T)` to the denominator, the same
+guard every other division in this file uses, keeps q finite (0 for `psi_out == 0`). For `psi_out > 0`
+on such a cell q is still huge, since the flow direction is genuinely undefined -- use `q_max` if you
+need to bound it. `epsT` is a plain scalar computed outside the broadcast for the reason given in
+`update_q!`.
+"""
+function update_q_from_psi_out!(model::KazmierczakHydroModel)
+
+    epsT = eps(eltype(model.corfac))
+    @. model.q = min(max(model.psi_out / (model.corfac + epsT), model.q_min), model.q_max)
+
+    return nothing
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 With the dissipation melt term off and an N-independent sliding law (`PrescribedFrictionSlidingLaw`,
 which contributes nothing; `PrescribedFieldSlidingLaw`, whose tau_b is a fixed externally-supplied
 field; or `WeertmanSlidingLaw`, whose tau_b does not depend on N), the water source has no dependence
@@ -157,7 +179,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     route_psi_out!(model, grid, state)
 
-    @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
+    update_q_from_psi_out!(model)
 
     return nothing
 
@@ -201,7 +223,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
         route_psi_out!(model, grid, state)
 
-        @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
+        update_q_from_psi_out!(model)
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), eps(eltype(model.q)))
         if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
@@ -260,7 +282,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         add_dissipation_term!(model, dissipation_melt)
 
         route_psi_out!(model, grid, state)
-        @. model.q = min(max(model.psi_out / model.corfac, model.q_min), model.q_max)
+        update_q_from_psi_out!(model)
 
         update_N!(model, grid, state)
 
@@ -422,13 +444,19 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Updates phi0 and consequently also updates h to reflect changes in phi0. It fills the local minima of phi0 to avoid water getting stuck in there.
+Fill the local minima of the geometric potential to avoid water getting stuck in them. The result goes
+into `model.phi0_filled`, which is used only for routing (flow direction); `model.phi0` stays the true
+potential, so the effective pressure N, `S_inf`/`N_inf` gradients and dissipation are not affected by
+the filling. `model.h` receives the ice thickness consistent with the filled potential (only used for
+the mean thickness in the smoothing kernel size).
 """
 function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    phi0     = model.phi0
+    phi0     = model.phi0_filled
     phi0_tmp = model.phi0_tmp
 
+    phi0 .= model.phi0
+    fill_halo!(phi0, grid)
     phi0_tmp .= phi0
     fill_halo!(phi0_tmp, grid)
 
@@ -439,8 +467,8 @@ function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGri
         @inbounds for j in 1:Ny
             for i in 1:Nx
                 p = phi0[i, j]
-                # Domain edges are treated as zero-gradient (edge-replicated) neighbours, same
-                # convention as minus_gradient_x!/minus_gradient_y! -- see grid.jl.
+                # Domain edges are treated as zero-gradient (edge-replicated) neighbours, so an edge
+                # cell is never a strict local minimum and is never filled.
                 im1, ip1 = max(i - 1, 1), min(i + 1, Nx)
                 jm1, jp1 = max(j - 1, 1), min(j + 1, Ny)
                 p1, p2 = phi0[ip1, j], phi0[im1, j]
@@ -454,8 +482,8 @@ function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGri
         fill_halo!(phi0, grid)
     end
 
-    # Correction to h from potential filling; stored separately so it does not affect other calculations like effective pressure.
-    @. model.h = (model.phi0 - model.rho_w * model.g * state.b) / (model.rho_i * model.g)
+    # Ice thickness consistent with the filled potential; stored separately so it does not affect other calculations like effective pressure.
+    @. model.h = (model.phi0_filled - model.rho_w * model.g * state.b) / (model.rho_i * model.g)
 
     return nothing
 
@@ -465,19 +493,28 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Compute (the negative of) the gradients of the geometric potential phi0 and its absolute value.
+Compute the gradients of the geometric potential. `model.abs_grad_phi0` (used by `S_inf`, `N_inf` and the
+dissipation term) is the magnitude of the gradient of the TRUE potential `model.phi0`. The components
+`model.minus_grad_phi0_x/y` (negative gradient, i.e. the flow direction) are taken from the FILLED
+potential `model.phi0_filled`, since they only feed the routing (via the smoothing and `psi_out`).
 """
 function update_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
+    # True potential first: its components are used only to form the magnitude, and the buffers are
+    # then reused for the filled potential's components below.
     minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
     minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
-
     fill_halo!(model.minus_grad_phi0_x, grid)
     fill_halo!(model.minus_grad_phi0_y, grid)
 
     # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
     @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
     fill_halo!(model.abs_grad_phi0, grid)
+
+    minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0_filled)
+    minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0_filled)
+    fill_halo!(model.minus_grad_phi0_x, grid)
+    fill_halo!(model.minus_grad_phi0_y, grid)
 
     return nothing
 
@@ -576,6 +613,21 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Fraction of a cell's `psi_out` that leaves through the face toward the neighbour in direction `(di, dj)`
+(`di`/`dj` in {-1, 0, 1}; one of them is 0), given that cell's smoothed negative-gradient components
+`(sx, sy)`. The flux through an x-face is `q|cosθ|·dy` and through a y-face is `q|sinθ|·dx`, so the
+share is `(sx·di·dy + sy·dj·dx) / (|sx|·dy + |sy|·dx)`, positive only when the flow leaves toward that
+neighbour. The denominator is exactly `corfac·|s|`, so these weights are consistent with the
+`q = psi_out/corfac` conversion, and reduce to `|s_dir|/(|sx|+|sy|)` when `dx == dy`.
+"""
+@inline function routing_weight(sx, sy, di, dj, dx, dy, epsT)
+    return (sx * di * dy + sy * dj * dx) / (abs(sx) * dy + abs(sy) * dx + epsT)
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Helper function to the recursive function to calculate the psi_out for every grid cell that has grounded ice.
 
 `call_count` is a per-sweep counter, shared by reference across the whole recursion tree started by
@@ -618,6 +670,9 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
     call_count[] += 1
     if call_count[] > model.max_psi_out_calls
         @warn "accumulate_psi_out! hit max_psi_out_calls = $(model.max_psi_out_calls) cells in one update_psi_out! sweep -- cutting the flow-routing recursion off early at cell ($i, $j) instead of risking a StackOverflowError. Pass a larger `max_psi_out_calls` to KazmierczakHydroModel if this grid genuinely has more grounded cells than the default allows." maxlog=1
+        # Same net-refreezing clamp as the normal exit below: without it, a cell cut off here with a
+        # negative local mdot_total would hand a negative flux to its downstream neighbour.
+        model.psi_out[i, j] = max(zero(eltype(model.psi_out)), model.psi_out[i, j])
         return model.psi_out[i, j]
     end
 
@@ -629,7 +684,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
         # in (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
         (1 <= ni <= grid.Nx && 1 <= nj <= grid.Ny) || continue
 
-        w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + eps(T))
+        w = routing_weight(model.minus_grad_phi0_sx[ni, nj], model.minus_grad_phi0_sy[ni, nj], -di, -dj, dx, dy, eps(T))
 
         if w > 0
             model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state, call_count) * w
@@ -728,12 +783,10 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
                 call_count += 1
                 if call_count > model.max_psi_out_calls
                     @warn "update_psi_out_iterative! hit max_psi_out_calls = $(model.max_psi_out_calls) cells in one sweep -- cutting the flow-routing traversal off early at cell ($si, $sj), matching accumulate_psi_out!'s own cutoff. Pass a larger `max_psi_out_calls` to KazmierczakHydroModel if this grid genuinely has more grounded cells than the default allows." maxlog=1
-                    # Pop without clamping: accumulate_psi_out!'s own cap-trip branch returns
-                    # model.psi_out[i, j] immediately, *before* reaching its final `max(0.0, ...)`
-                    # clamp -- so a cell cut off here can end up left negative (raw, un-clamped
-                    # mdot_total-only source) if its local mdot_total is negative (net refreezing).
-                    # Matched here rather than "fixed", since the point of this function is to
-                    # reproduce the recursive version exactly, not to change its behaviour.
+                    # Clamp before popping, matching accumulate_psi_out!'s own cap-trip branch: a cell
+                    # cut off here with a negative local mdot_total (net refreezing) must not hand a
+                    # negative flux to its downstream neighbour.
+                    model.psi_out[si, sj] = max(zero(eltype(model.psi_out)), model.psi_out[si, sj])
                     pop!(stack)
                 else
                     stack[end] = (si, sj, 1)
@@ -751,7 +804,7 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
                     continue
                 end
 
-                w = -(model.minus_grad_phi0_sx[ni, nj] * di + model.minus_grad_phi0_sy[ni, nj] * dj) / (model.abs_grad_phi0_s[ni, nj] + eps(T))
+                w = routing_weight(model.minus_grad_phi0_sx[ni, nj], model.minus_grad_phi0_sy[ni, nj], -di, -dj, dx, dy, eps(T))
 
                 if w <= 0
                     stack[end] = (si, sj, sk + 1)
@@ -860,7 +913,7 @@ function update_psi_out_topological!(model::KazmierczakHydroModel, grid::Abstrac
             (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
             state.mask[ni, nj] == 1.0 || continue
 
-            w = (model.minus_grad_phi0_sx[i, j] * di + model.minus_grad_phi0_sy[i, j] * dj) / (model.abs_grad_phi0_s[i, j] + eps(T))
+            w = routing_weight(model.minus_grad_phi0_sx[i, j], model.minus_grad_phi0_sy[i, j], di, dj, dx, dy, eps(T))
 
             if w > 0
                 push!(out_targets[i, j], (ni, nj, w))

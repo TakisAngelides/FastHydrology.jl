@@ -316,6 +316,22 @@
         @test all(isfinite, field_values(state.N))
     end
 
+    @testset "update_q_from_psi_out! stays finite where corfac == 0" begin
+        # A cell with an identically-zero potential gradient has corfac == 0; q = psi_out / corfac
+        # was 0/0 = NaN there when psi_out == 0 (net refreezing).
+        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        state = HydroState(grid, ones(5, 5), fill(500.0, 5, 5), fill(-100.0, 5, 5))
+        model = KazmierczakHydroModel(grid, zeros(5, 5), fill(1e-6, 5, 5), fill(1e-24, 5, 5), fill(1e-6, 5, 5);
+                                       coupling_length_kamb86 = 0.0)
+        model.corfac .= 0.0
+        model.psi_out .= 0.0
+        FastHydrology.update_q_from_psi_out!(model)
+        @test all(==(0.0), field_values(model.q))
+        model.psi_out .= 1.0
+        FastHydrology.update_q_from_psi_out!(model)
+        @test all(isfinite, field_values(model.q))
+    end
+
     @testset "update_psi_out_iterative! matches recursive update_psi_out!" begin
         # update_psi_out_iterative! (water_flux.jl) is a stack-based rewrite of the recursive
         # accumulate_psi_out!/update_psi_out! flow-routing algorithm, meant to be a drop-in
@@ -335,10 +351,9 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
         A_visc  = fill(1e-24, 12, 12)
         # A mix of melt (positive) and net-refreezing (negative) source cells, not a uniform
-        # positive mdot: accumulate_psi_out!'s max_psi_out_calls cap-trip branch returns before its
-        # final `max(0.0, psi_out)` clamp, so a cell cut off there can be left negative if its local
-        # mdot_total is negative -- a uniform positive mdot never exercises that path and would let
-        # update_psi_out_iterative! clamp there (silently diverging) without this test catching it.
+        # positive mdot: a uniform positive mdot never exercises the max_psi_out_calls cap-trip
+        # branch's handling of a negative local mdot_total (net refreezing), which must clamp
+        # psi_out to >= 0 there exactly like the normal exit does.
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
 
         for max_psi_out_calls in (50_000, 5) # 5 forces the safety cap to bind mid-sweep
@@ -351,6 +366,9 @@
             psi_out_iterative = field_values(model.psi_out)
 
             @test psi_out_iterative[mask .== 1] == psi_out_recursive[mask .== 1]
+            # Net-refreezing cells cut off by the cap must not leave negative flux behind.
+            @test all(>=(0.0), psi_out_recursive[mask .== 1])
+            @test all(>=(0.0), psi_out_iterative[mask .== 1])
         end
     end
 

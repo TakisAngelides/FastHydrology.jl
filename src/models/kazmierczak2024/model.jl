@@ -631,7 +631,8 @@ this struct, only the contents of the arrays it holds (`model.q .= ...`, never `
 struct KazmierczakWorkspace{A}
 
     # Geometric potential
-    phi0                   ::A  # Geometric potential [Pa]
+    phi0                   ::A  # True geometric potential rho_i*g*h + rho_w*g*b [Pa]; used for N and for the local gradient magnitude
+    phi0_filled            ::A  # phi0 with local minima filled; used only to route water (flow direction), never for N/S_inf/dissipation [Pa]
     phi0_tmp               ::A  # Temporary storage for potential filling of phi0 to smoothen local minima and avoid stuck water
     minus_grad_phi0_x      ::A  # Geometric potential gradient x-component [Pa/m]
     minus_grad_phi0_y      ::A  # Geometric potential gradient y-component [Pa/m]
@@ -902,6 +903,7 @@ function KazmierczakHydroModel(
 
     # Geometric potential
     phi0          = alloc_field(grid)
+    phi0_filled   = alloc_field(grid)
     phi0_tmp      = alloc_field(grid)
     minus_grad_phi0_x = alloc_field(grid)
     minus_grad_phi0_y = alloc_field(grid)
@@ -941,7 +943,7 @@ function KazmierczakHydroModel(
     )
 
     workspace = KazmierczakWorkspace(
-        phi0, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
+        phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
         visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev,
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
