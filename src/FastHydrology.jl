@@ -26,6 +26,7 @@ include("common/plotting.jl")
 include("models/kazmierczak2024/model.jl")
 include("models/kazmierczak2024/sliding_law.jl")
 include("models/kazmierczak2024/water_flux.jl")
+include("models/kazmierczak2024/routing.jl")
 include("models/kazmierczak2024/effective_pressure.jl")
 include("models/kazmierczak2024/run.jl")
 include("models/kazmierczak2024/data_loaders.jl")
@@ -46,7 +47,11 @@ export minus_gradient_x!, minus_gradient_y!
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly
 export AbstractSlidingLaw, PrescribedFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw, RegularizedCoulombFieldSlidingLaw, ShaktiRegularizedCoulombSlidingLaw
-export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut
+export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut, TapedPsiOut
+export AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill
+export AbstractRoutingScheme, GDSWarner, Warner, Quinn, Tarboton, ModifiedTarboton, GDSTarboton
+export AbstractQConversion, QFromOutflow, QFromFaceAverage
+export AbstractDissipationDiscretization, CellCentredDissipation, FaceDissipation
 export AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness
 export AbstractGradientConvention, LocalGradient, MeanGradient
 
@@ -66,7 +71,7 @@ export run!, step!, update_steady_state!
 export update_q!, update_W!
 export update_phi0!, potential_filling!
 export update_potential_gradients!, update_smoothed_potential_gradients!
-export accumulate_psi_out!, update_psi_out!, update_psi_out_iterative!, route_psi_out!
+export accumulate_psi_out!, update_psi_out!, update_psi_out_iterative!, update_psi_out_taped!, route_psi_out!, invalidate_routing_tape!
 
 # common/effective_pressure.jl, models/kazmierczak2024/effective_pressure.jl, models/hab/effective_pressure.jl
 export update_N!, update_Po!, update_p_w!

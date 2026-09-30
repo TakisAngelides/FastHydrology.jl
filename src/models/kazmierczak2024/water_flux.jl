@@ -44,14 +44,10 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     # Update phi0
     update_phi0!(model, grid, state)
 
-    # Fill local minima of phi0 to avoid water getting stuck.
-    potential_filling!(model, grid, state)
-
-    # Update the gradients of the geometric potential phi0
-    update_potential_gradients!(model, grid)
-
-    # Smoothen the gradients of phi0 to incorporate the concept of stress-gradient coupling.
-    update_smoothed_potential_gradients!(model, grid, state)
+    # Routing potential and flow directions for model.routing_scheme. For the default GDSWarner: fill
+    # local minima of phi0, take its gradients, and smooth them (stress-gradient coupling). See
+    # prepare_routing! in routing.jl.
+    prepare_routing!(model, grid, state, model.routing_scheme)
 
     # Correction factor from psi_out to q; depends only on the (already updated) potential
     # gradients, so it stays fixed regardless of the dissipation-melt branch taken below.
@@ -73,6 +69,9 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
                        (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + epsT)
 
+    # The gradients (hence the routing graph) just changed, so any recorded TapedPsiOut traversal is stale.
+    invalidate_routing_tape!(model)
+
     resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law)
 
     return nothing
@@ -89,10 +88,8 @@ term is computed identically regardless of which sliding law is active.
 """
 add_dissipation_term!(model::KazmierczakHydroModel, ::DissipationMeltOff) = nothing
 
-function add_dissipation_term!(model::KazmierczakHydroModel, ::DissipationMeltOn)
-    @. model.mdot_total += abs(model.q * model.abs_grad_phi0) / model.L_w
-    return nothing
-end
+add_dissipation_term!(model::KazmierczakHydroModel, ::DissipationMeltOn) =
+    add_dissipation_term!(model, model.dissipation_discretization)
 
 
 """
@@ -135,6 +132,162 @@ route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::Hyd
 
 route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, algorithm::TopologicalPsiOut) =
     update_psi_out_topological!(model, grid, state, algorithm.allow_cycles)
+
+route_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::TapedPsiOut) =
+    update_psi_out_taped!(model, grid, state)
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Mark `model`'s recorded `TapedPsiOut` traversal as stale, so the next `route_psi_out!` re-records it.
+"""
+invalidate_routing_tape!(model::KazmierczakHydroModel) = (model.routing_tape.valid = false; nothing)
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`TapedPsiOut`'s routing: record the traversal if the tape is stale, then replay it with the current
+`mdot_total`. See [`TapedPsiOut`](@ref).
+"""
+function update_psi_out_taped!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+    tape = model.routing_tape
+    tape.valid || record_routing_tape!(tape, model, grid, state)
+    replay_routing_tape!(model.psi_out, model.mdot_total, state.mask, tape, grid.Nx, grid.Ny, grid.dx, grid.dy, model.rho_w)
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Record the operations `update_psi_out!`/`accumulate_psi_out!` would perform, in the same order, using
+an explicit-stack traversal (frame `(i, j, k)`: `k == 0` not yet visited, `1 <= k <= 4` next
+neighbour to fold in, `k == 5` done), as in `update_psi_out_iterative!`. Only the operations are
+recorded; no psi_out values are computed. Every grounded cell's own source term is applied up front by
+`replay_routing_tape!` rather than on first visit: a cell's psi_out is never read before its first
+visit, so this does not change any value read.
+
+Neighbours without grounded ice are skipped rather than recorded as `+= 0 * w`, which is a no-op.
+"""
+function record_routing_tape!(tape::RoutingTape, model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+    T = eltype(model.abs_grad_phi0_s)
+    max_calls = model.max_psi_out_calls
+    hit_cap = if model.routing_scheme isa GDSWarner
+        record_routing_tape_kernel!(tape, state.mask, model.minus_grad_phi0_sx, model.minus_grad_phi0_sy,
+                                    grid.Nx, grid.Ny, grid.dx, grid.dy, eps(T), max_calls)
+    else
+        record_routing_tape_weights_kernel!(tape, state.mask, tape.w8, n_directions(model.routing_scheme), grid.Nx, grid.Ny, max_calls)
+    end
+    # Warned from here rather than inside the kernel: the logging macro's try/catch in the hot loop
+    # stops the compiler from keeping the loop's locals in registers (~6x slower traversal).
+    hit_cap && @warn "TapedPsiOut hit max_psi_out_calls = $max_calls cells in one sweep -- cutting the flow-routing traversal off early, matching accumulate_psi_out!'s own cutoff. Pass a larger `max_psi_out_calls` to KazmierczakHydroModel if this grid genuinely has more grounded cells than the default allows." maxlog=1
+    tape.valid = true
+    return nothing
+end
+
+@inline function push_tape_op!(tape::RoutingTape, ci, cj, ni, nj, w)
+    push!(tape.dst_i, ci); push!(tape.dst_j, cj); push!(tape.src_i, ni); push!(tape.src_j, nj); push!(tape.w, w)
+    return nothing
+end
+
+function record_routing_tape_kernel!(tape::RoutingTape{T}, mask, sx, sy, Nx, Ny, dx, dy, epsT, max_calls) where {T}
+
+    for v in (tape.dst_i, tape.dst_j, tape.src_i, tape.src_j)
+        empty!(v)
+    end
+    empty!(tape.w)
+
+    visited = zeros(Bool, Nx, Ny)
+    stack = NTuple{3, Int32}[]
+    call_count = 0
+    hit_cap = false
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+
+        (mask[i, j] == 1.0 && !visited[i, j]) || continue
+
+        push!(stack, (Int32(i), Int32(j), Int32(0)))
+
+        while !isempty(stack)
+
+            si, sj, sk = stack[end]
+
+            if sk == 0
+
+                visited[si, sj] = true
+                call_count += 1
+                if call_count > max_calls
+                    hit_cap = true
+                    push_tape_op!(tape, si, sj, Int32(0), Int32(0), zero(T))
+                    pop!(stack)
+                else
+                    stack[end] = (si, sj, Int32(1))
+                end
+
+            elseif sk <= 4
+
+                di = sk == 1 ? -1 : sk == 2 ? 1 : 0
+                dj = sk == 3 ? -1 : sk == 4 ? 1 : 0
+                ni, nj = si + di, sj + dj
+                stack[end] = (si, sj, sk + Int32(1))   # overwritten below if the neighbour must be resolved first
+
+                (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
+
+                w = routing_weight(sx[ni, nj], sy[ni, nj], -di, -dj, dx, dy, epsT)
+                (w > 0 && mask[ni, nj] == 1.0) || continue
+
+                if visited[ni, nj]
+                    push_tape_op!(tape, si, sj, Int32(ni), Int32(nj), T(w))
+                else
+                    # Resolve the neighbour first, then come back to this same neighbour (sk unchanged).
+                    stack[end] = (si, sj, sk)
+                    push!(stack, (Int32(ni), Int32(nj), Int32(0)))
+                end
+
+            else
+                push_tape_op!(tape, si, sj, Int32(0), Int32(0), zero(T))
+                pop!(stack)
+            end
+        end
+    end
+
+    return hit_cap
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Replay a recorded routing tape: set every grounded cell's psi_out to its own source term
+`mdot_total * dx * dy / rho_w` (same expression and evaluation order as `accumulate_psi_out!`), then apply the recorded operations in
+order. Kept as a separate function with the fields as arguments so the loop specializes on their
+concrete types.
+"""
+function replay_routing_tape!(psi_out, mdot_total, mask, tape::RoutingTape, Nx, Ny, dx, dy, rho_w)
+
+    z = zero(eltype(psi_out))
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if mask[i, j] == 1.0
+            psi_out[i, j] = mdot_total[i, j] * dx * dy / rho_w
+        end
+    end
+
+    dst_i, dst_j, src_i, src_j, ws = tape.dst_i, tape.dst_j, tape.src_i, tape.src_j, tape.w
+    @inbounds for k in eachindex(ws)
+        ci, cj, ni = dst_i[k], dst_j[k], src_i[k]
+        if ni == 0
+            psi_out[ci, cj] = max(z, psi_out[ci, cj])
+        else
+            psi_out[ci, cj] += psi_out[ni, src_j[k]] * ws[k]
+        end
+    end
+
+    return nothing
+
+end
 
 
 """
@@ -179,7 +332,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     route_psi_out!(model, grid, state)
 
-    update_q_from_psi_out!(model)
+    update_q_from_psi_out!(model, grid, state)
 
     return nothing
 
@@ -223,7 +376,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         # Compute psi_out via whichever algorithm model.psi_out_algorithm selects.
         route_psi_out!(model, grid, state)
 
-        update_q_from_psi_out!(model)
+        update_q_from_psi_out!(model, grid, state)
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), eps(eltype(model.q)))
         if masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.dissipation_rtol * q_scale
@@ -282,7 +435,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         add_dissipation_term!(model, dissipation_melt)
 
         route_psi_out!(model, grid, state)
-        update_q_from_psi_out!(model)
+        update_q_from_psi_out!(model, grid, state)
 
         update_N!(model, grid, state)
 
@@ -450,43 +603,221 @@ potential, so the effective pressure N, `S_inf`/`N_inf` gradients and dissipatio
 the filling. `model.h` receives the ice thickness consistent with the filled potential (only used for
 the mean thickness in the smoothing kernel size).
 """
-function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState; from_true_potential::Bool = true)
 
     phi0     = model.phi0_filled
     phi0_tmp = model.phi0_tmp
 
-    phi0 .= model.phi0
+    # Start from the true potential, unless the caller has already put the surface to fill (e.g. the
+    # smoothed potential of a non-GDS routing scheme, see prepare_routing!) into phi0_filled.
+    from_true_potential && (phi0 .= model.phi0)
     fill_halo!(phi0, grid)
     phi0_tmp .= phi0
     fill_halo!(phi0_tmp, grid)
 
-    Nx = grid.Nx
-    Ny = grid.Ny
-
-    for _ in 1:model.fill_iters
-        @inbounds for j in 1:Ny
-            for i in 1:Nx
-                p = phi0[i, j]
-                # Domain edges are treated as zero-gradient (edge-replicated) neighbours, so an edge
-                # cell is never a strict local minimum and is never filled.
-                im1, ip1 = max(i - 1, 1), min(i + 1, Nx)
-                jm1, jp1 = max(j - 1, 1), min(j + 1, Ny)
-                p1, p2 = phi0[ip1, j], phi0[im1, j]
-                p3, p4 = phi0[i, jp1], phi0[i, jm1]
-                if p < p1 && p < p2 && p < p3 && p < p4
-                    phi0_tmp[i, j] = (p1 + p2 + p3 + p4) / 4.0
-                end
-            end
-        end
-        phi0 .= phi0_tmp
-        fill_halo!(phi0, grid)
-    end
+    fill_potential!(model, grid, state, model.fill_algorithm)
 
     # Ice thickness consistent with the filled potential; stored separately so it does not affect other calculations like effective pressure.
     @. model.h = (model.phi0_filled - model.rho_w * model.g * state.b) / (model.rho_i * model.g)
 
     return nothing
 
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`JacobiFill`: the original filling, `model.fill_iters` passes of raising every strict local minimum
+of `model.phi0_filled` to the mean of its 4 neighbours.
+"""
+function fill_potential!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, alg::Union{JacobiFill, LowestNeighbourFill})
+
+    lowest = alg isa LowestNeighbourFill
+
+    phi0     = model.phi0_filled
+    phi0_tmp = model.phi0_tmp
+    Nx = grid.Nx
+    Ny = grid.Ny
+
+    # Jacobi-style passes: every strict local minimum of the current phi0 is raised to the mean of its
+    # 4 neighbours (written to phi0_tmp, then copied back). Whether a cell is a strict minimum depends
+    # only on itself and its 4 neighbours, so after the first full-grid pass only the cells filled in
+    # the previous pass and their neighbours can be minima: later passes check just those, and stop
+    # once a pass fills nothing. Same result as scanning the whole grid fill_iters times.
+    filled = model.filled_cells
+    candidates = model.fill_candidates
+    fill!(model.fill_stamp, Int32(0))
+    empty!(filled)
+    if model.fill_iters > 0
+        @inbounds for j in 1:Ny, i in 1:Nx
+            fill_if_strict_minimum!(phi0, phi0_tmp, filled, i, j, Nx, Ny, lowest)
+        end
+    end
+    for pass in 1:model.fill_iters
+        isempty(filled) && break
+        @inbounds for (i, j) in filled
+            phi0[i, j] = phi0_tmp[i, j]
+        end
+        fill_halo!(phi0, grid)
+        pass == model.fill_iters && break
+        collect_fill_candidates!(candidates, model.fill_stamp, pass, filled, Nx, Ny)
+        empty!(filled)
+        @inbounds for k in candidates
+            i, j = mod1(k, Nx), cld(k, Nx)
+            fill_if_strict_minimum!(phi0, phi0_tmp, filled, i, j, Nx, Ny, lowest)
+        end
+    end
+
+    return nothing
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`PriorityFloodFill`: Priority-Flood+epsilon depression filling (Barnes, Lehman & Mulla 2014,
+https://doi.org/10.1016/j.cageo.2013.04.024), restricted to grounded cells.
+
+Outlets (seeds) are the places water can leave the grounded hydrological system: every non-grounded
+cell next to a grounded one (grounding line, ice margin) and every grounded cell on the domain edge
+(the routing treats the edge as a sink, as `JacobiFill` does by never filling edge cells). Starting from
+the lowest outlet, cells are visited in increasing order of (filled) potential; each newly reached
+grounded neighbour that is not higher than the cell it was reached from is raised to that cell's
+value plus `epsilon`. When the queue is empty every grounded cell has a path to an outlet along which
+the filled potential strictly decreases, so no grounded pit or flat is left -- in a single pass,
+O(n log n). Non-grounded cells keep their true potential.
+"""
+function fill_potential!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, alg::PriorityFloodFill)
+
+    phi = model.phi0_filled
+    mask = state.mask
+    Nx, Ny = grid.Nx, grid.Ny
+    T = eltype(phi)
+    epsilon = T(alg.epsilon)
+
+    closed = model.fill_stamp          # reused as the "already queued" flag (0/1)
+    fill!(closed, Int32(0))
+    heap_p = T[]
+    heap_k = Int32[]
+    sizehint!(heap_p, Nx * Ny ÷ 4); sizehint!(heap_k, Nx * Ny ÷ 4)
+
+    grounded(i, j) = mask[i, j] == 1.0
+    @inbounds for j in 1:Ny, i in 1:Nx
+        seed = if grounded(i, j)
+            i == 1 || i == Nx || j == 1 || j == Ny
+        else
+            (i > 1 && grounded(i - 1, j)) || (i < Nx && grounded(i + 1, j)) ||
+            (j > 1 && grounded(i, j - 1)) || (j < Ny && grounded(i, j + 1))
+        end
+        if seed
+            closed[i, j] = 1
+            heap_push!(heap_p, heap_k, phi[i, j], Int32(i + (j - 1) * Nx))
+        end
+    end
+
+    @inbounds while !isempty(heap_k)
+        pc, k = heap_pop!(heap_p, heap_k)
+        i, j = mod1(k, Nx), cld(k, Nx)
+        for (ni, nj) in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1))
+            (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
+            (closed[ni, nj] == 0 && grounded(ni, nj)) || continue
+            closed[ni, nj] = 1
+            if phi[ni, nj] <= pc
+                phi[ni, nj] = pc + epsilon
+            end
+            heap_push!(heap_p, heap_k, phi[ni, nj], Int32(ni + (nj - 1) * Nx))
+        end
+    end
+
+    fill_halo!(phi, grid)
+    return nothing
+
+end
+
+# Minimal binary min-heap on (priority, linear index) kept in two parallel vectors.
+function heap_push!(p::Vector, k::Vector{Int32}, pv, kv::Int32)
+    push!(p, pv); push!(k, kv)
+    c = length(p)
+    @inbounds while c > 1
+        par = c >> 1
+        p[par] <= p[c] && break
+        p[par], p[c] = p[c], p[par]
+        k[par], k[c] = k[c], k[par]
+        c = par
+    end
+    return nothing
+end
+
+function heap_pop!(p::Vector, k::Vector{Int32})
+    @inbounds begin
+        top_p, top_k = p[1], k[1]
+        last_p, last_k = pop!(p), pop!(k)
+        n = length(p)
+        if n > 0
+            c = 1
+            while true
+                l = 2c; r = l + 1
+                l > n && break
+                m = (r <= n && p[r] < p[l]) ? r : l
+                p[m] < last_p || break
+                p[c] = p[m]; k[c] = k[m]
+                c = m
+            end
+            p[c] = last_p; k[c] = last_k
+        end
+    end
+    return top_p, top_k
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+If cell `(i, j)` of `phi0` is a strict local minimum, write the mean of its 4 neighbours to
+`phi0_tmp[i, j]` (or, with `lowest`, the value of its lowest neighbour -- LowestNeighbourFill) and record the cell in `filled`. Domain edges are treated as zero-gradient
+(edge-replicated) neighbours, so an edge cell is never a strict local minimum and is never filled.
+"""
+@inline function fill_if_strict_minimum!(phi0, phi0_tmp, filled, i, j, Nx, Ny, lowest::Bool = false)
+    @inbounds begin
+        p = phi0[i, j]
+        im1, ip1 = max(i - 1, 1), min(i + 1, Nx)
+        jm1, jp1 = max(j - 1, 1), min(j + 1, Ny)
+        p1, p2 = phi0[ip1, j], phi0[im1, j]
+        p3, p4 = phi0[i, jp1], phi0[i, jm1]
+        if p < p1 && p < p2 && p < p3 && p < p4
+            phi0_tmp[i, j] = lowest ? min(p1, p2, p3, p4) : (p1 + p2 + p3 + p4) / 4.0
+            push!(filled, (Int32(i), Int32(j)))
+        end
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The cells whose strict-minimum status can have changed after the cells in `filled` were updated:
+those cells and their in-domain 4-neighbours, as duplicate-free column-major linear indices.
+Duplicates are skipped by stamping each collected cell with the current pass number in `stamp` (so
+`stamp` never needs clearing within a call; `potential_filling!` resets it once per call). The order
+of `candidates` does not matter: each pass is a Jacobi update that reads only the previous pass's
+values.
+"""
+function collect_fill_candidates!(candidates::Vector{Int32}, stamp::Matrix{Int32}, pass, filled, Nx, Ny)
+    empty!(candidates)
+    p = Int32(pass)
+    @inbounds for (i, j) in filled
+        k = i + (j - Int32(1)) * Int32(Nx)
+        for (cond, kk) in ((true, k), (i > 1, k - Int32(1)), (i < Nx, k + Int32(1)),
+                           (j > 1, k - Int32(Nx)), (j < Ny, k + Int32(Nx)))
+            if cond && stamp[kk] != p
+                stamp[kk] = p
+                push!(candidates, kk)
+            end
+        end
+    end
+    return candidates
 end
 
 
@@ -524,22 +855,11 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Update the smoothed geometric potentials to incorporate the effects of the stress-gradient coupling. See also the description of the update_q! function.
-
-The water flux at a given point is influenced by variations in ice thickness some distance away. To account for this we perform a convolution of the gradient of the potential
-such that the influence of nearby points is now incorporated into the value of the gradient of the potential at that point.
+The normalised Kamb & Echelmeyer (1986) stress-gradient-coupling kernel (a cone) for mean grounded
+ice thickness `h_avg`, used by `update_smoothed_potential_gradients!` (smoothing the gradient
+components) and by `prepare_routing!` for the non-GDS routing schemes (smoothing the potential).
 """
-function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
-
-    if model.longcoupwater == 0.0
-        model.minus_grad_phi0_sx .= model.minus_grad_phi0_x
-        model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
-        @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_x) + abs(model.minus_grad_phi0_y)
-        return nothing
-    end
-
-    # Average grounded-ice thickness
-    h_avg = max(masked_mean(grid, model.h, state.mask), 10.0)
+function coupling_kernel(model::KazmierczakHydroModel, grid::AbstractHydroGrid, h_avg)
 
     # Grid spacing in each direction. The kernel below computes each cell's distance from the
     # center using dx and dy separately, rather than collapsing both to a single isotropic
@@ -596,6 +916,31 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     end
 
     kernel ./= sum(kernel)
+
+    return kernel
+
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Update the smoothed geometric potentials to incorporate the effects of the stress-gradient coupling. See also the description of the update_q! function.
+
+The water flux at a given point is influenced by variations in ice thickness some distance away. To account for this we perform a convolution of the gradient of the potential
+such that the influence of nearby points is now incorporated into the value of the gradient of the potential at that point.
+"""
+function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+
+    if model.longcoupwater == 0.0
+        model.minus_grad_phi0_sx .= model.minus_grad_phi0_x
+        model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
+        @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_x) + abs(model.minus_grad_phi0_y)
+        return nothing
+    end
+
+    # Average grounded-ice thickness
+    kernel = coupling_kernel(model, grid, max(masked_mean(grid, model.h, state.mask), 10.0))
 
     convolve!(grid, model.minus_grad_phi0_sx, model.minus_grad_phi0_x, kernel)
     convolve!(grid, model.minus_grad_phi0_sy, model.minus_grad_phi0_y, kernel)

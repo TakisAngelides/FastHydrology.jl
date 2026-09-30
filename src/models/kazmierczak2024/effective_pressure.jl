@@ -6,35 +6,113 @@
 """
 $(TYPEDSIGNATURES)
 
-Update the effective pressure N across the grid using a complementary error function
-transition between geometric potential and far-field effective pressure.
+Update the effective pressure N using a complementary error function transition between geometric
+potential and far-field effective pressure.
+
+N is only defined under grounded ice (`state.mask == 1`), where the hydrology lives: under floating
+ice N = 0, and over ocean or ice-free land it is undefined. So the whole chain -- Q, S_inf, H_hard,
+H_soft, H, Po, N_inf, N -- is computed only on grounded cells, in one fused pass
+(`update_N_grounded_kernel!`), and every other cell gets N = 0 and zero conduit fields (Po is still
+rho_i*g*h everywhere). On grounded cells each quantity is the same expression, evaluated in the same
+order, as the standalone `update_Q!`/`update_S_inf!`/`update_H!`/`update_Po!`/`update_N_inf!`
+broadcasts below (kept for direct use and tests), so the grounded values are bit-identical to calling
+those in sequence. Fusing them also avoids 8 separate full-grid passes, which mattered because this
+runs every sweep of the `(q, N)` coupling loop.
 """
 function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
-    update_Q!(model, grid) # volumetric water flux [m3 s-1] per conduit
-    update_S_inf!(model, grid) # cross-sectional area of conduits
-    update_H!(model, grid) # thickness of conduits
-    update_Po!(model, grid, state) # ice overburden pressure rho*g*h
-    update_N_inf!(model, grid) # far-field effective pressure
-
-    # sqrt(pi) must be precomputed outside the broadcast; see update_p_w! for why.
+    # Scalars hoisted out of the per-cell loop, exactly as the standalone broadcasts compute them.
+    Q_c = effective_Q_c(model.drainage_mode, model.Q_c)
+    K_fac = model.K^(-1 / model.alpha)
+    grad_exp = (1 - model.beta) / model.alpha
+    Q_exp = 1 / model.alpha
+    denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
+    inv_n = 1.0 / model.n
+    sliding_coeff, melt_coeff = opening_coefficients(model.drainage_mode, typeof(denom_const))
     sqrt_pi = sqrt(pi)
-    @. state.N = max(0.0, erf(sqrt_pi * model.phi0 / (2 * model.N_inf)) * model.N_inf)
 
-    # N_inf == 0 makes the erf argument diverge (Inf, or 0/0 -> NaN when phi0 == 0 too --
-    # e.g. flat, ungrounded cells where h == b == 0, so Po == 0). This used to be masked by
-    # update_Po!'s old 1e5 floor, which kept N_inf away from exactly 0 in practice; it's
-    # reachable on its own now that sigmat = 0.0 is the default (N_inf's lower clamp bound
-    # sigmat*Po is 0 too). Physically, zero far-field effective pressure should give zero N,
-    # so resolve the indeterminate form in favor of that limit rather than propagating NaN,
-    # the same overwrite_where! pattern update_S_inf!/update_N_inf! already use for their
-    # own 0/0 cells.
-    overwrite_where!(grid, state.N, model.N_inf, ==(0.0), 0.0)
-    fill_halo!(state.N, grid)
+    update_N_grounded_kernel!(state.N, model.Q, model.S_inf, model.H_hard, model.H_soft, model.H, model.Po, model.N_inf,
+        model.q, model.abs_grad_phi0, model.kappa, model.abs_v_b, model.A_visc, model.phi0, state.h, state.mask,
+        grid.Nx, grid.Ny, model.l_c, K_fac, grad_exp, Q_exp, model.H_0, model.F_till, Q_c, model.rho_i, model.g,
+        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.sigmat, sqrt_pi)
+
+    for f in (state.N, model.Q, model.S_inf, model.H, model.Po, model.N_inf)
+        fill_halo!(f, grid)
+    end
 
     return nothing
 
 end
+
+# Every cell is independent, so columns are split across Julia threads when there are several; the
+# per-cell arithmetic is the same either way, so results are bit-identical for any thread count, and
+# with one thread (`julia` without `-t`) it is a plain loop with no threading overhead at all.
+# `Threads.@threads` uses the default (dynamic) scheduler, so it composes if the caller is itself
+# running inside threaded code.
+function update_N_grounded_kernel!(args...)
+    Ny = args[18]
+    if Threads.nthreads() == 1
+        for j in 1:Ny
+            update_N_grounded_column!(j, args...)
+        end
+    else
+        Threads.@threads for j in 1:Ny
+            update_N_grounded_column!(j, args...)
+        end
+    end
+    return nothing
+end
+
+function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
+                                   q, abs_grad_phi0, kappa, abs_v_b, A_visc, phi0, h, mask,
+                                   Nx, Ny, l_c, K_fac, grad_exp, Q_exp, H_0, F_till, Q_c, rho_i, g,
+                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, sigmat, sqrt_pi)
+    z = zero(eltype(N))
+    @inbounds for i in 1:Nx
+
+        Po_ij = rho_i * g * h[i, j]
+        Po[i, j] = Po_ij
+
+        if mask[i, j] != 1.0
+            Q[i, j] = z; S_inf[i, j] = z; H_hard[i, j] = z; H_soft[i, j] = z; H[i, j] = z
+            N_inf[i, j] = z; N[i, j] = z
+            continue
+        end
+
+        # update_Q!
+        Q_ij = q[i, j] * l_c
+
+        # update_S_inf! -- zero flux means zero conduit cross-section (resolves the 0^neg * 0^pos NaN)
+        S_ij = Q_ij == 0.0 ? z : K_fac * abs_grad_phi0[i, j]^grad_exp * Q_ij^Q_exp
+
+        # update_H! -- the Q_c == 0 && Q == 0 case is the 0/0 limit resolved there
+        Hh = sqrt(S_ij)
+        Hs = max(0.0, H_0 + (sqrt(S_ij) / F_till - H_0) * exp(-Q_ij / Q_c))
+        if Q_c == 0 && Q_ij == 0.0
+            Hs = z
+        end
+        k = kappa[i, j]
+        H_ij = (1 - k) * Hh + k * Hs
+
+        # update_N_inf!
+        Ninf_ij = if S_ij == 0.0
+            Po_ij
+        else
+            min(max(
+                ((H_ij * H_ij) / (S_ij * S_ij) * (sliding_coeff * rho_i * L_w * abs_v_b[i, j] * h_b + melt_coeff * Q_ij * abs_grad_phi0[i, j])
+                / (denom_const * A_visc[i, j]))^inv_n,
+                sigmat * Po_ij), Po_ij)
+        end
+
+        # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment)
+        N_ij = Ninf_ij == 0.0 ? z : max(0.0, erf(sqrt_pi * phi0[i, j] / (2 * Ninf_ij)) * Ninf_ij)
+
+        Q[i, j] = Q_ij; S_inf[i, j] = S_ij; H_hard[i, j] = Hh; H_soft[i, j] = Hs; H[i, j] = H_ij
+        N_inf[i, j] = Ninf_ij; N[i, j] = N_ij
+    end
+    return nothing
+end
+
 
 """
 $(TYPEDSIGNATURES)
@@ -85,7 +163,12 @@ Gauckler-Manning-Strickler flow law.
 """
 function update_S_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
-    @. model.S_inf = model.K^(-1 / model.alpha) * model.abs_grad_phi0^((1 - model.beta) / model.alpha) * model.Q^(1 / model.alpha)
+    # Scalar factor and exponents hoisted out of the broadcast: written inline, K^(-1/alpha) was a
+    # third pow() evaluated per cell (this function was ~60% of update_N!'s cost).
+    K_fac = model.K^(-1 / model.alpha)
+    grad_exp = (1 - model.beta) / model.alpha
+    Q_exp = 1 / model.alpha
+    @. model.S_inf = K_fac * model.abs_grad_phi0^grad_exp * model.Q^Q_exp
 
     # At degenerate cells with Q == 0 and abs_grad_phi0 == 0 simultaneously (which occurs at a
     # few corner/edge cells where the input data is flat outside the glacier extent), the formula
@@ -126,6 +209,7 @@ function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     # precomputed outside the broadcast to avoid breaking Oceananigans' AbstractOperation
     # conversion.
     denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
+    inv_n = 1.0 / model.n
 
     # sliding_coeff/melt_coeff zero out the sliding-over-obstacles or melt-driven opening term for
     # EfficientOnly/InefficientOnly (see AbstractDrainageMode); both are 1.0 for the default
@@ -138,7 +222,7 @@ function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     # for N-dependent sliding laws, so it's the hottest of the four spots this pattern showed up in.
     @. model.N_inf = min(max(
         ((model.H * model.H) / (model.S_inf * model.S_inf) * (sliding_coeff * model.rho_i * model.L_w * model.abs_v_b * model.h_b + melt_coeff * model.Q * model.abs_grad_phi0) # numerator
-        / (denom_const * model.A_visc))^(1.0 / model.n), # denominator
+        / (denom_const * model.A_visc))^inv_n, # denominator
         model.sigmat * model.Po), model.Po) # min and max values of N_inf
 
     overwrite_where!(grid, model.N_inf, model.S_inf, ==(0.0), model.Po)

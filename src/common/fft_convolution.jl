@@ -28,7 +28,7 @@ so `cached_fft_convolve!` can reuse them across calls instead of reallocating on
 mutable struct FFTConvCache
     frb_x::Int                      # kernel radius in x: kernel is (2*frb_x+1, 2*frb_y+1)
     frb_y::Int                      # kernel radius in y
-    full_size::Tuple{Int,Int}       # padded array size, (Nx+2*frb_x, Ny+2*frb_y)
+    full_size::Tuple{Int,Int}       # padded array size: (Nx+2*frb_x, Ny+2*frb_y) rounded up to an FFT-friendly size (see fft_size)
     padded_src::Matrix{Float64}     # src embedded in the middle, "replicate"-padded border
     padded_kernel::Matrix{Float64}  # kernel embedded via wrap-around indexing, for circular FFT convolution
     plan::Any     # FFTW real-to-complex plan; left untyped to avoid depending on FFTW's internal plan type name
@@ -37,7 +37,19 @@ mutable struct FFTConvCache
     Fkern::Matrix{ComplexF64}    # rfft(padded_kernel)
     Fresult::Matrix{ComplexF64}  # Fsrc .* Fkern, the frequency-domain product
     result_full::Matrix{Float64} # irfft(Fresult); the full circular convolution, before cropping
+    kernel::Matrix{Float64}      # copy of the kernel Fkern was last computed from, so an unchanged kernel skips its FFT
 end
+
+"""
+$(TYPEDSIGNATURES)
+
+Smallest integer `>= n` whose only prime factors are 2, 3, 5, 7. FFTW is fast for such sizes but
+falls back to much slower algorithms for sizes with a large prime factor -- e.g. the Thwaites 2 km
+padded grid was 389 x 332 (389 prime, 332 = 4*83). Padding past `Nx+2*frb_x` does not change the
+result: an output cell in the cropped region only reads inputs within `frb` of it, which all lie
+inside the first `Nx+2*frb_x` rows, so nothing wraps around.
+"""
+fft_size(n::Int) = nextprod((2, 3, 5, 7), n)
 
 """
 $(TYPEDSIGNATURES)
@@ -47,7 +59,7 @@ frb_y)`, allocating the padded buffers and FFTW plans once so later calls (via
 `get_fft_conv_cache!`) only pay for the FFT/multiply/inverse-FFT work itself.
 """
 function FFTConvCache(Nx::Int, Ny::Int, frb_x::Int, frb_y::Int)
-    full_size = (Nx + 2 * frb_x, Ny + 2 * frb_y) # frb_x/frb_y cells of border padding on every side, per axis
+    full_size = (fft_size(Nx + 2 * frb_x), fft_size(Ny + 2 * frb_y)) # at least frb_x/frb_y cells of border padding on every side, per axis
     padded_src = zeros(Float64, full_size)
     padded_kernel = zeros(Float64, full_size)
     plan = FFTW.plan_rfft(padded_src)   # this measures/builds the FFTW plan, the expensive step being cached
@@ -56,7 +68,8 @@ function FFTConvCache(Nx::Int, Ny::Int, frb_x::Int, frb_y::Int)
     Fresult = similar(Fsrc)
     inv_plan = FFTW.plan_irfft(Fresult, full_size[1]) # original row count must be passed explicitly: rfft's compressed output shape can't tell an even-length input from an odd-length one
     result_full = zeros(Float64, full_size)
-    return FFTConvCache(frb_x, frb_y, full_size, padded_src, padded_kernel, plan, inv_plan, Fsrc, Fkern, Fresult, result_full)
+    kernel = fill(NaN, 2 * frb_x + 1, 2 * frb_y + 1) # NaN never compares equal, so the first call always computes Fkern
+    return FFTConvCache(frb_x, frb_y, full_size, padded_src, padded_kernel, plan, inv_plan, Fsrc, Fkern, Fresult, result_full, kernel)
 end
 
 """
@@ -69,7 +82,7 @@ function get_fft_conv_cache!(cache_ref::Base.RefValue, Nx::Int, Ny::Int, frb_x::
     c = cache_ref[]
     # rebuild on first use, or if the (image size, kernel radius) combination changed since
     # the last call (e.g. a different grid or a different coupling kernel)
-    if c === nothing || !(c isa FFTConvCache) || c.frb_x != frb_x || c.frb_y != frb_y || c.full_size != (Nx + 2 * frb_x, Ny + 2 * frb_y)
+    if c === nothing || !(c isa FFTConvCache) || c.frb_x != frb_x || c.frb_y != frb_y || c.full_size != (fft_size(Nx + 2 * frb_x), fft_size(Ny + 2 * frb_y))
         c = FFTConvCache(Nx, Ny, frb_x, frb_y)
         cache_ref[] = c
     end
@@ -83,8 +96,9 @@ $(TYPEDSIGNATURES)
 
 Copy `src` into the interior of `padded`, then fill the surrounding `(frb_x, frb_y)`-cell border
 with "replicate" padding (nearest edge/corner pixel extended outward), matching `imfilter!`'s
-default border behavior. `padded` must already be sized `(size(src,1)+2*frb_x,
-size(src,2)+2*frb_y)`.
+default border behavior. `padded` must be at least `(size(src,1)+2*frb_x, size(src,2)+2*frb_y)`;
+anything beyond that (the `fft_size` round-up) never reaches the cropped result, so what it holds
+does not matter.
 """
 function fill_padded_src!(padded::Matrix{Float64}, src::AbstractMatrix, frb_x::Int, frb_y::Int)
     Nx, Ny = size(src)
@@ -159,10 +173,15 @@ function cached_fft_convolve!(cache_ref::Base.RefValue, dest::AbstractMatrix, sr
     c = get_fft_conv_cache!(cache_ref, Nx, Ny, frb_x, frb_y) # (re)allocates only if size/frb changed since the last call
 
     fill_padded_src!(c.padded_src, src, frb_x, frb_y)
-    fill_padded_kernel!(c.padded_kernel, kernel, frb_x, frb_y, c.full_size)
-
     mul!(c.Fsrc, c.plan, c.padded_src)      # forward FFT of the padded source
-    mul!(c.Fkern, c.plan, c.padded_kernel)  # forward FFT of the wrapped kernel
+
+    # The same kernel is applied to both gradient components in turn (and, in a coupled run, stays
+    # the same while the mean ice thickness does), so only redo its FFT when it actually changed.
+    if c.kernel != kernel
+        fill_padded_kernel!(c.padded_kernel, kernel, frb_x, frb_y, c.full_size)
+        mul!(c.Fkern, c.plan, c.padded_kernel)  # forward FFT of the wrapped kernel
+        c.kernel .= kernel
+    end
     c.Fresult .= c.Fsrc .* c.Fkern          # pointwise product in frequency domain == convolution in space
     mul!(c.result_full, c.inv_plan, c.Fresult) # inverse FFT back to the padded spatial domain
 

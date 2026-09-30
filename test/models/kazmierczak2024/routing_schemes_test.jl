@@ -1,0 +1,78 @@
+# Le Brocq et al. (2006) routing schemes, q conversion and dissipation discretisation options.
+
+@testset "Routing schemes (Le Brocq et al. 2006)" begin
+
+    Nx, Ny = 40, 30
+    dx = 1e3
+    grid = ArrayHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dx))
+    x = [(i - 0.5) * dx for i in 1:Nx, j in 1:Ny]
+    y = [(j - 0.5) * dx for i in 1:Nx, j in 1:Ny]
+    h = fill(1000.0, Nx, Ny)
+    bumpy = -2e-3 .* x .- 1e-3 .* y .+ 20 .* sin.(x ./ 3e3) .* cos.(y ./ 4e3)
+    z = zeros(Nx, Ny)
+    mdot = fill(1e-6, Nx, Ny)
+    build(scheme, b; kw...) = (KazmierczakHydroModel(grid, z, z, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0,
+                                   dissipation_melt = false, dissipation_verbose = false, routing_scheme = scheme, kw...),
+                               HydroState(grid, ones(Nx, Ny), h, b))
+
+    # Volume flux leaving the domain: through edges, plus what cells with nowhere to send it keep.
+    function exits(model)
+        W = model.routing_tape.w8
+        e = 0.0
+        for j in 1:Ny, i in 1:Nx
+            tot = sum(@view W[:, i, j])
+            tot == 0 && (e += model.psi_out[i, j]; continue)
+            for d in 1:8
+                di, dj = FastHydrology.ROUTE_OFFSETS[d]
+                FastHydrology.in_domain(i + di, j + dj, Nx, Ny) || (e += model.psi_out[i, j] * W[d, i, j])
+            end
+        end
+        return e
+    end
+
+    @testset "$(nameof(typeof(scheme))) conserves water on a priority-flood-filled bumpy surface" for scheme in (Warner(), Quinn(), Tarboton())
+        model, state = build(scheme, bumpy; fill_algorithm = PriorityFloodFill())
+        update_steady_state!(model, grid, state)
+        W = model.routing_tape.w8
+        sums = [sum(@view W[:, i, j]) for i in 1:Nx, j in 1:Ny]
+        @test all(s -> s == 0 || isapprox(s, 1; atol = 1e-12), sums)
+        # interior cells always have a strictly lower neighbour after priority-flood filling
+        @test all(isapprox.(sums[2:end-1, 2:end-1], 1; atol = 1e-12))
+        source = sum(mdot) * dx * dx / model.rho_w
+        @test isapprox(exits(model), source; rtol = 1e-10)
+        @test all(isfinite, model.q) && all(isfinite, state.N)
+    end
+
+    @testset "$(nameof(typeof(scheme))) runs" for scheme in (ModifiedTarboton(), GDSTarboton())
+        model, state = build(scheme, bumpy)
+        update_steady_state!(model, grid, state)
+        @test all(isfinite, model.q) && all(isfinite, state.N)
+        @test all(>=(0), model.psi_out)
+    end
+
+    @testset "QFromFaceAverage on a uniform x-slope" begin
+        plane = -1e-3 .* x
+        m_out, s_out = build(Warner(), plane)
+        m_face, s_face = build(Warner(), plane; q_conversion = QFromFaceAverage())
+        update_steady_state!(m_out, grid, s_out)
+        update_steady_state!(m_face, grid, s_face)
+        src = mdot[1] * dx * dx / m_out.rho_w
+        # outflow q describes the downstream face; the face average is half a cell's source lower
+        @test isapprox(m_face.q[2:end-1, :], m_out.q[2:end-1, :] .- src / (2dx); rtol = 1e-10)
+    end
+
+    @testset "FaceDissipation is positive for downhill flow" begin
+        model, state = KazmierczakHydroModel(grid, z, z, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false,
+                                             routing_scheme = Warner(), dissipation_discretization = FaceDissipation()), HydroState(grid, ones(Nx, Ny), h, -1e-3 .* x)
+        update_steady_state!(model, grid, state)
+        @test all(>=(0), model.routing_tape.diss)
+        @test sum(model.routing_tape.diss) > 0
+    end
+
+    @testset "invalid combinations are rejected" begin
+        @test_throws ArgumentError build(Warner(), bumpy; psi_out_algorithm = RecursivePsiOut())
+        @test_throws ArgumentError build(Quinn(), bumpy; q_conversion = QFromFaceAverage())
+        @test_throws ArgumentError build(Tarboton(), bumpy; dissipation_melt = true, dissipation_discretization = FaceDissipation())
+    end
+
+end

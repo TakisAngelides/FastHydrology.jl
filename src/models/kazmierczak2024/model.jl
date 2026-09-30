@@ -148,6 +148,197 @@ struct TopologicalPsiOut <: AbstractPsiOutAlgorithm
 end
 TopologicalPsiOut(; allow_cycles = false) = TopologicalPsiOut(allow_cycles)
 
+"""
+$(TYPEDSIGNATURES)
+
+Route psi_out by replaying a recorded "tape" of [`RecursivePsiOut`](@ref)'s traversal
+(`update_psi_out_taped!`; `KazmierczakHydroModel`'s default `psi_out_algorithm`). The order in which
+the recursion visits cells and folds upstream contributions in depends only on the mask and the
+routing weights (i.e. the smoothed potential gradients), never on `mdot_total`. Those are fixed for a
+whole `update_q!` call, while the dissipation-melt and `(q, N)` Picard loops re-route the same graph
+with a new `mdot_total` every sweep. So the traversal is recorded once per `update_q!` call as a flat
+list of `psi_out[c] += psi_out[n] * w` / `psi_out[c] = max(0, psi_out[c])` operations, in exactly the
+order the recursion executes them (including its partial reads of cells still on the stack when the
+flow graph has a cycle, and its `max_psi_out_calls` cutoff), and each sweep just replays that list.
+The result matches `RecursivePsiOut` bit-for-bit. Recording uses an explicit stack, so there is no
+recursion-depth limit either.
+
+The tape is invalidated at the start of every `update_q!` (when the gradients are recomputed). If you
+call `route_psi_out!` yourself after changing the mask or the gradients some other way, call
+`invalidate_routing_tape!(model)` first.
+"""
+struct TapedPsiOut <: AbstractPsiOutAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Flux-routing scheme: how each grounded cell's outflow `psi_out` is shared among its neighbours (see
+`KazmierczakHydroModel`'s `routing_scheme` keyword). The options are the algorithms compared by Le
+Brocq, Payne & Siegert (2006, Computers & Geosciences 32, 1780-1795, Sec. 3 and Table 1), named as there:
+
+- [`GDSWarner`](@ref) (default, the K24/KORI scheme): direction from the Kamb-smoothed gradient
+  components of the filled potential; outflow to at most 2 of the 4 neighbours, by component.
+- [`Warner`](@ref) (Budd & Warner 1996, Eq. 8): 4 neighbours, shared in proportion to the potential drop
+  to each downhill neighbour -- i.e. the gradient on each cell face.
+- [`Quinn`](@ref) (Quinn et al. 1991, Eq. 8): as Warner over all 8 neighbours.
+- [`Tarboton`](@ref) (D-infinity, Tarboton 1997): steepest direction over 8 triangular facets, split
+  between the 2 neighbours bracketing it.
+- [`ModifiedTarboton`](@ref): direction from the local 4-neighbour slope, split between 2 of 8 neighbours.
+- [`GDSTarboton`](@ref): direction from the smoothed gradient components (as GDSWarner), split
+  between 2 of 8 neighbours.
+
+For Warner/Quinn/Tarboton/ModifiedTarboton the Kamb & Echelmeyer (1986) smoothing is applied to the
+potential itself (then filled), rather than to its gradient components -- the same coupling, since
+smoothing commutes with differentiation, but the routing then follows one surface. Warner and Quinn
+only ever send water downhill on that surface, so their routing graph has no cycles and the routed
+flux is conserved exactly (up to cells with no downhill neighbour, which a hollow fill removes -- use
+`PriorityFloodFill` with them). The GDS schemes can send water uphill on the filled potential (Le
+Brocq Sec. 3, Step 5), which is what creates routing cycles. Schemes other than `GDSWarner` need
+`psi_out_algorithm = TapedPsiOut()` (the default).
+"""
+abstract type AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+K24/KORI routing (default). See [`AbstractRoutingScheme`](@ref)."""
+struct GDSWarner <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Budd & Warner (1996) 4-neighbour potential-drop routing. See [`AbstractRoutingScheme`](@ref)."""
+struct Warner <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Quinn et al. (1991) 8-neighbour potential-drop routing. See [`AbstractRoutingScheme`](@ref)."""
+struct Quinn <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Tarboton (1997) D-infinity routing. See [`AbstractRoutingScheme`](@ref)."""
+struct Tarboton <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Le Brocq et al. (2006) modified Tarboton routing. See [`AbstractRoutingScheme`](@ref)."""
+struct ModifiedTarboton <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Le Brocq et al. (2006) GDS-Tarboton routing. See [`AbstractRoutingScheme`](@ref)."""
+struct GDSTarboton <: AbstractRoutingScheme end
+
+"""
+$(TYPEDSIGNATURES)
+
+Number of neighbour directions a routing scheme can send water to (4 or 8).
+"""
+n_directions(::Union{GDSWarner, Warner}) = 4
+n_directions(::AbstractRoutingScheme) = 8
+
+"""
+$(TYPEDSIGNATURES)
+
+How the routed flux `psi_out` [m3/s] becomes the cell-centred distributed flux `q` [m2/s] (see
+`KazmierczakHydroModel`'s `q_conversion` keyword):
+- [`QFromOutflow`](@ref) (default): `q = psi_out / corfac`, the cell's outflow over the flux
+  cross-section `dx|sin| + dy|cos|` of its flow direction (Le Brocq et al. 2006 Eq. 9). Works for every
+  routing scheme; describes the flux at the cell's downstream side.
+- [`QFromFaceAverage`](@ref): face fluxes `F` from the routing give face-normal `q_x = F/dy`,
+  `q_y = F/dx`; each component is averaged from its two faces to the centre and `q = |(q_x, q_y)|`.
+  Describes the flux at the centre (mean of inflow and outflow). 4-neighbour schemes only.
+"""
+abstract type AbstractQConversion end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractQConversion`](@ref)."""
+struct QFromOutflow <: AbstractQConversion end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractQConversion`](@ref)."""
+struct QFromFaceAverage <: AbstractQConversion end
+
+"""
+$(TYPEDSIGNATURES)
+
+How the dissipation melt `q . grad(phi0) / L_w` is discretised (see `KazmierczakHydroModel`'s
+`dissipation_discretization` keyword). The result is a cell-centred melt rate either way:
+- [`CellCentredDissipation`](@ref) (default): `|q| * |grad(phi0)| / L_w` from the centred q and
+  centred gradient of the true potential.
+- [`FaceDissipation`](@ref): the product is formed on each face, where both factors live on a
+  staggered grid -- face flux times the true-potential drop across the face, the energy the water
+  releases crossing it -- and averaged to the centre. Signed (water pushed up the true potential
+  gives a negative term). 4-neighbour schemes only.
+"""
+abstract type AbstractDissipationDiscretization end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractDissipationDiscretization`](@ref)."""
+struct CellCentredDissipation <: AbstractDissipationDiscretization end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractDissipationDiscretization`](@ref)."""
+struct FaceDissipation <: AbstractDissipationDiscretization end
+
+"""
+$(TYPEDSIGNATURES)
+
+How `potential_filling!` removes local minima ("pits") of the routing potential `phi0_filled`, so
+water routed by `update_psi_out!` cannot get trapped in them (see `KazmierczakHydroModel`'s
+`fill_algorithm` keyword):
+- [`JacobiFill`](@ref) (default): `fill_iters` passes of raising each strict minimum to the mean of
+  its 4 neighbours. Converges slowly and does not guarantee a pit-free result.
+- [`PriorityFloodFill`](@ref): raises every grounded pit/flat to its spill level plus a tiny slope,
+  in one pass; guarantees every grounded cell drains to the grounding line/ice margin/domain edge.
+"""
+abstract type AbstractFillAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+The original iterative filling (`fill_iters` Jacobi passes of neighbour-mean raising). See
+[`AbstractFillAlgorithm`](@ref).
+"""
+struct JacobiFill <: AbstractFillAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Hollow filling as described by Le Brocq et al. (2006, Sec. 3.1): each strict local minimum is given
+the value of its lowest neighbour, repeated for up to `fill_iters` passes. Leaves flats where
+hollows were. See [`AbstractFillAlgorithm`](@ref).
+"""
+struct LowestNeighbourFill <: AbstractFillAlgorithm end
+
+"""
+$(TYPEDSIGNATURES)
+
+Priority-Flood+epsilon filling of grounded cells (Barnes et al. 2014). `epsilon` [Pa] is the potential
+step added per cell across a filled pit or flat so it keeps a (tiny) downhill direction; the default
+1 Pa is ~0.1 mm of water head, negligible next to the ~1e3-1e5 Pa potential differences between
+neighbouring cells. See [`AbstractFillAlgorithm`](@ref).
+"""
+struct PriorityFloodFill <: AbstractFillAlgorithm
+    epsilon::Float64
+end
+PriorityFloodFill(; epsilon = 1.0) = PriorityFloodFill(epsilon)
+
+"""
+$(TYPEDSIGNATURES)
+
+Recorded traversal used by [`TapedPsiOut`](@ref): operation `k` is `psi_out[dst_i[k], dst_j[k]] +=
+psi_out[src_i[k], src_j[k]] * w[k]`, or, when `src_i[k] == 0`, the clamp `psi_out[dst] = max(0,
+psi_out[dst])`. `valid` is cleared whenever the routing graph may have changed.
+"""
+mutable struct RoutingTape{T}
+    dst_i ::Vector{Int32}
+    dst_j ::Vector{Int32}
+    src_i ::Vector{Int32}
+    src_j ::Vector{Int32}
+    w     ::Vector{T}
+    valid ::Bool
+    w8    ::Array{T, 3}   # w8[d, i, j]: fraction of cell (i, j)'s outflow sent in direction d (ROUTE_OFFSETS); used by non-default routing schemes and face fluxes
+    Fx    ::Matrix{T}     # (Nx+1, Ny) net x-face volume fluxes [m3/s], for QFromFaceAverage/FaceDissipation
+    Fy    ::Matrix{T}     # (Nx, Ny+1) net y-face volume fluxes [m3/s]
+    diss  ::Matrix{T}     # face-assembled dissipation melt [kg/m2/s] (FaceDissipation)
+end
+RoutingTape{T}(Nx::Int, Ny::Int) where {T} = RoutingTape{T}(Int32[], Int32[], Int32[], Int32[], T[], false,
+    zeros(T, 8, Nx, Ny), zeros(T, Nx + 1, Ny), zeros(T, Nx, Ny + 1), zeros(T, Nx, Ny))
+
 
 """
 $(TYPEDSIGNATURES)
@@ -603,7 +794,11 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure. Defaults to 0.0 (no floor) -- pass 0.02 for KORI-ULB's own value if you want that bound back
     q_min           ::T    # Minimum allowed value for the distributed water flux
     q_max           ::T    # Maximum allowed value for the distributed water flux. Defaults to Inf (no ceiling) -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap if you want that bound back
-    fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0
+    fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
+    fill_algorithm  ::AbstractFillAlgorithm  # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits (dispatched once per update_q! call)
+    routing_scheme  ::AbstractRoutingScheme  # GDSWarner() (default) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
+    q_conversion    ::AbstractQConversion    # QFromOutflow() (default) or QFromFaceAverage() -- see AbstractQConversion
+    dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() (default) or FaceDissipation() -- see AbstractDissipationDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
@@ -628,7 +823,7 @@ and updated in place by `update_q!`/`update_W!`/`update_N!` and their helpers. S
 the split is made transparent to callers. Not `mutable` itself: nothing ever reassigns a field of
 this struct, only the contents of the arrays it holds (`model.q .= ...`, never `model.q = ...`).
 """
-struct KazmierczakWorkspace{A}
+struct KazmierczakWorkspace{A, R <: RoutingTape}
 
     # Geometric potential
     phi0                   ::A  # True geometric potential rho_i*g*h + rho_w*g*b [Pa]; used for N and for the local gradient magnitude
@@ -652,6 +847,10 @@ struct KazmierczakWorkspace{A}
     q_prev     ::A  # q from the previous Picard sweep, for the dissipation-melt/coupling convergence check
     tau_b      ::A  # Basal shear stress from model.sliding_law, set by update_tau_b!(model, state, sliding_law) [Pa]
     N_prev     ::A  # N from the previous Picard sweep, for the (q, N) coupling convergence check (only used when sliding_law is N-dependent)
+    routing_tape ::R  # Recorded psi_out traversal replayed every Picard sweep by TapedPsiOut
+    filled_cells ::Vector{Tuple{Int32, Int32}}  # Scratch list of the cells potential_filling! filled in its current pass
+    fill_candidates ::Vector{Int32}  # Scratch list (linear indices) of the cells potential_filling! re-checks in its next pass
+    fill_stamp      ::Matrix{Int32}  # Per-cell pass stamp used to dedupe fill_candidates
 
     # Effective pressure and Bed state
     Q       ::A  # Volumetric water flux within a conduit [m3/s]
@@ -689,7 +888,7 @@ change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
 struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, F <: AbstractMdotFriction} <: AbstractHydroModel
     params    ::KazmierczakParams{T, D, L, P, WT, M, F}
-    workspace ::KazmierczakWorkspace{A}
+    workspace ::KazmierczakWorkspace{A, RoutingTape{T}}
 end
 
 function Base.getproperty(model::KazmierczakHydroModel, name::Symbol)
@@ -830,9 +1029,13 @@ function KazmierczakHydroModel(
     sigmat        = 0.0,                          # Effective pressure lower bound as fraction of overburden pressure; no floor by default -- pass 0.02 for KORI-ULB's own value
     q_min         = 0.0,                          # Minimum allowed value for the distributed water flux
     q_max         = Inf,                          # Maximum allowed value for the distributed water flux; no ceiling by default -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap
-    fill_iters    = 10,                           # How many iterations to perform for the filling of local minima of the geometric potential phi0
+    fill_iters    = 10,                           # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
+    fill_algorithm = JacobiFill(),                # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits of the routing potential -- see AbstractFillAlgorithm
+    routing_scheme = GDSWarner(),                 # Flux-routing scheme (Le Brocq et al. 2006): GDSWarner()/Warner()/Quinn()/Tarboton()/ModifiedTarboton()/GDSTarboton() -- see AbstractRoutingScheme
+    q_conversion = QFromOutflow(),                # QFromOutflow()/QFromFaceAverage(): how routed flux becomes the centred q -- see AbstractQConversion
+    dissipation_discretization = CellCentredDissipation(), # CellCentredDissipation()/FaceDissipation() -- see AbstractDissipationDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
-    psi_out_algorithm = RecursivePsiOut(),        # RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
+    psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
     max_dissipation_iters = 20,                   # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
     dissipation_rtol       = 1e-12,                # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        = true,                # Whether update_q! includes the |q * grad(phi0)| / L_w term
@@ -892,6 +1095,11 @@ function KazmierczakHydroModel(
     q_min         = T(q_min)
     q_max         = T(q_max)
     fill_iters    = Int(fill_iters)
+    (routing_scheme isa GDSWarner || psi_out_algorithm isa TapedPsiOut) ||
+        throw(ArgumentError("routing_scheme = $(routing_scheme) requires psi_out_algorithm = TapedPsiOut() (got $(psi_out_algorithm)); the other psi_out algorithms only implement the default GDSWarner routing"))
+    if (q_conversion isa QFromFaceAverage || dissipation_discretization isa FaceDissipation) && n_directions(routing_scheme) != 4
+        throw(ArgumentError("QFromFaceAverage/FaceDissipation need a 4-neighbour routing scheme (GDSWarner or Warner); $(routing_scheme) sends water diagonally, which does not cross cell faces"))
+    end
     max_psi_out_calls = Int(max_psi_out_calls)
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol)
@@ -937,7 +1145,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters,
+        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose, mdot_includes_friction_trait
     )
@@ -945,7 +1153,7 @@ function KazmierczakHydroModel(
     workspace = KazmierczakWorkspace(
         phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev,
+        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 
