@@ -30,7 +30,7 @@
         return e
     end
 
-    @testset "$(nameof(typeof(scheme))) conserves water on a priority-flood-filled bumpy surface" for scheme in (Warner(), Quinn(), Tarboton())
+    @testset "$(nameof(typeof(scheme))) conserves water on a priority-flood-filled bumpy surface" for scheme in (Warner(), Quinn(), Quinn(original = true), Tarboton())
         model, state = build(scheme, bumpy; fill_algorithm = PriorityFloodFill())
         update_steady_state!(model, grid, state)
         W = model.routing_tape.w8
@@ -50,9 +50,21 @@
         @test all(>=(0), model.psi_out)
     end
 
+    @testset "Quinn(original = true) weights" begin
+        # one cell with a unit drop to every neighbour on a square grid: cardinal weight
+        # tan(beta) L = (1/dx)(0.5 dx) = 0.5, diagonal (1/(sqrt(2) dx))(sqrt(2)/4 dx) = 0.25
+        W = zeros(8, 3, 3)
+        phi = zeros(3, 3); phi[2, 2] = 1.0
+        FastHydrology.cell_weights!(W, Quinn(original = true), 2, 2, phi, phi, phi, 3, 3, 1e3, 1e3)
+        @test isapprox(W[1:4, 2, 2], fill(1 / 6, 4); rtol = 1e-12)
+        @test isapprox(W[5:8, 2, 2], fill(1 / 12, 4); rtol = 1e-12)
+        FastHydrology.cell_weights!(fill!(W, 0.0), Quinn(), 2, 2, phi, phi, phi, 3, 3, 1e3, 1e3)
+        @test isapprox(W[:, 2, 2], fill(1 / 8, 8); rtol = 1e-12)
+    end
+
     @testset "QFromFaceAverage on a uniform x-slope" begin
         plane = -1e-3 .* x
-        m_out, s_out = build(Warner(), plane)
+        m_out, s_out = build(Warner(), plane; q_conversion = QFromOutflow())
         m_face, s_face = build(Warner(), plane; q_conversion = QFromFaceAverage())
         update_steady_state!(m_out, grid, s_out)
         update_steady_state!(m_face, grid, s_face)

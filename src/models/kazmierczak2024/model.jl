@@ -227,11 +227,12 @@ Flux-routing scheme: how each grounded cell's outflow `psi_out` is shared among 
 `KazmierczakHydroModel`'s `routing_scheme` keyword). The options are the algorithms compared by Le
 Brocq, Payne & Siegert (2006, Computers & Geosciences 32, 1780-1795, Sec. 3 and Table 1), named as there:
 
-- [`GDSWarner`](@ref) (default, the K24/KORI scheme): direction from the Kamb-smoothed gradient
+- [`Warner`](@ref) (default; Budd & Warner 1996, Eq. 8): 4 neighbours, shared in proportion to the
+  potential drop to each downhill neighbour -- i.e. the gradient on each cell face.
+- [`GDSWarner`](@ref) (the original K24/KORI scheme): direction from the Kamb-smoothed gradient
   components of the filled potential; outflow to at most 2 of the 4 neighbours, by component.
-- [`Warner`](@ref) (Budd & Warner 1996, Eq. 8): 4 neighbours, shared in proportion to the potential drop
-  to each downhill neighbour -- i.e. the gradient on each cell face.
-- [`Quinn`](@ref) (Quinn et al. 1991, Eq. 8): as Warner over all 8 neighbours.
+- [`Quinn`](@ref) (Quinn et al. 1991, Eq. 8): as Warner over all 8 neighbours; `Quinn(original = true)`
+  uses Quinn et al.'s own slope x contour-length weights.
 - [`Tarboton`](@ref) (D-infinity, Tarboton 1997): steepest direction over 8 triangular facets, split
   between the 2 neighbours bracketing it.
 - [`ModifiedTarboton`](@ref): direction from the local 4-neighbour slope, split between 2 of 8 neighbours.
@@ -244,22 +245,43 @@ smoothing commutes with differentiation, but the routing then follows one surfac
 only ever send water downhill on that surface, so their routing graph has no cycles and the routed
 flux is conserved exactly (up to cells with no downhill neighbour, which a hollow fill removes -- use
 `PriorityFloodFill` with them). The GDS schemes can send water uphill on the filled potential (Le
-Brocq Sec. 3, Step 5), which is what creates routing cycles. Schemes other than `GDSWarner` need
-`psi_out_algorithm = TapedPsiOut()` (the default).
+Brocq Sec. 3, Step 5), which is what creates routing cycles: on the Thwaites 2 km / GrIS 8 km / AIS
+16 km test data GDSWarner loses 3% / 8% / 34% of the positive basal melt in them, Warner none. Schemes
+other than `GDSWarner` need `psi_out_algorithm = TapedPsiOut()` (the default).
+
+`fill_algorithm`, `q_conversion` and `dissipation_discretization` default to `nothing`, meaning "the
+natural partner of `routing_scheme`": `PriorityFloodFill()`, `QFromFaceAverage()` and
+`FaceDissipation()` for `Warner`; `JacobiFill()`, `QFromOutflow()` and `CellCentredDissipation()` for
+the GDS schemes (so `routing_scheme = GDSWarner()` alone reproduces the original K24 set-up exactly);
+`PriorityFloodFill()`, `QFromOutflow()` and `CellCentredDissipation()` for the other 8-neighbour
+schemes. Pass any of them explicitly to override.
 """
 abstract type AbstractRoutingScheme end
 """$(TYPEDSIGNATURES)
 
-K24/KORI routing (default). See [`AbstractRoutingScheme`](@ref)."""
+Original K24/KORI routing. See [`AbstractRoutingScheme`](@ref)."""
 struct GDSWarner <: AbstractRoutingScheme end
 """$(TYPEDSIGNATURES)
 
-Budd & Warner (1996) 4-neighbour potential-drop routing. See [`AbstractRoutingScheme`](@ref)."""
+Budd & Warner (1996) 4-neighbour potential-drop (face-gradient) routing; the default. See [`AbstractRoutingScheme`](@ref)."""
 struct Warner <: AbstractRoutingScheme end
-"""$(TYPEDSIGNATURES)
+"""
+$(TYPEDSIGNATURES)
 
-Quinn et al. (1991) 8-neighbour potential-drop routing. See [`AbstractRoutingScheme`](@ref)."""
-struct Quinn <: AbstractRoutingScheme end
+Quinn et al. (1991) 8-neighbour multiple-flow-direction routing. See [`AbstractRoutingScheme`](@ref).
+
+- `Quinn()` / `Quinn(original = false)`: as written in Le Brocq et al. (2006) Eq. 8 -- shares
+  proportional to the potential drop to each downhill neighbour, with no distance or contour-length
+  factor (so per unit drop a diagonal gets the same weight as a cardinal neighbour).
+- `Quinn(original = true)`: Quinn et al.'s own weights, `tan(beta_d) * L_d` with
+  `tan(beta_d) = (phi_c - phi_n) / delta_d` (`delta_d` = dx, dy or sqrt(dx^2 + dy^2)) and effective
+  contour lengths `L = 0.5 * Delta` (cardinal) and `0.354 * Delta` (diagonal). For rectangular cells:
+  `0.5 * dy` for x-neighbours, `0.5 * dx` for y-neighbours, `(sqrt(2)/4) * sqrt(dx * dy)` for diagonals.
+"""
+struct Quinn <: AbstractRoutingScheme
+    original::Bool
+end
+Quinn(; original::Bool = false) = Quinn(original)
 """$(TYPEDSIGNATURES)
 
 Tarboton (1997) D-infinity routing. See [`AbstractRoutingScheme`](@ref)."""
@@ -286,12 +308,13 @@ $(TYPEDSIGNATURES)
 
 How the routed flux `psi_out` [m3/s] becomes the cell-centred distributed flux `q` [m2/s] (see
 `KazmierczakHydroModel`'s `q_conversion` keyword):
-- [`QFromOutflow`](@ref) (default): `q = psi_out / corfac`, the cell's outflow over the flux
+- [`QFromOutflow`](@ref) (default for all schemes except `Warner`): `q = psi_out / corfac`, the cell's outflow over the flux
   cross-section `dx|sin| + dy|cos|` of its flow direction (Le Brocq et al. 2006 Eq. 9). Works for every
   routing scheme; describes the flux at the cell's downstream side.
 - [`QFromFaceAverage`](@ref): face fluxes `F` from the routing give face-normal `q_x = F/dy`,
   `q_y = F/dx`; each component is averaged from its two faces to the centre and `q = |(q_x, q_y)|`.
-  Describes the flux at the centre (mean of inflow and outflow). 4-neighbour schemes only.
+  Describes the flux at the centre (mean of inflow and outflow). 4-neighbour schemes only; the
+  default with `Warner` routing.
 """
 abstract type AbstractQConversion end
 """$(TYPEDSIGNATURES)
@@ -308,9 +331,9 @@ $(TYPEDSIGNATURES)
 
 How the dissipation melt `q . grad(phi0) / L_w` is discretised (see `KazmierczakHydroModel`'s
 `dissipation_discretization` keyword). The result is a cell-centred melt rate either way:
-- [`CellCentredDissipation`](@ref) (default): `|q| * |grad(phi0)| / L_w` from the centred q and
+- [`CellCentredDissipation`](@ref) (default for all schemes except `Warner`): `|q| * |grad(phi0)| / L_w` from the centred q and
   centred gradient of the true potential.
-- [`FaceDissipation`](@ref): the product is formed on each face, where both factors live on a
+- [`FaceDissipation`](@ref) (default with `Warner` routing): the product is formed on each face, where both factors live on a
   staggered grid -- face flux times the true-potential drop across the face, the energy the water
   releases crossing it -- and averaged to the centre. Signed (water pushed up the true potential
   gives a negative term). 4-neighbour schemes only.
@@ -331,9 +354,11 @@ $(TYPEDSIGNATURES)
 How `potential_filling!` removes local minima ("pits") of the routing potential `phi0_filled`, so
 water routed by `update_psi_out!` cannot get trapped in them (see `KazmierczakHydroModel`'s
 `fill_algorithm` keyword):
-- [`JacobiFill`](@ref) (default): `fill_iters` passes of raising each strict minimum to the mean of
-  its 4 neighbours. Converges slowly and does not guarantee a pit-free result.
-- [`PriorityFloodFill`](@ref): raises every grounded pit/flat to its spill level plus a tiny slope,
+- [`JacobiFill`](@ref) (default with the GDS routing schemes; the original K24/KORI filling):
+  `fill_iters` passes of raising each strict minimum to the mean of its 4 neighbours. Converges slowly
+  and does not guarantee a pit-free result.
+- [`PriorityFloodFill`](@ref) (default with the other routing schemes, including the default
+  `Warner`): raises every grounded pit/flat to its spill level plus a tiny slope,
   in one pass; guarantees every grounded cell drains to the grounding line/ice margin/domain edge.
 """
 abstract type AbstractFillAlgorithm end
@@ -847,9 +872,9 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     q_max           ::T    # Maximum allowed value for the distributed water flux. Defaults to Inf (no ceiling) -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap if you want that bound back
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
     fill_algorithm  ::AbstractFillAlgorithm  # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits (dispatched once per update_q! call)
-    routing_scheme  ::AbstractRoutingScheme  # GDSWarner() (default) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
-    q_conversion    ::AbstractQConversion    # QFromOutflow() (default) or QFromFaceAverage() -- see AbstractQConversion
-    dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() (default) or FaceDissipation() -- see AbstractDissipationDiscretization
+    routing_scheme  ::AbstractRoutingScheme  # Warner() (default), GDSWarner() (original K24) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
+    q_conversion    ::AbstractQConversion    # QFromOutflow() or QFromFaceAverage() (default follows routing_scheme) -- see AbstractQConversion
+    dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() or FaceDissipation() (default follows routing_scheme) -- see AbstractDissipationDiscretization
     friction_discretization ::AbstractFrictionDiscretization  # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
@@ -986,7 +1011,7 @@ See the `AbstractSlidingLaw` docstring in model.jl for the available laws and `r
 water_flux.jl for how N-dependent laws widen the existing dissipation-melt Picard loop into a joint
 (q, N) fixed point.
 
-The `psi_out_algorithm` keyword (`RecursivePsiOut()` by default) selects which flow-routing
+The `psi_out_algorithm` keyword (`TapedPsiOut()` by default) selects which flow-routing
 implementation `resolve_q!` uses each sweep to compute psi_out -- see the `AbstractPsiOutAlgorithm`
 docstring above for the `RecursivePsiOut`/`IterativePsiOut` speed-vs-stack-robustness trade-off.
 
@@ -1082,10 +1107,10 @@ function KazmierczakHydroModel(
     q_min         = 0.0,                          # Minimum allowed value for the distributed water flux
     q_max         = Inf,                          # Maximum allowed value for the distributed water flux; no ceiling by default -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap
     fill_iters    = 10,                           # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
-    fill_algorithm = JacobiFill(),                # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits of the routing potential -- see AbstractFillAlgorithm
-    routing_scheme = GDSWarner(),                 # Flux-routing scheme (Le Brocq et al. 2006): GDSWarner()/Warner()/Quinn()/Tarboton()/ModifiedTarboton()/GDSTarboton() -- see AbstractRoutingScheme
-    q_conversion = QFromOutflow(),                # QFromOutflow()/QFromFaceAverage(): how routed flux becomes the centred q -- see AbstractQConversion
-    dissipation_discretization = CellCentredDissipation(), # CellCentredDissipation()/FaceDissipation() -- see AbstractDissipationDiscretization
+    fill_algorithm = nothing,                     # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(); nothing = the routing scheme's partner (PriorityFloodFill for Warner) -- see AbstractFillAlgorithm/AbstractRoutingScheme
+    routing_scheme = Warner(),                    # Flux-routing scheme (Le Brocq et al. 2006): Warner() (default)/GDSWarner() (original K24)/Quinn()/Tarboton()/ModifiedTarboton()/GDSTarboton() -- see AbstractRoutingScheme
+    q_conversion = nothing,                       # QFromOutflow()/QFromFaceAverage(); nothing = QFromFaceAverage for Warner, QFromOutflow otherwise -- see AbstractQConversion
+    dissipation_discretization = nothing,         # CellCentredDissipation()/FaceDissipation(); nothing = FaceDissipation for Warner, CellCentredDissipation otherwise -- see AbstractDissipationDiscretization
     friction_discretization = CellCentredFriction(),       # CellCentredFriction()/StaggeredFriction(ux_acx, uy_acy; quadrature): frictional heat from C-grid velocities -- see AbstractFrictionDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
@@ -1148,8 +1173,16 @@ function KazmierczakHydroModel(
     q_min         = T(q_min)
     q_max         = T(q_max)
     fill_iters    = Int(fill_iters)
+    # Unset options follow the routing scheme (see AbstractRoutingScheme): Warner gets its natural
+    # face-based partners, the GDS schemes the original K24 choices.
+    fill_algorithm === nothing &&
+        (fill_algorithm = routing_scheme isa Union{GDSWarner, GDSTarboton} ? JacobiFill() : PriorityFloodFill())
+    q_conversion === nothing &&
+        (q_conversion = routing_scheme isa Warner ? QFromFaceAverage() : QFromOutflow())
+    dissipation_discretization === nothing &&
+        (dissipation_discretization = routing_scheme isa Warner ? FaceDissipation() : CellCentredDissipation())
     (routing_scheme isa GDSWarner || psi_out_algorithm isa TapedPsiOut) ||
-        throw(ArgumentError("routing_scheme = $(routing_scheme) requires psi_out_algorithm = TapedPsiOut() (got $(psi_out_algorithm)); the other psi_out algorithms only implement the default GDSWarner routing"))
+        throw(ArgumentError("routing_scheme = $(routing_scheme) requires psi_out_algorithm = TapedPsiOut() (got $(psi_out_algorithm)); the other psi_out algorithms only implement the original GDSWarner routing"))
     if friction_discretization isa StaggeredFriction
         (size(friction_discretization.ux) == expected_size && size(friction_discretization.uy) == expected_size) ||
             throw(ArgumentError("StaggeredFriction ux/uy must be $(expected_size) (acx/acy fields on the model grid), got $(size(friction_discretization.ux)) and $(size(friction_discretization.uy))"))

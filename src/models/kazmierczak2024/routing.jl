@@ -137,19 +137,33 @@ end
     return nothing
 end
 
-# Quinn (Quinn et al. 1991, as written in Le Brocq Eq. 8): as Warner, over all 8 neighbours, shares
-# proportional to the potential drop.
-@inline function cell_weights!(W, ::Quinn, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+# Quinn (Quinn et al. 1991): as Warner, over all 8 neighbours. `original = false`: shares proportional
+# to the potential drop, as written in Le Brocq Eq. 8. `original = true`: Quinn et al.'s own weights,
+# slope times effective contour length, tan(beta_d) * L_d = (drop / delta_d) * L_d, with L = 0.5 Delta
+# (cardinal) and sqrt(2)/4 Delta ~ 0.354 Delta (diagonal); for rectangular cells the cardinal contour
+# is half the face the flow crosses and the diagonal one uses sqrt(dx dy).
+@inline function cell_weights!(W, scheme::Quinn, i, j, phi, sx, sy, Nx, Ny, dx, dy)
     p = phi[i, j]
     tot = zero(eltype(W))
+    ddiag = hypot(dx, dy)
+    Ldiag = sqrt(2) / 4 * sqrt(dx * dy)
     @inbounds for d in 1:8
         di, dj = ROUTE_OFFSETS[d]
         ni, nj = i + di, j + dj
         in_domain(ni, nj, Nx, Ny) || continue
         drop = p - phi[ni, nj]
         if drop > 0
-            W[d, i, j] = drop
-            tot += drop
+            v = if !scheme.original
+                drop
+            elseif d <= 2
+                drop / dx * (dy / 2)
+            elseif d <= 4
+                drop / dy * (dx / 2)
+            else
+                drop / ddiag * Ldiag
+            end
+            W[d, i, j] = v
+            tot += v
         end
     end
     if tot > 0

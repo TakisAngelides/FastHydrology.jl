@@ -357,7 +357,7 @@
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
 
         for max_psi_out_calls in (50_000, 5) # 5 forces the safety cap to bind mid-sweep
-            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_psi_out_calls)
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_psi_out_calls, routing_scheme = GDSWarner())
             run!(SteadyStateSimulation(model, grid, state))
 
             psi_out_recursive = copy(field_values(model.psi_out))
@@ -388,8 +388,8 @@
         A_visc  = fill(1e-24, 12, 12)
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
 
-        model_recursive = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut())
-        model_iterative = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = IterativePsiOut())
+        model_recursive = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), routing_scheme = GDSWarner())
+        model_iterative = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = IterativePsiOut(), routing_scheme = GDSWarner())
 
         @test model_recursive.psi_out_algorithm isa RecursivePsiOut
         @test model_iterative.psi_out_algorithm isa IterativePsiOut
@@ -424,8 +424,8 @@
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
 
         for coupling_length_kamb86 in (10.0, 0.0) # the model's default (smoothing on) and smoothing off
-            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86)
-            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86)
+            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
+            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
 
             state_recursive   = HydroState(grid, mask, h, b)
             state_topological = HydroState(grid, mask, h, b)
