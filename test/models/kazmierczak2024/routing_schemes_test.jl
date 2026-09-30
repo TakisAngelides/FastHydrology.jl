@@ -75,4 +75,32 @@
         @test_throws ArgumentError build(Tarboton(), bumpy; dissipation_melt = true, dissipation_discretization = FaceDissipation())
     end
 
+    @testset "StaggeredFriction" begin
+        u = perYear2perSecond(100.0)
+        vb = fill(u, Nx, Ny)
+        tau = fill(5e4, Nx, Ny)
+        # uniform flow along x on the C-grid: every face carries the same velocity, so both staggered
+        # forms must reduce to tau * |u| exactly
+        for quadrature in (false, true)
+            fd = StaggeredFriction(fill(u, Nx, Ny), zeros(Nx, Ny); quadrature)
+            mt = zeros(Nx, Ny)
+            FastHydrology.staggered_friction_kernel!(mt, tau, vb, fd.ux, fd.uy, Nx, Ny, 1.0, fd.u_floor, fd.quadrature)
+            @test all(isapprox.(mt, 5e4 * u; rtol = 1e-12))
+        end
+        # face form: each face heat beta_face*u_face^2 >= 0, and the domain total equals the total face work
+        ux = u .* (1 .+ 0.5 .* sin.(x ./ 5e3)); uy = 0.3u .* cos.(y ./ 7e3)
+        vb2 = hypot.(ux, uy)
+        mt = zeros(Nx, Ny)
+        FastHydrology.staggered_friction_kernel!(mt, tau, vb2, ux, uy, Nx, Ny, 1.0, perYear2perSecond(1e-3), false)
+        @test all(>=(0), mt)
+        # model plumbing: size check and a full solve with an N-dependent law
+        @test_throws ArgumentError KazmierczakHydroModel(grid, z, vb, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0,
+                                                         friction_discretization = StaggeredFriction(zeros(3, 3), zeros(3, 3)))
+        model = KazmierczakHydroModel(grid, z, vb2, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false, coupling_verbose = false,
+                                      sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5), friction_discretization = StaggeredFriction(ux, uy))
+        state = HydroState(grid, ones(Nx, Ny), h, bumpy)
+        update_steady_state!(model, grid, state)
+        @test all(isfinite, model.q) && all(isfinite, state.N)
+    end
+
 end

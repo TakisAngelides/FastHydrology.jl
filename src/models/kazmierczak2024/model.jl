@@ -172,6 +172,57 @@ struct TapedPsiOut <: AbstractPsiOutAlgorithm end
 """
 $(TYPEDSIGNATURES)
 
+How the frictional-heating term `tau_b . u_b / L_w` of the melt rate is discretised (see
+`KazmierczakHydroModel`'s `friction_discretization` keyword). Either way it is a cell-centred melt
+rate, recomputed every Picard sweep from the current `model.tau_b` (so it follows an N-dependent
+sliding law through the `(q, N)` loop):
+
+- [`CellCentredFriction`](@ref) (default): `tau_b * |u_b|` from the cell-centred `model.tau_b` and
+  `model.abs_v_b`.
+- [`StaggeredFriction`](@ref): for velocities on an Arakawa C-grid, as an ice model such as Yelmo
+  provides them (`u_x` on x-faces, `u_y` on y-faces). The sliding law is still evaluated at the cell
+  centre; its drag coefficient `beta = tau_b / |u_b|` is averaged to each face, giving the face
+  tractions `tau_x = beta_face * u_x`, `tau_y = beta_face * u_y` (the way Yelmo builds `taub_acx/acy`
+  from `beta_acx/acy`). The heat is then either formed on the faces or at Gauss points -- see
+  `StaggeredFriction`.
+"""
+abstract type AbstractFrictionDiscretization end
+
+"""$(TYPEDSIGNATURES)\n\nDefault: `tau_b * |u_b|` at cell centres. See [`AbstractFrictionDiscretization`](@ref)."""
+struct CellCentredFriction <: AbstractFrictionDiscretization end
+
+"""
+$(TYPEDSIGNATURES)
+
+Frictional heating from C-grid (staggered) basal velocities. `ux[i, j]` is the x-velocity on the
+face between cells `i` and `i+1` (Yelmo's `acx` convention), `uy[i, j]` the y-velocity on the face
+between cells `j` and `j+1` (`acy`), both [m/s], size `(Nx, Ny)`. See
+[`AbstractFrictionDiscretization`](@ref).
+
+- `quadrature = false` (faces): `tau_x u_x` is formed on each x-face and `tau_y u_y` on each y-face --
+  both factors of each product live on that face -- and each is averaged from the cell's two faces to
+  its centre: `Q = (P_x[i-1/2] + P_x[i+1/2])/2 + (P_y[j-1/2] + P_y[j+1/2])/2`, `P = beta_face u_face^2 >= 0`.
+  The energy-consistent staggered form (the same construction as `FaceDissipation`).
+- `quadrature = true`: Yelmo's own `qb_method = 2` (`calc_basal_heating_nodes`): the face velocities
+  and tractions are interpolated bilinearly to the 4 points of a 2x2 Gauss quadrature in the cell,
+  `|u||tau|` is formed there and averaged. Use this to reproduce the frictional heat Yelmo itself
+  uses in its ice-temperature solve.
+
+`beta` at a cell centre is `tau_b / max(|u_b|, u_floor)` (default `u_floor` 1e-3 m/yr, Yelmo's
+`ub_sq_min`). Faces on the domain edge use the one cell they have.
+"""
+struct StaggeredFriction{M} <: AbstractFrictionDiscretization
+    ux         ::M
+    uy         ::M
+    quadrature ::Bool
+    u_floor    ::Float64
+end
+StaggeredFriction(ux::AbstractMatrix, uy::AbstractMatrix; quadrature::Bool = false, u_floor = perYear2perSecond(1e-3)) =
+    StaggeredFriction(Matrix{Float64}(ux), Matrix{Float64}(uy), quadrature, Float64(u_floor))
+
+"""
+$(TYPEDSIGNATURES)
+
 Flux-routing scheme: how each grounded cell's outflow `psi_out` is shared among its neighbours (see
 `KazmierczakHydroModel`'s `routing_scheme` keyword). The options are the algorithms compared by Le
 Brocq, Payne & Siegert (2006, Computers & Geosciences 32, 1780-1795, Sec. 3 and Table 1), named as there:
@@ -799,6 +850,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     routing_scheme  ::AbstractRoutingScheme  # GDSWarner() (default) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
     q_conversion    ::AbstractQConversion    # QFromOutflow() (default) or QFromFaceAverage() -- see AbstractQConversion
     dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() (default) or FaceDissipation() -- see AbstractDissipationDiscretization
+    friction_discretization ::AbstractFrictionDiscretization  # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
@@ -1034,6 +1086,7 @@ function KazmierczakHydroModel(
     routing_scheme = GDSWarner(),                 # Flux-routing scheme (Le Brocq et al. 2006): GDSWarner()/Warner()/Quinn()/Tarboton()/ModifiedTarboton()/GDSTarboton() -- see AbstractRoutingScheme
     q_conversion = QFromOutflow(),                # QFromOutflow()/QFromFaceAverage(): how routed flux becomes the centred q -- see AbstractQConversion
     dissipation_discretization = CellCentredDissipation(), # CellCentredDissipation()/FaceDissipation() -- see AbstractDissipationDiscretization
+    friction_discretization = CellCentredFriction(),       # CellCentredFriction()/StaggeredFriction(ux_acx, uy_acy; quadrature): frictional heat from C-grid velocities -- see AbstractFrictionDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
     max_dissipation_iters = 20,                   # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
@@ -1097,6 +1150,10 @@ function KazmierczakHydroModel(
     fill_iters    = Int(fill_iters)
     (routing_scheme isa GDSWarner || psi_out_algorithm isa TapedPsiOut) ||
         throw(ArgumentError("routing_scheme = $(routing_scheme) requires psi_out_algorithm = TapedPsiOut() (got $(psi_out_algorithm)); the other psi_out algorithms only implement the default GDSWarner routing"))
+    if friction_discretization isa StaggeredFriction
+        (size(friction_discretization.ux) == expected_size && size(friction_discretization.uy) == expected_size) ||
+            throw(ArgumentError("StaggeredFriction ux/uy must be $(expected_size) (acx/acy fields on the model grid), got $(size(friction_discretization.ux)) and $(size(friction_discretization.uy))"))
+    end
     if (q_conversion isa QFromFaceAverage || dissipation_discretization isa FaceDissipation) && n_directions(routing_scheme) != 4
         throw(ArgumentError("QFromFaceAverage/FaceDissipation need a 4-neighbour routing scheme (GDSWarner or Warner); $(routing_scheme) sends water diagonally, which does not cross cell faces"))
     end
@@ -1145,7 +1202,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization,
+        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose, mdot_includes_friction_trait
     )

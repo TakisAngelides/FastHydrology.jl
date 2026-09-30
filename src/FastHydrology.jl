@@ -52,6 +52,7 @@ export AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill
 export AbstractRoutingScheme, GDSWarner, Warner, Quinn, Tarboton, ModifiedTarboton, GDSTarboton
 export AbstractQConversion, QFromOutflow, QFromFaceAverage
 export AbstractDissipationDiscretization, CellCentredDissipation, FaceDissipation
+export AbstractFrictionDiscretization, CellCentredFriction, StaggeredFriction
 export AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness
 export AbstractGradientConvention, LocalGradient, MeanGradient
 

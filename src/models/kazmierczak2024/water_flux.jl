@@ -105,7 +105,10 @@ this only decides whether that value gets added to the water source, never how i
 """
 add_friction_term!(model::KazmierczakHydroModel, ::MdotIncludesFrictionOn) = nothing
 
-function add_friction_term!(model::KazmierczakHydroModel, ::MdotIncludesFrictionOff)
+add_friction_term!(model::KazmierczakHydroModel, ::MdotIncludesFrictionOff) =
+    add_friction_term!(model, model.friction_discretization)
+
+function add_friction_term!(model::KazmierczakHydroModel, ::CellCentredFriction)
     @. model.mdot_total += model.tau_b * model.abs_v_b / model.L_w
     return nothing
 end
