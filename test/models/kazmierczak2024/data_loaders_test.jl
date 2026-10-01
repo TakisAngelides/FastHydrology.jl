@@ -12,12 +12,16 @@
                 "A"     => fill(1e-24, Nx, Ny),
                 "Bmelt" => fill(0.1, Nx, Ny),
                 "G"     => fill(0.1, Nx, Ny),
+                # three levels, bed at zeta = 1: q_T = 2.1 * (-2 - (-10)) / (500 * 0.5)
+                "zeta"  => [0.0 0.5 1.0],
+                "tmp"   => cat(fill(-20.0, Nx, Ny), fill(-10.0, Nx, Ny), fill(-2.0, Nx, Ny); dims = 3),
+                "taudxy" => fill(5e4, Nx, Ny),
                 "x"     => collect(0.0:1.0:(Ny - 1)),
                 "y"     => collect(0.0:1.0:(Nx - 1)),
             ))
 
             for bed_rheology in (:hard, :soft, :mixed, :mixed_smooth)
-                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ =
+                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ =
                     load_Kazmierczak(path; bed_rheology = bed_rheology)
                 @test Nx_out == Nx
                 @test Ny_out == Ny
@@ -36,7 +40,15 @@
                 # SchoofWaterFarField.m, which divides A by secperyear alongside ub), so A_visc must
                 # come back converted to Pa^-n s^-1 -- previously it was passed through raw.
                 @test all(≈(perYear2perSecond(1e-24)), A_visc)
+
+                # Terms of the melt rate: q_T from the basal temperature gradient, tau_b = taudxy
+                @test all(≈(0.1), G)
+                @test all(≈(2.1 * 8.0 / 250.0), q_T)
+                @test all(≈(5e4), tau_b)
             end
+
+            # KORI-ULB's own melt rate, for comparison only: per year, water equivalent
+            @test all(≈(perYear2perSecond(0.1) * 1000), load_Kazmierczak_melt(path))
         end
     end
 
@@ -61,11 +73,12 @@
                 defVar(ds, "ATT", fill(1e-24, Nx, Ny, 1), ("xc", "yc", "layer"))
                 defVar(ds, "bmb", fill(0.1, Nx, Ny), ("xc", "yc"))
                 defVar(ds, "Q_geo", fill(60.0, Nx, Ny), ("xc", "yc"))
-                defVar(ds, "Q_ice_b", fill(0.05, Nx, Ny), ("xc", "yc"))
+                defVar(ds, "Q_ice_b", fill(50.0, Nx, Ny), ("xc", "yc"))   # mW m^-2, as Yelmo writes it
+                defVar(ds, "taub", fill(2e4, Nx, Ny), ("xc", "yc"))
             end
 
             for bed_rheology in (:hard, :soft, :mixed, :mixed_smooth)
-                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ =
+                Nx_out, Ny_out, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ =
                     load_yelmox(path; bed_rheology = bed_rheology)
                 @test Nx_out == Nx
                 @test Ny_out == Ny
@@ -94,10 +107,11 @@
                 # Pa^-n s^-1.
                 @test all(≈(perYear2perSecond(1e-24)), A_visc)
 
-                # Regression test: bmb also carries a "units" = "m/yr" attribute and is an
-                # ice-equivalent thickness rate (Yelmo.jl: bmb = -Q_net / (rho_ice * L_ice)), so ṁ
-                # must come back converted to m/s and scaled by rho_ice = 917.0, not left raw.
-                @test all(≈(perYear2perSecond(-0.1) * 917.0), ṁ)
+                # Terms of the melt rate. Regression test: Q_geo and Q_ice_b are both in mW m^-2 in
+                # Yelmo, so both come back in W/m^2 (Q_ice_b used to be passed through raw).
+                @test all(≈(0.06), G)
+                @test all(≈(0.05), q_T)
+                @test all(≈(2e4), tau_b)
             end
         end
     end

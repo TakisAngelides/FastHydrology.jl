@@ -12,7 +12,8 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T)
 
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
@@ -36,6 +37,7 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         # ArealConduitThickness is unclamped (it reports a real conduit-scale areal depth, not a
         # thin-sheet approximation), so only finiteness/non-negativity applies. DarcyWeisbachThickness
@@ -56,7 +58,7 @@
             state = HydroState(grid, mask, h, b)
             # Wmin/Wmax passed explicitly (KORI-ULB's own Wdmin/Wdmax) to actually exercise the
             # clamping logic below -- they default to 0.0/Inf (no clamp) otherwise.
-            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                            water_thickness_algorithm = algorithm, dissipation_verbose = false,
                                            Wmin = 1e-8, Wmax = 0.015)
             sim = SteadyStateSimulation(model, grid, state)
@@ -87,11 +89,12 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1.0, 5, 5)  # extreme -- forces the routing algorithm well past the clamp
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
         # q_max defaults to Inf (no clamp) since KazmierczakHydroModel no longer applies KORI-ULB's
         # bounds unasked -- pass it explicitly here, since that's exactly the value this regression
         # test exists to check the unit conversion of.
         q_max = perYear2perSecond(1e5)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; q_max, dissipation_verbose = false)
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; q_max, dissipation_verbose = false)
 
         run!(SteadyStateSimulation(model, grid, state))
 
@@ -111,9 +114,10 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
-        model_on  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = true, dissipation_verbose = false)
-        model_off = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = false, dissipation_verbose = false)
+        model_on  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_melt = true, dissipation_verbose = false)
+        model_off = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_melt = false, dissipation_verbose = false)
 
         # The on/off choice is resolved by multiple dispatch on this trait field, not a runtime Bool.
         @test model_on.dissipation_melt isa FastHydrology.DissipationMeltOn
@@ -123,10 +127,10 @@
         run!(SteadyStateSimulation(model_off, grid, HydroState(grid, mask, h, b)))
 
         # With the term off, the routing algorithm's source is exactly mdot.
-        @test all(field_values(model_off.mdot_total) .== field_values(model_off.mdot))
+        @test all(field_values(model_off.mdot_total) .== field_values(model_off.mdot_fixed))
 
         # With the term on, mdot_total = mdot + |q * grad(phi0)| / L_w is pointwise >= mdot.
-        @test all(field_values(model_on.mdot_total) .>= field_values(model_on.mdot))
+        @test all(field_values(model_on.mdot_total) .>= field_values(model_on.mdot_fixed))
 
         q_on  = field_values(model_on.q)
         q_off = field_values(model_off.q)
@@ -141,15 +145,15 @@
 
         # max_dissipation_iters is a hard cap: it must not error even when it cuts the Picard
         # iteration off before convergence.
-        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_dissipation_iters = 1, dissipation_verbose = false)
+        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_dissipation_iters = 1, dissipation_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
         @test all(isfinite, field_values(model_capped.q))
     end
 
-    @testset "KazmierczakHydroModel mdot_includes_friction" begin
-        # mdot_includes_friction toggles whether resolve_q! adds tau_b*v_b/L_w to mdot_total --
-        # independent of sliding_law itself, which only decides how tau_b is computed and whether it
-        # depends on N (see AbstractMdotFriction's docstring in model.jl).
+    @testset "KazmierczakHydroModel melt rate from terms" begin
+        # The water source is built from individual terms: mdot_fixed = (G - q_T)/L_w is the
+        # fixed part, and mdot_total adds the frictional heat Q_b = tau_b*|u_b| and the dissipation
+        # heat Q_diss, each kept as its own field [W/m2]. There is no way to supply a whole melt rate.
         grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
@@ -158,55 +162,56 @@
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
-        mdot    = fill(1e-6, 5, 5)
-        weertman = WeertmanSlidingLaw(C = 1e7, q = 1/3)
+        G       = fill(0.1, 5, 5)
+        q_T     = fill(0.04, 5, 5)
+        ws      = fill(2e-7, 5, 5)
+        L_w     = FastHydrology.KAZMIERCZAK_DEFAULT_L_W
 
-        model_add  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
-                                            sliding_law = weertman, dissipation_melt = false,
-                                            dissipation_verbose = false, mdot_includes_friction = false)
-        model_skip = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
-                                            sliding_law = weertman, dissipation_melt = false,
-                                            dissipation_verbose = false, mdot_includes_friction = true)
+        # No friction (default law), no dissipation: mdot_total is exactly the fixed part
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; i_eb = ws,
+                                      dissipation_melt = false, dissipation_verbose = false)
+        @test field_values(model.mdot_fixed) ≈ (G .- q_T) ./ L_w
+        run!(SteadyStateSimulation(model, grid, HydroState(grid, mask, h, b)))
+        @test all(==(0.0), field_values(model.Q_b))
+        @test all(==(0.0), field_values(model.Q_diss))
+        @test field_values(model.mdot_total) ≈ field_values(model.mdot_fixed) .+ ws
 
-        # The on/off choice is resolved by multiple dispatch on this trait field, not a runtime Bool.
-        @test model_add.mdot_includes_friction  isa FastHydrology.MdotIncludesFrictionOff
-        @test model_skip.mdot_includes_friction isa FastHydrology.MdotIncludesFrictionOn
+        # set_basal_terms! changes the given terms and the fixed part; unspecified terms are kept
+        set_basal_terms!(model; G = fill(0.2, 5, 5))
+        @test field_values(model.mdot_fixed) ≈ (fill(0.2, 5, 5) .- q_T) ./ L_w
+        @test field_values(model.q_T) ≈ q_T
+        @test field_values(model.i_eb) ≈ ws
 
-        run!(SteadyStateSimulation(model_add,  grid, HydroState(grid, mask, h, b)))
-        run!(SteadyStateSimulation(model_skip, grid, HydroState(grid, mask, h, b)))
+        # Prescribed friction and dissipation: both terms are kept as fields and added
+        tau_b   = fill(5e4, 5, 5)
+        model_f = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
+                                        sliding_law = PrescribedFieldSlidingLaw(grid, tau_b),
+                                        dissipation_melt = true, dissipation_verbose = false)
+        run!(SteadyStateSimulation(model_f, grid, HydroState(grid, mask, h, b)))
+        @test field_values(model_f.Q_b) ≈ tau_b .* abs_v_b
+        @test all(>=(0.0), field_values(model_f.Q_diss))
+        @test any(>(0.0), field_values(model_f.Q_diss))
+        @test field_values(model_f.mdot_total) ≈
+              field_values(model_f.mdot_fixed) .+ (field_values(model_f.Q_b) .+ field_values(model_f.Q_diss)) ./ L_w
 
-        # tau_b itself is identical either way -- only whether it gets added to mdot_total differs.
-        @test field_values(model_add.tau_b) ≈ field_values(model_skip.tau_b)
-        @test all(!=(0.0), field_values(model_add.tau_b))
-
-        # mdot_includes_friction = false (default): tau_b*v_b/L_w is added on top of mdot.
-        @test all(field_values(model_add.mdot_total) .> field_values(model_add.mdot))
-
-        # mdot_includes_friction = true: mdot_total is exactly mdot, unaffected by the (nonzero) tau_b
-        # computed above -- this is the case that used to silently double-count friction.
-        @test field_values(model_skip.mdot_total) == field_values(model_skip.mdot)
-
-        # With an N-dependent sliding law, tau_b/N must still update jointly with q every sweep even
-        # when mdot_includes_friction = true -- only the mdot_total injection is skipped, not the
-        # (q, N) coupling loop itself.
+        # N-dependent law: tau_b and N couple with q, and friction enters the source every sweep
         reg_coulomb = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
-        model_coupled_skip = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
-                                                    sliding_law = reg_coulomb, dissipation_melt = false,
-                                                    dissipation_verbose = false, coupling_verbose = false,
-                                                    mdot_includes_friction = true)
-        state_coupled = HydroState(grid, mask, h, b)
-        run!(SteadyStateSimulation(model_coupled_skip, grid, state_coupled))
-
-        @test field_values(model_coupled_skip.mdot_total) == field_values(model_coupled_skip.mdot)
-        @test all(!=(0.0), field_values(model_coupled_skip.tau_b))
-        @test all(>(0.0), field_values(state_coupled.N))
+        model_c = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
+                                        sliding_law = reg_coulomb, dissipation_melt = false,
+                                        dissipation_verbose = false, coupling_verbose = false)
+        state_c = HydroState(grid, mask, h, b)
+        run!(SteadyStateSimulation(model_c, grid, state_c))
+        @test all(!=(0.0), field_values(model_c.tau_b))
+        @test field_values(model_c.Q_b) ≈ field_values(model_c.tau_b) .* abs_v_b
+        @test field_values(model_c.mdot_total) ≈ field_values(model_c.mdot_fixed) .+ field_values(model_c.Q_b) ./ L_w
+        @test all(>(0.0), field_values(state_c.N))
     end
 
     @testset "Sliding laws: calc_tau_b" begin
         N  = 1e5   # Pa
         vb = 200.0 / (60^2 * 24 * 365.25)  # m/s
 
-        @test calc_tau_b(PrescribedFrictionSlidingLaw(), N, vb) == 0.0
+        @test calc_tau_b(NoFrictionSlidingLaw(), N, vb) == 0.0
 
         law_w = WeertmanSlidingLaw(C = 1e7, q = 1/3)
         @test calc_tau_b(law_w, N, vb) ≈ 1e7 * vb^(1/3)
@@ -235,16 +240,17 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         law   = WeertmanSlidingLaw(C = 1e7, q = 1/3)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                        sliding_law = law, dissipation_melt = false, dissipation_verbose = false)
 
         run!(SteadyStateSimulation(model, grid, state))
 
         @test all(isfinite, field_values(model.q))
         @test all(field_values(model.tau_b) .≈ 1e7 .* field_values(model.abs_v_b) .^ (1/3))
-        @test all(field_values(model.mdot_total) .>= field_values(model.mdot))
+        @test all(field_values(model.mdot_total) .>= field_values(model.mdot_fixed))
     end
 
     @testset "KazmierczakHydroModel with N-dependent sliding laws (q, N) coupling" begin
@@ -261,13 +267,14 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         for law in (
             PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
             RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0)),
         ), dissipation_melt in (false, true)
 
-            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                            sliding_law = law, dissipation_melt = dissipation_melt,
                                            dissipation_verbose = false, coupling_verbose = false)
             state = HydroState(grid, mask, h, b)
@@ -279,12 +286,12 @@
             @test all(>=(0.0), field_values(state.N))
             @test all(>=(0.0), field_values(model.tau_b))
             # Frictional heating only adds to the background melt rate.
-            @test all(field_values(model.mdot_total) .>= field_values(model.mdot))
+            @test all(field_values(model.mdot_total) .>= field_values(model.mdot_fixed))
         end
 
         # max_coupling_iters is a hard cap: it must not error even when it cuts the Picard
         # iteration off before convergence.
-        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot;
+        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                               sliding_law = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
                                               max_coupling_iters = 1, coupling_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
@@ -307,7 +314,8 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 10, 10)
         A_visc  = fill(1e-24, 10, 10)
         mdot    = fill(1e-6, 10, 10)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T)
 
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
@@ -321,7 +329,7 @@
         # was 0/0 = NaN there when psi_out == 0 (net refreezing).
         grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         state = HydroState(grid, ones(5, 5), fill(500.0, 5, 5), fill(-100.0, 5, 5))
-        model = KazmierczakHydroModel(grid, zeros(5, 5), fill(1e-6, 5, 5), fill(1e-24, 5, 5), fill(1e-6, 5, 5);
+        model = KazmierczakHydroModel(grid, zeros(5, 5), fill(1e-6, 5, 5), fill(1e-24, 5, 5), fill(1e-6 * FastHydrology.KAZMIERCZAK_DEFAULT_L_W, 5, 5), zeros(5, 5);
                                        coupling_length_kamb86 = 0.0)
         model.corfac .= 0.0
         model.psi_out .= 0.0
@@ -355,9 +363,10 @@
         # branch's handling of a negative local mdot_total (net refreezing), which must clamp
         # psi_out to >= 0 there exactly like the normal exit does.
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         for max_psi_out_calls in (50_000, 5) # 5 forces the safety cap to bind mid-sweep
-            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_psi_out_calls, routing_scheme = GDSWarner())
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_psi_out_calls, routing_scheme = GDSWarner())
             run!(SteadyStateSimulation(model, grid, state))
 
             psi_out_recursive = copy(field_values(model.psi_out))
@@ -387,9 +396,10 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
         A_visc  = fill(1e-24, 12, 12)
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
-        model_recursive = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), routing_scheme = GDSWarner())
-        model_iterative = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = IterativePsiOut(), routing_scheme = GDSWarner())
+        model_recursive = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = RecursivePsiOut(), routing_scheme = GDSWarner())
+        model_iterative = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = IterativePsiOut(), routing_scheme = GDSWarner())
 
         @test model_recursive.psi_out_algorithm isa RecursivePsiOut
         @test model_iterative.psi_out_algorithm isa IterativePsiOut
@@ -422,10 +432,11 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
         A_visc  = fill(1e-24, 12, 12)
         mdot    = [isodd(i + j) ? -1e-6 : 1e-6 for i in 1:12, j in 1:12]
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         for coupling_length_kamb86 in (10.0, 0.0) # the model's default (smoothing on) and smoothing off
-            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
-            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
+            model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
+            model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
 
             state_recursive   = HydroState(grid, mask, h, b)
             state_topological = HydroState(grid, mask, h, b)
@@ -455,14 +466,15 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_verbose = false)
         FastHydrology.update_phi0!(model, grid, state)
         FastHydrology.potential_filling!(model, grid, state)
         FastHydrology.update_potential_gradients!(model, grid)
         FastHydrology.update_smoothed_potential_gradients!(model, grid, state)
         FastHydrology.update_tau_b!(model, state, model.sliding_law)
-        model.mdot_total .= model.mdot
+        model.mdot_total .= model.mdot_fixed
 
         # Force cells (2,2) and (3,2) to flow into each other: (2,2)'s gradient points toward (3,2)
         # (+x direction, i.e. minus_grad_phi0_sx > 0) and (3,2)'s gradient points back toward (2,2)
@@ -495,9 +507,10 @@
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         for coupling_length_kamb86 in (0.0, 1.5, 4.0, 7.0, 10.0, 12.0)
-            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86, dissipation_verbose = false)
+            model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86, dissipation_verbose = false)
             @test model.longcoupwater == coupling_length_kamb86 / 2
         end
 
@@ -505,11 +518,11 @@
         # ice-sheet range (10.0), i.e. longcoupwater = 5.0 internally -- the model's original default.
         local model_default
         @test_logs (:warn, r"coupling_length_kamb86 not specified") match_mode=:any begin
-            model_default = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+            model_default = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_verbose = false)
         end
         @test model_default.longcoupwater == 5.0
 
         # Negative values aren't physical (it is a length multiple, not a signed quantity) and are
         # rejected rather than silently accepted.
-        @test_throws ArgumentError KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = -1.0, dissipation_verbose = false)
+        @test_throws ArgumentError KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86 = -1.0, dissipation_verbose = false)
     end

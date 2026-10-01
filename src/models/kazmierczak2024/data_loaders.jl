@@ -53,20 +53,20 @@ and return the processed fields needed for the simulation.
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
 - `A_visc`: viscocity parameter in Glen's flow law.
-- `G`: geothermal heat flux (W m⁻²), for `KazmierczakHydroModel`'s `G_in`/`q_T_in` constructor (Eq. 3 of
-  Kazmierczak et al 2024).
-- `q_T`: conductive heat flux into the ice at the bed (W m⁻²). The source file has no field for this term
-  (only relevant for cold-based ice), so it is returned as zero everywhere -- pass a real field yourself if
-  your bed isn't uniformly temperate.
-- `ṁ`: complete basal melt rate per unit area (kg m⁻² s⁻¹), i.e. the source model's own converged Eq. 3
-  output (already includes its own frictional-heating and, likely, dissipation terms) -- for
-  `KazmierczakHydroModel`'s `mdot_in` constructor, normally paired with `sliding_law =
-  PrescribedFrictionSlidingLaw()`. If you want a real sliding law's `tau_b` (e.g. for `(q, N)`
-  coupling) while still using this `ṁ`, pass `mdot_includes_friction = true` so its own frictional
-  heating isn't added a second time -- see `AbstractMdotFriction`'s docstring in model.jl.
+- `G`: geothermal heat flux into the bed (W m⁻²).
+- `q_T`: conductive heat flux from the bed into the ice (W m⁻²), from the source model's basal ice
+  temperature gradient, `k_ice*(T_base - T_above)/dz` between its two lowest vertical levels.
+- `tau_b`: basal shear stress magnitude for the frictional heat (Pa), KORI-ULB's own `taudxy`: its
+  basal heat balance uses `G + taudxy*ub` (Enthalpy3d.m), so `PrescribedFieldSlidingLaw(tau_b)` with the
+  default `CellCentredFriction` reproduces its frictional heat `tau_b*abs_v_b`.
 - `κ`: bed hardness (0: hard, 1: soft).
+
+The melt rate is built from these terms by `KazmierczakHydroModel`; the source model's own melt rate is
+available separately from [`load_Kazmierczak_melt`](@ref) for comparison only.
+
+`k_ice` is the thermal conductivity of ice used for `q_T` [W m⁻¹ K⁻¹] (default 2.1).
 """
-function load_Kazmierczak(path::String; bed_rheology = :hard)
+function load_Kazmierczak(path::String; bed_rheology = :hard, k_ice = 2.1)
     
     data = matread(path)
     Nx, Ny = size(data["H"])
@@ -87,11 +87,20 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
     # floor almost everywhere (a degenerate, uniformly-low N field, not the sensible ~5 MPa
     # background with narrow low-N channels this model actually produces once fixed).
     A_visc = perYear2perSecond.(data["A"])
-    ṁ = perYear2perSecond.(data["Bmelt"]) .* 1000 # They stored this variable in per year units and as ṁ/ρ_w so we multiply by ρ_w = 1000 to get ṁ
     # `G` (geothermal heat flux) is stored directly in W/m^2 -- values run 0.086-0.14 here, squarely in the
-    # plausible range for Antarctica, so unlike ub/A/Bmelt above it needs no unit conversion.
+    # plausible range for Antarctica, so unlike ub/A above it needs no unit conversion.
     G = data["G"]
-    q_T = zeros(eltype(G), Nx, Ny)
+    # Conductive heat flux into the ice at the bed from the ice temperature `tmp` on the levels `zeta`
+    # (fractions of the ice thickness): the bed is the level with the largest zeta, and the flux is
+    # k_ice*(T_base - T_above)/dz between it and the next level (positive when the base is warmer).
+    zeta = vec(data["zeta"])
+    tmp  = data["tmp"]
+    kb   = argmax(zeta)
+    ka   = kb == firstindex(zeta) ? kb + 1 : kb - 1
+    dz   = h .* abs(zeta[kb] - zeta[ka])
+    q_T  = map((Tb, Ta, d) -> d > 0 ? k_ice * (Tb - Ta) / d : zero(d), tmp[:, :, kb], tmp[:, :, ka], dz)
+    # Frictional heat: KORI-ULB uses the driving stress magnitude `taudxy` times the basal speed (Pa)
+    tau_b = data["taudxy"]
 
     # Note: x and y are swapped in the file, and converted from km to m
     xc = Km2m.(data["y"])
@@ -100,7 +109,7 @@ function load_Kazmierczak(path::String; bed_rheology = :hard)
 
     κ = initialize_κ(Nx, Ny, b; bed_rheology)
 
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ
 
 end
 
@@ -108,7 +117,21 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Load an NCDatasets file from the yelmox and return the processed fields needed for the simulation of the Kazmierczak et al 2024 hydrology model.
+KORI-ULB's own basal melt rate from a Kazmierczak et al. (2024) `.mat` file, as a mass rate per unit area
+[kg m⁻² s⁻¹], for comparison with the melt rate `KazmierczakHydroModel` builds from the terms returned by
+[`load_Kazmierczak`](@ref). Not an input to the model.
+"""
+function load_Kazmierczak_melt(path::String)
+    data = matread(path)
+    # Stored per year and as a water-equivalent thickness rate (mdot/rho_w), hence * 1000
+    return perYear2perSecond.(data["Bmelt"]) .* 1000
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Load an NCDatasets file from the yelmoxand return the processed fields needed for the simulation of the Kazmierczak et al 2024 hydrology model.
 
 # Arguments
 - `path::String`: path to the `.nc` file.
@@ -122,16 +145,11 @@ Load an NCDatasets file from the yelmox and return the processed fields needed f
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
 - `A_visc`: viscocity parameter in Glen's flow law.
-- `G`: geothermal heat flux (W m⁻²), for `KazmierczakHydroModel`'s `G_in`/`q_T_in` constructor (Eq. 3 of
-  Kazmierczak et al 2024).
-- `q_T`: conductive heat flux into the ice at the bed (W m⁻²), Yelmo's own `Q_ice_b`, for the same
-  constructor.
-- `ṁ`: complete basal melt rate per unit area (Kg m⁻² s⁻¹), i.e. Yelmo's own converged basal mass balance
-  (already includes its own frictional-heating term `Q_b`) -- for `KazmierczakHydroModel`'s `mdot_in`
-  constructor, normally paired with `sliding_law = PrescribedFrictionSlidingLaw()`. If you want a real
-  sliding law's `tau_b` (e.g. for `(q, N)` coupling) while still using this `ṁ`, pass
-  `mdot_includes_friction = true` so `Q_b` isn't added a second time -- see `AbstractMdotFriction`'s
-  docstring in model.jl.
+- `G`: geothermal heat flux into the bed (W m⁻²), Yelmo's `Q_geo`.
+- `q_T`: conductive heat flux from the bed into the ice (W m⁻²), Yelmo's `Q_ice_b`.
+- `tau_b`: basal shear stress magnitude (Pa), Yelmo's cell-centred `taub`, for
+  `PrescribedFieldSlidingLaw(tau_b)`. Its frictional heat `tau_b*abs_v_b` approximates Yelmo's own `Q_b`,
+  which Yelmo forms from the C-grid `taub_acx/acy` and `ux_b/uy_b`.
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_yelmox(path::String; bed_rheology = :mixed_smooth)
@@ -162,22 +180,17 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
     # `_RF_GB_A0_1 = 1.25671e-5 [1/yr / Pa^3]`), confirming ATT itself comes out per-year -- the
     # same convention as ux_b/uy_b/bmb above, not the Pa^-n s^-1 SI this model expects.
     A_visc = perYear2perSecond.(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1])
-    # bmb ("Combined basal mass balance") also carries a "units" = "m/yr" attribute, and is an
-    # ice-equivalent thickness rate: Yelmo.jl's own definition (src/thrm/helpers.jl) is
-    # `bmb = -Q_net / (rho_ice * L_ice)`, i.e. a heat flux divided by rho_ice (not rho_w) -- the
-    # inverse of how Bmelt is handled in load_Kazmierczak above, which is already a water-equivalent
-    # rate divided by rho_w. Negative bmb is mass loss (melting), hence the sign flip to get a melt
-    # rate; rho_ice = 917.0 matches Yelmo.jl's own default rho_ice constant (YelmoConst.jl).
-    ṁ = perYear2perSecond.(reshape(-ds["bmb"][:], Nx, Ny)) .* 917.0
-    # Q_geo/Q_ice_b are already instantaneous heat fluxes (not ice-equivalent thickness rates like
-    # bmb above), so unlike ux_b/ATT/bmb they need no per-year conversion -- only Q_geo's stated
-    # "mW m^-2" units need scaling to the W/m^2 this model works in.
+    # Q_geo/Q_ice_b are instantaneous heat fluxes, so unlike ux_b/ATT they need no per-year
+    # conversion. Both are in mW m^-2 in Yelmo (Q_ice_b = Q_ice_b_now*1e3/sec_year in ice_enthalpy.f90),
+    # so both are scaled to W/m^2. (Some older restarts label Q_ice_b "W m^-2"; the values, ~10^2 over
+    # Antarctica, are mW m^-2.)
     G = reshape(ds["Q_geo"][:], Nx, Ny) ./ 1000.0
-    q_T = reshape(ds["Q_ice_b"][:], Nx, Ny)
+    q_T = reshape(ds["Q_ice_b"][:], Nx, Ny) ./ 1000.0
+    tau_b = reshape(ds["taub"][:], Nx, Ny)
 
     κ = initialize_κ(Nx, Ny, b; bed_rheology)
 
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ
+    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ
 
 end
 

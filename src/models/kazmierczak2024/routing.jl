@@ -398,15 +398,18 @@ function q_from_faces_kernel!(q, Fx, Fy, mask, Nx, Ny, dx, dy, q_min, q_max)
 end
 
 
-# Dissipation melt added to mdot_total, per `model.dissipation_discretization`.
+# Dissipation heat Q_diss [W/m2] and its melt Q_diss/L_w added to mdot_total, per
+# `model.dissipation_discretization`.
 function add_dissipation_term!(model::KazmierczakHydroModel, ::CellCentredDissipation)
-    @. model.mdot_total += abs(model.q * model.abs_grad_phi0) / model.L_w
+    @. model.Q_diss = abs(model.q * model.abs_grad_phi0)
+    @. model.mdot_total += model.Q_diss / model.L_w
     return nothing
 end
 
 function add_dissipation_term!(model::KazmierczakHydroModel, ::FaceDissipation)
-    diss = model.routing_tape.diss
+    diss = model.routing_tape.diss      # face-assembled dissipation melt [kg/m2/s]
     @inbounds for j in axes(diss, 2), i in axes(diss, 1)
+        model.Q_diss[i, j]      = diss[i, j] * model.L_w
         model.mdot_total[i, j] += diss[i, j]
     end
     return nothing

@@ -19,28 +19,6 @@ struct DissipationMeltOff <: AbstractDissipationMelt end
 """
 $(TYPEDSIGNATURES)
 
-Trait controlling whether `resolve_q!` adds the frictional-heating term tau_b*v_b/L_w (Eq. 3 of
-Kazmierczak et al 2024) to `mdot_total` (see `KazmierczakHydroModel`'s `mdot_includes_friction`
-keyword). Stored as a type parameter, the same dispatch pattern as `AbstractDissipationMelt` above.
-
-This is independent of `sliding_law`: `sliding_law` decides *how* `tau_b` is computed (and whether
-it depends on `N`, hence whether `resolve_q!` needs the joint `(q, N)` loop); this trait separately
-decides whether that computed `tau_b` gets *added* to the water source. The two are orthogonal
-because `mdot` itself may already include a friction estimate (e.g. `load_Kazmierczak`'s/
-`load_yelmox`'s `ṁ`, which bakes in the source model's own frictional heating) -- if it does, adding
-`tau_b*v_b/L_w` again on top would double-count it, even though you may still want `tau_b`/`N`
-computed via a real sliding law for coupling or diagnostics. Set `mdot_includes_friction = true` in
-that case; `resolve_q!` still runs the same loop (still updates `tau_b` and `N` each sweep for
-N-dependent laws) but skips adding `tau_b*v_b/L_w` to `mdot_total`.
-"""
-abstract type AbstractMdotFriction end
-struct MdotIncludesFrictionOn  <: AbstractMdotFriction end
-struct MdotIncludesFrictionOff <: AbstractMdotFriction end
-
-
-"""
-$(TYPEDSIGNATURES)
-
 Trait selecting which flow-routing implementation `resolve_q!` uses to compute psi_out each sweep
 (see `KazmierczakHydroModel`'s `psi_out_algorithm` keyword). Stored as a type parameter, resolved by
 multiple dispatch at compile time via `route_psi_out!` in water_flux.jl, the same pattern as
@@ -553,7 +531,7 @@ Sec. 2.2.1 of Kazmierczak et al 2024): mdot = (G + tau_b*v_b - q_T) / L_w + mdot
 `model.abs_v_b` and the current effective pressure `state.N` into a basal shear stress tau_b [Pa].
 
 Split into two branches:
-- `PrescribedFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N, so they contribute a source
+- `NoFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N, so they contribute a source
   term that is either zero or a fixed offset computed once -- no new fixed point to resolve.
 - `AbstractPressureDependentSlidingLaw` (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`)
   scale with N, so tau_b now depends on N which itself depends on q which depends on mdot which
@@ -574,17 +552,12 @@ abstract type AbstractPressureDependentSlidingLaw <: AbstractSlidingLaw end
 """
 $(TYPEDSIGNATURES)
 
-Friction is not computed by FastHydrology at all: tau_b = 0 everywhere from `update_tau_b!`'s point
-of view (`KazmierczakHydroModel`'s default `sliding_law`). This does not mean there is no friction --
-it means whatever frictional heating exists is assumed to already be baked into the supplied `mdot`
-(e.g. `load_Kazmierczak`'s/`load_yelmox`'s `ṁ`, which includes the source model's own
-frictional-heating estimate), with no `(q, N)` feedback loop for it. If you want FastHydrology to
-compute `tau_b` from a real sliding law instead -- for its own sake, or to feed a `(q, N)` coupling
-loop -- while your `mdot` still already includes friction from elsewhere, use a real `sliding_law`
-together with `mdot_includes_friction = true` rather than this type; see
-`AbstractMdotFriction`'s docstring above for that case.
+No basal friction: tau_b = 0 everywhere, so the frictional-heating term Q_b of the melt rate is zero
+(`KazmierczakHydroModel`'s default `sliding_law`). Use it when there is no sliding or when frictional
+heating is deliberately left out; for friction, pass a law that computes tau_b
+(`PrescribedFieldSlidingLaw` for a given tau_b field, or one of the sliding laws).
 """
-struct PrescribedFrictionSlidingLaw <: AbstractSlidingLaw end
+struct NoFrictionSlidingLaw <: AbstractSlidingLaw end
 
 """
 $(TYPEDSIGNATURES)
@@ -784,7 +757,7 @@ Convert a sliding law's parameters to float type `T`, mirroring the explicit `T(
 `KazmierczakHydroModel`'s constructor applies to its own scalar parameters -- keeps `model.sliding_law`
 type-stable with the rest of the model when `T` is not `Float64` (e.g. `Float32` grids).
 """
-convert_sliding_law(::Type{T}, law::PrescribedFrictionSlidingLaw) where {T <: AbstractFloat} = law
+convert_sliding_law(::Type{T}, law::NoFrictionSlidingLaw) where {T <: AbstractFloat} = law
 # Field-valued laws: `T.(field)` does NOT preserve Field-ness (Oceananigans' AbstractOperations
 # broadcast over a Field materializes its underlying padded/halo array instead, silently corrupting
 # the shape) -- rather than converting through that broadcast, skip the conversion entirely when
@@ -845,7 +818,7 @@ once the model is constructed and never touched again during a solve. Split out 
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, F <: AbstractMdotFriction}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_i           ::T    # Density of ice [kg/m3]
@@ -886,7 +859,6 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     max_coupling_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
     coupling_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
     coupling_verbose        ::Bool # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
-    mdot_includes_friction  ::F    # MdotIncludesFrictionOn() or MdotIncludesFrictionOff(): whether resolve_q! skips adding tau_b*v_b/L_w to mdot_total because mdot already includes it
 
 end
 
@@ -916,8 +888,13 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     # Water flux
     visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
-    mdot       ::A  # mass basal melt rate per unit area, background (G - q_T)/L_w term supplied by the caller [Kg / m^2 / s]
-    mdot_total ::A  # mdot plus the dissipation melt term and/or the frictional-heating term tau_b*v_b/L_w, whichever are active [Kg / m^2 / s]
+    G            ::A  # Geothermal heat flux into the bed [W/m2]
+    q_T          ::A  # Conductive heat flux from the bed into the ice [W/m2]
+    i_eb         ::A  # Water reaching the bed from above, not melted there (i_eb of Sommers et al 2018: drained englacial water, surface input) [kg/m2/s]
+    Q_b          ::A  # Frictional heat tau_b . u_b [W/m2], from sliding_law and friction_discretization (0 with NoFrictionSlidingLaw)
+    Q_diss       ::A  # Heat dissipated by the water flow |q . grad(phi0)| [W/m2] (0 when dissipation_melt is off)
+    mdot_fixed   ::A  # Fixed part of the basal melt rate, (G - q_T)/L_w [kg/m2/s]; set by set_basal_terms!
+    mdot_total   ::A  # Water source routed by the flux solver, mdot_fixed + (Q_b + Q_diss)/L_w + i_eb [kg/m2/s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
     corfac     ::A  # Correction factor to go from psi_out to q
     q          ::A  # Distributed water flux [m2/s]
@@ -963,8 +940,8 @@ if a field is inserted out of order.
 `workspace`, so nothing in water_flux.jl/effective_pressure.jl/sliding_law.jl/run.jl needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, F <: AbstractMdotFriction} <: AbstractHydroModel
-    params    ::KazmierczakParams{T, D, L, P, WT, M, F}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode} <: AbstractHydroModel
+    params    ::KazmierczakParams{T, D, L, P, WT, M}
     workspace ::KazmierczakWorkspace{A, RoutingTape{T}}
 end
 
@@ -984,28 +961,24 @@ end
 """
 $(TYPEDSIGNATURES)
 
-The "external mdot" constructor to the Kazmierczak et al 2024 hydrology model: `mdot_in` is taken as a
-complete, already-converged basal melt rate -- e.g. straight from another model's own output, such as
-`load_Kazmierczak`'s/`load_yelmox`'s `ṁ` (KORI-ULB's `Bmelt` or Yelmo's `bmb`), which already bake in
-that source model's own frictional-heating (and possibly dissipation) physics.
+The Kazmierczak et al 2024 hydrology model. The water source is built from individual terms (Eq. 3 of
+Kazmierczak et al 2024), never supplied as a complete melt rate:
 
-This constructor is meant to be paired with `sliding_law = PrescribedFrictionSlidingLaw()` (the default): it implicitly
-assumes the melt rate's dependence on the effective pressure N is weak enough to treat as fixed, exogenous
-forcing -- decoupled from N, no Picard iteration needed. If you instead pass a real `sliding_law`
-(`WeertmanSlidingLaw`, `PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`), its `tau_b*v_b/L_w`
-frictional-heating term (Eq. 3 of Kazmierczak et al 2024) is added on top of `mdot_in` dynamically each
-sweep by default -- if `mdot_in` already includes a friction estimate of its own (true of
-`load_Kazmierczak`'s/`load_yelmox`'s `ṁ`, which bakes in the source model's own frictional heating),
-pass `mdot_includes_friction = true` so `resolve_q!` skips adding it again; `tau_b`/`N` are still
-computed from the real sliding law each sweep (so a real `(q, N)` coupling loop, and `tau_b` as a
-diagnostic, both still work), only the addition to `mdot_total` is skipped. See
-`AbstractMdotFriction`'s docstring above for the full mechanism. Similarly, `dissipation_melt = true`
-(the default) adds `|q*grad(phi0)|/L_w` on top; if your `mdot_in` source itself already includes a
-flow-driven dissipation term (as Shakti.jl's own `mdot` does, for example), pass `dissipation_melt =
-false` to avoid double-counting that too.
+    mdot_fixed = (G - q_T) / L_w                     (set before the solve)
+    mdot_total = mdot_fixed + (Q_b + Q_diss) / L_w + i_eb   (water source routed)
 
-If you want FastHydrology to own the melt-rate physics end-to-end and compute `mdot` faithfully from Eq. 3
-itself, use the other constructor method (`G_in`, `q_T_in`) instead.
+`mdot_fixed + (Q_b + Q_diss)/L_w` is the basal melt rate; `Q_b` and `Q_diss` depend on the water flux
+(through N and q), so they are recomputed every Picard sweep.
+
+`G` and `q_T` are given (positional, [W/m^2]); `Q_b = tau_b . u_b` comes from `sliding_law` and
+`friction_discretization` (zero for `NoFrictionSlidingLaw`, the default); `Q_diss = |q . grad(phi0)|`
+is added when `dissipation_melt` is on; `i_eb` [kg/m^2/s] is water reaching the bed from above that
+was not melted there (drained englacial water, surface input), zero by default. As in Sommers et al
+2018, `i_eb` is a source of water but not part of the melt rate. Each term is kept as its own field
+(`model.G`, `model.q_T`, `model.Q_b`, `model.Q_diss`, `model.i_eb`; `model.mdot_fixed` holds only the fixed
+part `(G - q_T)/L_w`), so a
+coupled model can exchange terms rather than a melt rate. Update the given terms between solves with
+[`set_basal_terms!`](@ref).
 
 See the `AbstractSlidingLaw` docstring in model.jl for the available laws and `resolve_q!` in
 water_flux.jl for how N-dependent laws widen the existing dissipation-melt Picard loop into a joint
@@ -1074,17 +1047,22 @@ Works with any concrete subtype of AbstractHydroGrid -- changing the grid does n
 - `kappa_in::AbstractArray{<:AbstractFloat}`: Bed type indicator (0: hard, 1: soft)
 - `abs_v_b_in::AbstractArray{<:AbstractFloat}`: Magnitude of basal sliding velocity [m/s]
 - `A_visc_in::AbstractArray{<:AbstractFloat}`: Ice flow law rate factor (Glen's A) [Pa^-n s^-1]
-- `mdot_in::AbstractArray{<:AbstractFloat}`: complete mass basal melt rate per unit area [Kg / m^2 / s]
+- `G_in::AbstractArray{<:AbstractFloat}`: geothermal heat flux into the bed [W/m^2]
+- `q_T_in::AbstractArray{<:AbstractFloat}`: conductive heat flux from the bed into the ice [W/m^2]
+- `i_eb` (keyword): water reaching the bed from above, not melted there [kg/m^2/s];
+  `nothing` (default) means zero
 """
-const KAZMIERCZAK_DEFAULT_L_W = 3.34e5 # Latent heat of fusion for ice [J/kg], shared default for both KazmierczakHydroModel constructors below
+const KAZMIERCZAK_DEFAULT_L_W = 3.34e5 # Latent heat of fusion for ice [J/kg]
 
 function KazmierczakHydroModel(
     grid::AbstractHydroGrid,
     kappa_in::AbstractArray{<:AbstractFloat},
     abs_v_b_in::AbstractArray{<:AbstractFloat},
     A_visc_in::AbstractArray{<:AbstractFloat},
-    mdot_in::AbstractArray{<:AbstractFloat};
-    rho_w         = 1000.0,                       # Density of fresh water [kg/m3]
+    G_in::AbstractArray{<:AbstractFloat},
+    q_T_in::AbstractArray{<:AbstractFloat};
+    i_eb          = nothing,                      # Water reaching the bed from above, not melted there [kg/m2/s]; nothing = zero
+    rho_w         = 1000.0,# Density of fresh water [kg/m3]
     rho_i         = 917.0,                        # Density of ice [kg/m3]
     g             = 9.81,                         # Gravitational acceleration [m/s2]
     L_w           = KAZMIERCZAK_DEFAULT_L_W,       # Latent heat of fusion for ice [J/kg]
@@ -1118,17 +1096,18 @@ function KazmierczakHydroModel(
     dissipation_rtol       = 1e-12,                # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        = true,                # Whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     = true,                # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
-    sliding_law         = PrescribedFrictionSlidingLaw(),          # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
+    sliding_law         = NoFrictionSlidingLaw(),          # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
     max_coupling_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
     coupling_rtol       = 1e-8,                    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
     coupling_verbose    = true,                    # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
-    mdot_includes_friction = false                 # Whether mdot_in already includes a friction estimate of its own, so resolve_q! must not add tau_b*v_b/L_w again -- see AbstractMdotFriction's docstring
 )
 
     expected_size = (grid.Nx, grid.Ny)
-    for (name, arr) in [("kappa", kappa_in), ("abs_v_b", abs_v_b_in), ("A_visc", A_visc_in), ("mdot_in", mdot_in)]
+    for (name, arr) in [("kappa", kappa_in), ("abs_v_b", abs_v_b_in), ("A_visc", A_visc_in), ("G", G_in), ("q_T", q_T_in)]
         size(arr)[1:2] == expected_size || throw(ArgumentError("$name size $(size(arr)) != grid size $expected_size"))
     end
+    i_eb === nothing || size(i_eb)[1:2] == expected_size ||
+        throw(ArgumentError("i_eb size $(size(i_eb)) != grid size $expected_size"))
 
     T = typeof(grid.dx)
 
@@ -1197,7 +1176,6 @@ function KazmierczakHydroModel(
     max_coupling_iters  = Int(max_coupling_iters)
     coupling_rtol       = T(coupling_rtol)
     sliding_law         = convert_sliding_law(T, sliding_law)
-    mdot_includes_friction_trait = mdot_includes_friction ? MdotIncludesFrictionOn() : MdotIncludesFrictionOff()
 
     # Geometric potential
     phi0          = alloc_field(grid)
@@ -1213,7 +1191,13 @@ function KazmierczakHydroModel(
     # Water flux
     visited    = alloc_field(grid)
     h          = alloc_field(grid)
-    mdot       = alloc_field(grid, mdot_in)
+    G          = alloc_field(grid, G_in)
+    q_T        = alloc_field(grid, q_T_in)
+    i_eb = i_eb === nothing ? alloc_field(grid) : alloc_field(grid, i_eb)
+    Q_b        = alloc_field(grid)
+    Q_diss     = alloc_field(grid)
+    mdot_fixed = alloc_field(grid)
+    @. mdot_fixed = (G - q_T) / L_w
     mdot_total = alloc_field(grid)
     psi_out    = alloc_field(grid)
     corfac     = alloc_field(grid)
@@ -1237,13 +1221,13 @@ function KazmierczakHydroModel(
     params = KazmierczakParams(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
-        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose, mdot_includes_friction_trait
-    )
+        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
+)
 
     workspace = KazmierczakWorkspace(
         phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        visited, h, mdot, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
+        visited, h, G, q_T, i_eb, Q_b, Q_diss, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 
@@ -1251,53 +1235,21 @@ function KazmierczakHydroModel(
 
 end
 
+
+
 """
 $(TYPEDSIGNATURES)
 
-The "faithful Eq. 3" constructor to the Kazmierczak et al 2024 hydrology model: rather than accepting a
-complete melt rate, it takes the geothermal heat flux `G_in` and the conductive heat flux into the ice at
-the bed `q_T_in` (both [W/m^2]) and computes the background melt rate `mdot = (G_in - q_T_in) / L_w`
-itself -- exactly the `(G - q_T)/L_w` background term of Eq. 3 of Kazmierczak et al 2024. The
-frictional-heating term `tau_b*v_b/L_w` (from `sliding_law`, `PrescribedFrictionSlidingLaw()` by default) and the
-flow-dissipation term `|q*grad(phi0)|/L_w` (`dissipation_melt = true` by default) are then added on top
-dynamically during the simulation, same as for the other constructor -- but here they can never
-double-count anything already baked into `mdot`, since `mdot` is built from nothing but `G_in`/`q_T_in`.
-
-Both `G_in` and `q_T_in` are mandatory (no default): Eq. 3 needs both terms to be well posed, and silently
-defaulting `q_T_in` to zero would hide the temperate-bed assumption that implies. If your data source has
-no `q_T` field of its own (e.g. `load_Kazmierczak`), pass an explicit zero field so that assumption is
-visible at the call site.
-
-If instead you already have a complete, externally-computed melt rate (e.g. straight from another model's
-own output, such as `load_Kazmierczak`'s/`load_yelmox`'s `ṁ`), use the other constructor method (`mdot_in`)
-instead.
-
-See the docstring on the `mdot_in` constructor above for the rest of the keyword arguments -- they are
-identical here.
-
-# Arguments
-
-- `grid::AbstractHydroGrid`: grid of the simulation
-- `kappa_in::AbstractArray{<:AbstractFloat}`: Bed type indicator (0: hard, 1: soft)
-- `abs_v_b_in::AbstractArray{<:AbstractFloat}`: Magnitude of basal sliding velocity [m/s]
-- `A_visc_in::AbstractArray{<:AbstractFloat}`: Ice flow law rate factor (Glen's A) [Pa^-n s^-1]
-- `G_in::AbstractArray{<:AbstractFloat}`: geothermal heat flux [W/m^2]
-- `q_T_in::AbstractArray{<:AbstractFloat}`: conductive heat flux into the ice at the bed [W/m^2]
+Update the given terms of the water source between solves: the geothermal heat flux `G` and the
+conductive heat flux into the ice `q_T` [W/m^2], and the water from above `i_eb` [kg/m^2/s]. Any keyword left
+`nothing` keeps its current value. Recomputes the fixed part of the source,
+`model.mdot_fixed = (G - q_T)/L_w`; the frictional and dissipation heat are recomputed by the
+solver itself. This is the only way to change the source: the melt rate is always built from terms.
 """
-function KazmierczakHydroModel(
-    grid::AbstractHydroGrid,
-    kappa_in::AbstractArray{<:AbstractFloat},
-    abs_v_b_in::AbstractArray{<:AbstractFloat},
-    A_visc_in::AbstractArray{<:AbstractFloat},
-    G_in::AbstractArray{<:AbstractFloat},
-    q_T_in::AbstractArray{<:AbstractFloat};
-    L_w = KAZMIERCZAK_DEFAULT_L_W,
-    kwargs...
-)
-    # T-converted here to match exactly what the primary constructor below does with L_w internally
-    # (`L_w = T(L_w)`) -- dividing by the raw, un-converted L_w instead could give mdot a different
-    # precision than the L_w used everywhere else in the model if grid.dx's type isn't Float64.
-    T = typeof(grid.dx)
-    mdot_in = (G_in .- q_T_in) ./ T(L_w)
-    return KazmierczakHydroModel(grid, kappa_in, abs_v_b_in, A_visc_in, mdot_in; L_w = L_w, kwargs...)
+function set_basal_terms!(model::KazmierczakHydroModel; G = nothing, q_T = nothing, i_eb = nothing)
+    G            === nothing || (model.G            .= G)
+    q_T          === nothing || (model.q_T          .= q_T)
+    i_eb === nothing || (model.i_eb .= i_eb)
+    @. model.mdot_fixed = (model.G - model.q_T) / model.L_w
+    return model
 end

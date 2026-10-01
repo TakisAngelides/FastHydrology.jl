@@ -99,7 +99,8 @@ ShaktiHydroModel
 
 An [`AbstractSlidingLaw`](@ref) turns [`KazmierczakHydroModel`](@ref)'s basal sliding velocity and
 the current effective pressure into a basal shear stress `tau_b`, used for the frictional-heating
-term `tau_b*v_b` in the melt rate. [`PrescribedFrictionSlidingLaw`](@ref) (the default) and
+term `tau_b*v_b` in the melt rate. [`NoFrictionSlidingLaw`](@ref) (the default, `tau_b = 0`),
+[`PrescribedFieldSlidingLaw`](@ref) (a given `tau_b` field) and
 [`WeertmanSlidingLaw`](@ref) don't depend on effective pressure, so they add at most a fixed source
 term with no new feedback to resolve. [`PowerPlasticSlidingLaw`](@ref),
 [`RegularizedCoulombSlidingLaw`](@ref) and [`ShaktiRegularizedCoulombSlidingLaw`](@ref) do depend on
@@ -111,15 +112,15 @@ is the plain scalar formula for each law (used in tests/diagnostics) -- except
 form; [`update_tau_b!`](@ref) is the field-broadcast version actually used inside the model, and the
 only one that type implements.
 
-Whether `tau_b` actually gets added to the melt rate is a separate question from which law computes
-it, controlled by `KazmierczakHydroModel`'s `mdot_includes_friction` keyword -- an externally-supplied
-`mdot` (e.g. from [`load_Kazmierczak`](@ref)/[`load_yelmox`](@ref)) may already include a friction
-estimate of its own, so this keyword lets a real, N-dependent sliding law still drive the coupling
-loop without double-counting it in the melt rate.
+The melt rate is always built from its terms -- `(G - q_T + Q_b + Q_diss)/L_w`, with the
+frictional heat `Q_b` from the sliding law -- and never supplied whole, so no term can be counted twice.
+Each term is kept as its own field of the model; [`set_basal_terms!`](@ref) updates the given ones
+(`G`, `q_T`, `i_eb`) between solves. Water reaching the bed from above (`i_eb`, drained englacial water or
+surface input) is routed with the melt but is not part of it, as in Sommers et al 2018.
 
 ```@docs
 AbstractSlidingLaw
-PrescribedFrictionSlidingLaw
+NoFrictionSlidingLaw
 PrescribedFieldSlidingLaw
 WeertmanSlidingLaw
 PowerPlasticSlidingLaw

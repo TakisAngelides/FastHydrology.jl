@@ -11,7 +11,8 @@
     bumpy = -2e-3 .* x .- 1e-3 .* y .+ 20 .* sin.(x ./ 3e3) .* cos.(y ./ 4e3)
     z = zeros(Nx, Ny)
     mdot = fill(1e-6, Nx, Ny)
-    build(scheme, b; kw...) = (KazmierczakHydroModel(grid, z, z, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0,
+    G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
+    build(scheme, b; kw...) = (KazmierczakHydroModel(grid, z, z, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0,
                                    dissipation_melt = false, dissipation_verbose = false, routing_scheme = scheme, kw...),
                                HydroState(grid, ones(Nx, Ny), h, b))
 
@@ -74,7 +75,7 @@
     end
 
     @testset "FaceDissipation is positive for downhill flow" begin
-        model, state = KazmierczakHydroModel(grid, z, z, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false,
+        model, state = KazmierczakHydroModel(grid, z, z, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0, dissipation_verbose = false,
                                              routing_scheme = Warner(), dissipation_discretization = FaceDissipation()), HydroState(grid, ones(Nx, Ny), h, -1e-3 .* x)
         update_steady_state!(model, grid, state)
         @test all(>=(0), model.routing_tape.diss)
@@ -96,19 +97,19 @@
         for quadrature in (false, true)
             fd = StaggeredFriction(fill(u, Nx, Ny), zeros(Nx, Ny); quadrature)
             mt = zeros(Nx, Ny)
-            FastHydrology.staggered_friction_kernel!(mt, tau, vb, fd.ux, fd.uy, Nx, Ny, 1.0, fd.u_floor, fd.quadrature)
+            FastHydrology.staggered_friction_kernel!(mt, tau, vb, fd.ux, fd.uy, Nx, Ny, fd.u_floor, fd.quadrature)
             @test all(isapprox.(mt, 5e4 * u; rtol = 1e-12))
         end
         # face form: each face heat beta_face*u_face^2 >= 0, and the domain total equals the total face work
         ux = u .* (1 .+ 0.5 .* sin.(x ./ 5e3)); uy = 0.3u .* cos.(y ./ 7e3)
         vb2 = hypot.(ux, uy)
         mt = zeros(Nx, Ny)
-        FastHydrology.staggered_friction_kernel!(mt, tau, vb2, ux, uy, Nx, Ny, 1.0, perYear2perSecond(1e-3), false)
+        FastHydrology.staggered_friction_kernel!(mt, tau, vb2, ux, uy, Nx, Ny, perYear2perSecond(1e-3), false)
         @test all(>=(0), mt)
         # model plumbing: size check and a full solve with an N-dependent law
-        @test_throws ArgumentError KazmierczakHydroModel(grid, z, vb, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0,
+        @test_throws ArgumentError KazmierczakHydroModel(grid, z, vb, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0,
                                                          friction_discretization = StaggeredFriction(zeros(3, 3), zeros(3, 3)))
-        model = KazmierczakHydroModel(grid, z, vb2, z .+ 1e-24, mdot; coupling_length_kamb86 = 0.0, dissipation_verbose = false, coupling_verbose = false,
+        model = KazmierczakHydroModel(grid, z, vb2, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0, dissipation_verbose = false, coupling_verbose = false,
                                       sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5), friction_discretization = StaggeredFriction(ux, uy))
         state = HydroState(grid, ones(Nx, Ny), h, bumpy)
         update_steady_state!(model, grid, state)

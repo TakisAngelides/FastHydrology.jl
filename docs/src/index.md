@@ -78,8 +78,10 @@ using FastHydrology
 #    see [Plain-array grid](@ref ArrayGrid).
 grid = OGRectHydroGrid(Nx, Ny, xlims, ylims)
 
-# 2. Build a model, providing the model-specific input fields.
-model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+# 2. Build a model, providing the model-specific input fields. The melt rate is built from its
+#    terms: geothermal heat G and conductive heat into the ice q_T [W/m^2], plus frictional and
+#    dissipation heat computed by the model (plus optional water from above, i_eb).
+model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T)
 # or: model = HABHydroModel(grid)
 
 # 3. Build the state, holding fields common to every model (grounded-ice mask, ice thickness,

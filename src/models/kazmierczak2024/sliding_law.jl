@@ -13,7 +13,7 @@ tau_b*v_b/L_w of the melt rate (Eq. 3, Sec. 2.2.1 of Kazmierczak et al 2024). Se
 function (used for tests/diagnostics on ordinary numbers) -- `update_tau_b!` below is the version
 actually used inside the model's field broadcasts.
 """
-calc_tau_b(::PrescribedFrictionSlidingLaw, N, abs_v_b) = zero(abs_v_b)
+calc_tau_b(::NoFrictionSlidingLaw, N, abs_v_b) = zero(abs_v_b)
 
 calc_tau_b(law::WeertmanSlidingLaw, N, abs_v_b) = law.C * abs_v_b^law.q
 
@@ -34,7 +34,7 @@ multi-argument user functions taking a struct argument. Writing the formula with
 (`+`, `*`, `/`, `^`) on fields/arrays and scalar locals, exactly as the rest of this model already
 does (e.g. `update_N_inf!` in effective_pressure.jl), works uniformly for both grid backends.
 """
-function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, ::PrescribedFrictionSlidingLaw)
+function update_tau_b!(model::KazmierczakHydroModel, state::HydroState, ::NoFrictionSlidingLaw)
     model.tau_b .= 0.0
     return nothing
 end
@@ -75,13 +75,14 @@ end
 """
 $(TYPEDSIGNATURES)
 
-`StaggeredFriction`: add the C-grid frictional heat `/ L_w` to `model.mdot_total`, from the current
-cell-centred `model.tau_b` (through `beta = tau_b / |u_b|`) and the face velocities. See
-[`StaggeredFriction`](@ref).
+`StaggeredFriction`: the C-grid frictional heat `model.Q_b` [W/m^2], from the current cell-centred
+`model.tau_b` (through `beta = tau_b / |u_b|`) and the face velocities, added as `Q_b / L_w` to
+`model.mdot_total`. See [`StaggeredFriction`](@ref).
 """
 function add_friction_term!(model::KazmierczakHydroModel, fd::StaggeredFriction)
-    staggered_friction_kernel!(model.mdot_total, model.tau_b, model.abs_v_b, fd.ux, fd.uy, size(fd.ux)...,
-                               model.L_w, fd.u_floor, fd.quadrature)
+    staggered_friction_kernel!(model.Q_b, model.tau_b, model.abs_v_b, fd.ux, fd.uy, size(fd.ux)...,
+                               fd.u_floor, fd.quadrature)
+    @. model.mdot_total += model.Q_b / model.L_w
     return nothing
 end
 
@@ -99,7 +100,7 @@ const GQ_PTS = ((-GQ_S3, -GQ_S3), (GQ_S3, -GQ_S3), (GQ_S3, GQ_S3), (-GQ_S3, GQ_S
 @inline acy_corners(F, i, j, im1, ip1, jm1) = ((F[im1, jm1] + F[i, jm1]) / 2, (F[i, jm1] + F[ip1, jm1]) / 2,
                                                (F[i, j] + F[ip1, j]) / 2, (F[im1, j] + F[i, j]) / 2)
 
-function staggered_friction_kernel!(mdot_total, tau_b, abs_v_b, ux, uy, Nx, Ny, L_w, u_floor, quadrature)
+function staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, Nx, Ny, u_floor, quadrature)
     # face drag coefficients and tractions: beta on the face between i and i+1 (acx) / j and j+1 (acy)
     tx = similar(ux); ty = similar(uy)
     @inbounds for j in 1:Ny, i in 1:Nx
@@ -114,7 +115,7 @@ function staggered_friction_kernel!(mdot_total, tau_b, abs_v_b, ux, uy, Nx, Ny, 
         Q = if quadrature
             cux, cuy = acx_corners(ux, i, j, im1, jm1, jp1), acy_corners(uy, i, j, im1, ip1, jm1)
             ctx, cty = acx_corners(tx, i, j, im1, jm1, jp1), acy_corners(ty, i, j, im1, ip1, jm1)
-            acc = zero(eltype(mdot_total))
+            acc = zero(eltype(Q_b))
             for p in GQ_PTS
                 acc += hypot(gq_interp(cux, p), gq_interp(cuy, p)) * hypot(gq_interp(ctx, p), gq_interp(cty, p))
             end
@@ -122,7 +123,7 @@ function staggered_friction_kernel!(mdot_total, tau_b, abs_v_b, ux, uy, Nx, Ny, 
         else
             (tx[im1, j] * ux[im1, j] + tx[i, j] * ux[i, j]) / 2 + (ty[i, jm1] * uy[i, jm1] + ty[i, j] * uy[i, j]) / 2
         end
-        mdot_total[i, j] += Q / L_w
+        Q_b[i, j] = Q
     end
     return nothing
 end

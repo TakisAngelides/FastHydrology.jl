@@ -46,7 +46,7 @@ export minus_gradient_x!, minus_gradient_y!
 # common/model.jl, models/kazmierczak2024/model.jl, models/hab/model.jl, models/shakti/model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly
-export AbstractSlidingLaw, PrescribedFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw, RegularizedCoulombFieldSlidingLaw, ShaktiRegularizedCoulombSlidingLaw
+export AbstractSlidingLaw, NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw, PowerPlasticSlidingLaw, RegularizedCoulombSlidingLaw, RegularizedCoulombFieldSlidingLaw, ShaktiRegularizedCoulombSlidingLaw
 export AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut, TapedPsiOut
 export AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill
 export AbstractRoutingScheme, GDSWarner, Warner, Quinn, Tarboton, ModifiedTarboton, GDSTarboton
@@ -58,6 +58,7 @@ export AbstractGradientConvention, LocalGradient, MeanGradient
 
 # models/kazmierczak2024/sliding_law.jl
 export calc_tau_b, update_tau_b!
+export set_basal_terms!
 
 # common/state.jl
 export AbstractHydroState, HydroState
@@ -79,7 +80,7 @@ export update_N!, update_Po!, update_p_w!
 export update_H!, update_S_inf!, update_N_inf!, update_Q!
 
 # models/kazmierczak2024/data_loaders.jl
-export load_Kazmierczak, load_yelmox
+export load_Kazmierczak, load_yelmox, load_Kazmierczak_melt
 
 # common/utilities.jl
 export compute_lims, perYear2perSecond, perSecond2perYear, Km2m

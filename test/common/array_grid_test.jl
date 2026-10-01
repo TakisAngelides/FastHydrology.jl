@@ -34,7 +34,8 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T)
 
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
@@ -56,9 +57,10 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
         mdot    = fill(1e-6, 5, 5)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
-        model_on  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = true, dissipation_verbose = false)
-        model_off = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; dissipation_melt = false, dissipation_verbose = false)
+        model_on  = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_melt = true, dissipation_verbose = false)
+        model_off = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; dissipation_melt = false, dissipation_verbose = false)
 
         @test model_on.dissipation_melt isa FastHydrology.DissipationMeltOn
         @test model_off.dissipation_melt isa FastHydrology.DissipationMeltOff
@@ -66,8 +68,8 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         run!(SteadyStateSimulation(model_on, grid, HydroState(grid, mask, h, b)))
         run!(SteadyStateSimulation(model_off, grid, HydroState(grid, mask, h, b)))
 
-        @test all(array_field_values(model_off.mdot_total) .== array_field_values(model_off.mdot))
-        @test all(array_field_values(model_on.mdot_total) .>= array_field_values(model_on.mdot))
+        @test all(array_field_values(model_off.mdot_total) .== array_field_values(model_off.mdot_fixed))
+        @test all(array_field_values(model_on.mdot_total) .>= array_field_values(model_on.mdot_fixed))
 
         q_on  = array_field_values(model_on.q)
         q_off = array_field_values(model_off.q)
@@ -78,7 +80,7 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         @test all(isfinite, array_field_values(model_on.q))
         @test all(isfinite, array_field_values(model_off.q))
 
-        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; max_dissipation_iters = 1, dissipation_verbose = false)
+        model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_dissipation_iters = 1, dissipation_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
         @test all(isfinite, array_field_values(model_capped.q))
     end
@@ -94,7 +96,8 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 10, 10)
         A_visc  = fill(1e-24, 10, 10)
         mdot    = fill(1e-6, 10, 10)
-        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
+        model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T)
 
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
@@ -141,15 +144,16 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), Nx, Ny)
         A_visc  = fill(1e-24, Nx, Ny)
         mdot    = fill(1e-6, Nx, Ny)
+        G, q_T = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W, zero(mdot)  # same melt, supplied as geothermal heat
 
         grid_a = ArrayHydroGrid(Nx, Ny, (0.0, 500.0), (0.0, 500.0))
         state_a = HydroState(grid_a, mask, h, b)
-        model_a = KazmierczakHydroModel(grid_a, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        model_a = KazmierczakHydroModel(grid_a, kappa, abs_v_b, A_visc, G, q_T; dissipation_verbose = false)
         run!(SteadyStateSimulation(model_a, grid_a, state_a))
 
         grid_o = OGRectHydroGrid(Nx, Ny, (0.0, 500.0), (0.0, 500.0))
         state_o = HydroState(grid_o, mask, h, b)
-        model_o = KazmierczakHydroModel(grid_o, kappa, abs_v_b, A_visc, mdot; dissipation_verbose = false)
+        model_o = KazmierczakHydroModel(grid_o, kappa, abs_v_b, A_visc, G, q_T; dissipation_verbose = false)
         run!(SteadyStateSimulation(model_o, grid_o, state_o))
 
         @test isapprox(array_field_values(state_a.N), field_values(state_o.N); rtol = 1e-8)
@@ -230,7 +234,7 @@ field_values_any(field) = field isa AbstractMatrix ? field : field_values(field)
         for G in (ArrayHydroGrid, OGRectHydroGrid)
             grid = G(Nx, Ny, (0.0, 9000.0), (0.0, 9000.0))
             state = HydroState(grid, ones(Nx, Ny), h, b)
-            model = KazmierczakHydroModel(grid, zeros(Nx, Ny), fill(1e-6, Nx, Ny), fill(1e-24, Nx, Ny), fill(1e-6, Nx, Ny);
+            model = KazmierczakHydroModel(grid, zeros(Nx, Ny), fill(1e-6, Nx, Ny), fill(1e-24, Nx, Ny), fill(1e-6 * FastHydrology.KAZMIERCZAK_DEFAULT_L_W, Nx, Ny), zeros(Nx, Ny);
                                            coupling_length_kamb86 = 0.0)
             FastHydrology.update_phi0!(model, grid, state)
             true_phi0 = copy(field_values_any(model.phi0))
