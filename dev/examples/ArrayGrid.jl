@@ -35,7 +35,8 @@ b       = [-200.0 - 2.0 * j for i in 1:Nx, j in 1:Ny]
 kappa   = zeros(T, Nx, Ny)                            # hard bed everywhere
 abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), Nx, Ny)  # 100 m/a basal sliding speed
 A_visc  = fill(1e-24, Nx, Ny)
-mdot    = fill(1e-6, Nx, Ny)                          # basal melt rate [kg m⁻² s⁻¹]
+G       = fill(1e-6 * 3.34e5, Nx, Ny)                 # geothermal heat [W m⁻²]: melts 1e-6 kg m⁻² s⁻¹
+q_T     = zeros(Nx, Ny)                               # conductive heat into the ice [W m⁻²] (temperate bed)
 
 # The model and state constructors below are identical to the `OGRectHydroGrid` case -- they only
 # ever touch the grid through `alloc_field` and `grid.Nx`/`grid.Ny`/`grid.dx`/`grid.dy`, never
@@ -46,7 +47,7 @@ mdot    = fill(1e-6, Nx, Ny)                          # basal melt rate [kg m⁻
 # see the constructor's docstring). It has no safe default that works for every grid resolution, so it
 # must be passed explicitly or `KazmierczakHydroModel` warns and falls back to 10.0 (the upper edge of
 # the ice-sheet range). 10.0 is well resolved at this grid's 1 km spacing.
-model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, mdot; coupling_length_kamb86 = 10.0, dissipation_verbose = false)
+model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86 = 10.0, dissipation_verbose = false)
 state = HydroState(grid, mask, h, b)
 
 sim = SteadyStateSimulation(model, grid, state)
