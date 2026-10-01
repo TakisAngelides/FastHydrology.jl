@@ -58,7 +58,7 @@ export AbstractGradientConvention, LocalGradient, MeanGradient
 
 # models/kazmierczak2024/sliding_law.jl
 export calc_tau_b, update_tau_b!
-export set_basal_terms!
+export set_basal_terms!, freeze_on_capacity!
 
 # common/state.jl
 export AbstractHydroState, HydroState

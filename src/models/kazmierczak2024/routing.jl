@@ -414,3 +414,45 @@ function add_dissipation_term!(model::KazmierczakHydroModel, ::FaceDissipation)
     end
     return nothing
 end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Freeze-on capacity [m/s ice equivalent] of every grounded cell after a solve, written into `C`
+(`Nx x Ny`): the water routed into the cell from upstream, `C = rho_w * Psi_in / (rho_i * dx * dy)`,
+with `Psi_in` the sum over neighbours of their `psi_out` times the fraction of their outflow sent
+toward the cell. The cell's own source (melt, dissipation, `i_eb`) is not included: a host using
+the capacity basal boundary condition already counts that heat in its freezing demand. Zero off the
+grounded mask.
+
+GDS-Warner routes with weights computed on the fly, so its routing weights are filled here first
+when face fluxes have not already done so.
+"""
+function freeze_on_capacity!(C, model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+    if model.routing_scheme isa GDSWarner && !needs_face_fluxes(model)
+        compute_routing_weights!(model, grid, state)
+    end
+    freeze_on_capacity_kernel!(C, model.psi_out, model.routing_tape.w8, state.mask, grid.Nx, grid.Ny,
+                               grid.dx, grid.dy, model.rho_w, model.rho_i)
+    return C
+end
+
+function freeze_on_capacity_kernel!(C, psi, W, mask, Nx, Ny, dx, dy, rho_w, rho_i)
+    T = eltype(C)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        psi_in = zero(T)
+        if mask[i, j] == 1.0
+            for d in 1:8
+                di, dj = ROUTE_OFFSETS[d]
+                ni, nj = i + di, j + dj
+                in_domain(ni, nj, Nx, Ny) || continue
+                mask[ni, nj] == 1.0 || continue
+                # the neighbour sends toward (i, j) in the direction opposite to d
+                psi_in += psi[ni, nj] * W[ROUTE_OPPOSITE[d], ni, nj]
+            end
+        end
+        C[i, j] = rho_w * max(psi_in, zero(T)) / (rho_i * dx * dy)
+    end
+    return nothing
+end
