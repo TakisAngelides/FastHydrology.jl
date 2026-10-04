@@ -77,6 +77,7 @@ export accumulate_psi_out!, update_psi_out!, update_psi_out_iterative!, update_p
 
 # common/effective_pressure.jl, models/kazmierczak2024/effective_pressure.jl, models/hab/effective_pressure.jl
 export update_N!, update_Po!, update_p_w!
+export N_responds_to_ub, N_from_ub!
 export update_H!, update_S_inf!, update_N_inf!, update_Q!
 
 # models/kazmierczak2024/data_loaders.jl

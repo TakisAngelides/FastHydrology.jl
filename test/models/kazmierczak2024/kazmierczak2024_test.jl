@@ -526,3 +526,43 @@
         # rejected rather than silently accepted.
         @test_throws ArgumentError KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86 = -1.0, dissipation_verbose = false)
     end
+
+    @testset "N_from_ub!: N for a new sliding speed with the routing held" begin
+        grid = OGRectHydroGrid(7, 7, (0.0, 7000.0), (0.0, 7000.0))
+        mask = ones(7, 7)
+        h    = [800.0 - 20.0 * i + 5.0 * j for i in 1:7, j in 1:7]
+        b    = [-100.0 - 8.0 * j + 3.0 * i for i in 1:7, j in 1:7]
+        kappa   = zeros(7, 7)
+        ub_slow = fill(50.0 / (60^2 * 24 * 365.25), 7, 7)
+        ub_fast = fill(500.0 / (60^2 * 24 * 365.25), 7, 7)
+        A_visc  = fill(1e-24, 7, 7)
+        G       = fill(0.06, 7, 7)
+        q_T     = fill(0.02, 7, 7)
+
+        build(ub) = begin
+            model = KazmierczakHydroModel(grid, kappa, ub, A_visc, G, q_T; dissipation_verbose = false)
+            state = HydroState(grid, mask, h, b)
+            run!(SteadyStateSimulation(model, grid, state))
+            (model, state)
+        end
+
+        model, state = build(ub_slow)
+        N_slow = copy(field_values(state.N))
+
+        # Trait: K24 responds to u_b unless the sliding opening term is dropped; HAB does not
+        @test N_responds_to_ub(model)
+        @test !N_responds_to_ub(KazmierczakHydroModel(grid, kappa, ub_slow, A_visc, G, q_T; drainage_mode = EfficientOnly(), dissipation_verbose = false))
+        @test !N_responds_to_ub(HABHydroModel(grid))
+
+        # The same u_b reproduces the full update's N (the routing held is the one it used)
+        N_from_ub!(model, grid, state, ub_slow)
+        @test field_values(state.N) == N_slow
+
+        # A faster u_b opens more cavities: N changes, and with q independent of u_b (no friction)
+        # it is exactly what a full update at the new u_b gives
+        N_from_ub!(model, grid, state, ub_fast)
+        @test field_values(model.abs_v_b) == ub_fast
+        _, state_fast = build(ub_fast)
+        @test !(field_values(state.N) ≈ N_slow)
+        @test field_values(state.N) ≈ field_values(state_fast.N) rtol = 1e-12
+    end

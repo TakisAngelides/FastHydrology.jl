@@ -44,6 +44,43 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
 
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+`true` unless `drainage_mode` is [`EfficientOnly`](@ref), the one mode whose `N_inf` has no sliding-over-obstacles
+term (see `opening_coefficients`) and so does not depend on `|u_b|`. See [`N_responds_to_ub`](@ref).
+"""
+N_responds_to_ub(model::KazmierczakHydroModel) = !(model.drainage_mode isa EfficientOnly)
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`state.N` for a new basal sliding speed `abs_v_b` [m/s], with the routing held: the distributed flux `q`, the
+potential gradient `abs_grad_phi0` and the geometric potential `phi0` stay as the last full update
+(`update_steady_state!`) left them. This is `update_N!` alone, after setting `model.abs_v_b`.
+
+A host calls it inside its velocity iteration, so that `N` and `u_b` are solved together instead of lagged by a
+step (a lag makes them alternate between two states every step: `N` rises with `u_b` through the cavity opening in
+`N_inf`, and `u_b` falls steeply with `N` through the friction law). See [`N_responds_to_ub`](@ref).
+
+Holding the routing is exact when `q` does not depend on `u_b`. With a friction law the frictional heat is in the
+water source and the routing lags the velocity iteration by one full update; with [`NoFrictionSlidingLaw`](@ref) the
+source at cold bases is `-Q_b/L` (`q_T` already contains the frictional heat) and the cycle stays, so coupled runs
+use a friction law (`PrescribedFieldSlidingLaw` with the host's `tau_b`).
+
+What `update_N!` reads, and so what must be current when this is called: `abs_v_b` (the argument); from the last
+full update, `q`, `abs_grad_phi0`, `phi0` and `kappa`; and, describing the geometry the host's velocity solve
+uses, `state.h` (overburden `Po`), `state.mask` and `model.A_visc` (basal rate factor). The host refreshes those in
+place if they have changed since the last full update.
+"""
+function N_from_ub!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, abs_v_b)
+    model.abs_v_b .= abs_v_b
+    fill_halo!(model.abs_v_b, grid)
+    update_N!(model, grid, state)
+    return state.N
+end
+
 # Every cell is independent, so columns are split across Julia threads when there are several; the
 # per-cell arithmetic is the same either way, so results are bit-identical for any thread count, and
 # with one thread (`julia` without `-t`) it is a plain loop with no threading overhead at all.
