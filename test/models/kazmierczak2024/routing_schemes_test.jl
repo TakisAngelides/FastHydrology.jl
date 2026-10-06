@@ -120,16 +120,20 @@
     @testset "freeze_on_capacity! closes the routing balance ($(nameof(typeof(scheme))))" for (scheme, surf) in ((Warner(), bumpy), (Quinn(), bumpy), (Tarboton(), bumpy),
                                                   # GDS routing has flow cycles on the bumpy surface (cut by the router), so the plane
                                                   (GDSWarner(), -2e-3 .* x .- 1e-3 .* y))
-        model, state = build(scheme, surf; fill_algorithm = PriorityFloodFill())
+        # water from above [kg/m2/s], varying in space, comparable to the melt (1e-3 kg/m2/s)
+        i_eb = 5e-4 .* (1 .+ sin.(x ./ 5e3) .^ 2)
+        model, state = build(scheme, surf; fill_algorithm = PriorityFloodFill(), i_eb = i_eb)
         update_steady_state!(model, grid, state)
         C = freeze_on_capacity!(zeros(Nx, Ny), model, grid, state)
         @test all(>=(0), C)
-        # psi_out = Psi_in + own source wherever the max(0, .) clamp did not bite
-        psi_in = C .* (model.rho_i * dx * dx / model.rho_w)
+        # C = (rho_w Psi_in/(dx dy) + i_eb)/rho_i, and psi_out = Psi_in + own source wherever the
+        # max(0, .) clamp did not bite
+        psi_in = (C .* model.rho_i .- i_eb) .* (dx * dx / model.rho_w)
         own    = model.mdot_total .* (dx * dx / model.rho_w)
         @test isapprox(model.psi_out, psi_in .+ own; rtol = 1e-10)
-        # cells nothing flows into have no capacity
-        @test any(==(0), C)
+        # cells nothing flows into can freeze only the water from above
+        @test any(C .== i_eb ./ model.rho_i)
+        @test all(C .>= i_eb ./ model.rho_i .* (1 - 1e-14))
     end
 
 end
