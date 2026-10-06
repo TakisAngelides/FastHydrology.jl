@@ -420,10 +420,12 @@ end
 $(TYPEDSIGNATURES)
 
 Freeze-on capacity [m/s ice equivalent] of every grounded cell after a solve, written into `C`
-(`Nx x Ny`): the water routed into the cell from upstream, `C = rho_w * Psi_in / (rho_i * dx * dy)`,
-with `Psi_in` the sum over neighbours of their `psi_out` times the fraction of their outflow sent
-toward the cell. The cell's own source (melt, dissipation, `i_eb`) is not included: a host using
-the capacity basal boundary condition already counts that heat in its freezing demand. Zero off the
+(`Nx x Ny`): the water that reaches the cell, routed in from upstream plus the water from above,
+`C = (rho_w * Psi_in / (dx * dy) + i_eb) / rho_i`, with `Psi_in` the sum over neighbours of their
+`psi_out` times the fraction of their outflow sent toward the cell and `i_eb` [kg/m^2/s] the water
+reaching the bed from above (`model.i_eb`). The cell's own melt and dissipation are not included:
+they are heat, which a host using the capacity basal boundary condition already counts in its
+freezing demand. `i_eb` is water and in no heat balance, so it is part of the supply. Zero off the
 grounded mask.
 
 GDS-Warner routes with weights computed on the fly, so its routing weights are filled here first
@@ -433,15 +435,16 @@ function freeze_on_capacity!(C, model::KazmierczakHydroModel, grid::AbstractHydr
     if model.routing_scheme isa GDSWarner && !needs_face_fluxes(model)
         compute_routing_weights!(model, grid, state)
     end
-    freeze_on_capacity_kernel!(C, model.psi_out, model.routing_tape.w8, state.mask, grid.Nx, grid.Ny,
+    freeze_on_capacity_kernel!(C, model.psi_out, model.routing_tape.w8, model.i_eb, state.mask, grid.Nx, grid.Ny,
                                grid.dx, grid.dy, model.rho_w, model.rho_i)
     return C
 end
 
-function freeze_on_capacity_kernel!(C, psi, W, mask, Nx, Ny, dx, dy, rho_w, rho_i)
+function freeze_on_capacity_kernel!(C, psi, W, i_eb, mask, Nx, Ny, dx, dy, rho_w, rho_i)
     T = eltype(C)
     @inbounds for j in 1:Ny, i in 1:Nx
         psi_in = zero(T)
+        supply = zero(T)
         if mask[i, j] == 1.0
             for d in 1:8
                 di, dj = ROUTE_OFFSETS[d]
@@ -451,8 +454,9 @@ function freeze_on_capacity_kernel!(C, psi, W, mask, Nx, Ny, dx, dy, rho_w, rho_
                 # the neighbour sends toward (i, j) in the direction opposite to d
                 psi_in += psi[ni, nj] * W[ROUTE_OPPOSITE[d], ni, nj]
             end
+            supply = rho_w * psi_in / (dx * dy) + i_eb[i, j]
         end
-        C[i, j] = rho_w * max(psi_in, zero(T)) / (rho_i * dx * dy)
+        C[i, j] = max(supply, zero(T)) / rho_i
     end
     return nothing
 end
