@@ -856,9 +856,9 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
     sliding_law             ::L    # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
-    max_coupling_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
-    coupling_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
-    coupling_verbose        ::Bool # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
+    max_qN_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
+    qN_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
+    qN_verbose        ::Bool # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
 
 end
 
@@ -984,6 +984,12 @@ See the `AbstractSlidingLaw` docstring in model.jl for the available laws and `r
 water_flux.jl for how N-dependent laws widen the existing dissipation-melt Picard loop into a joint
 (q, N) fixed point.
 
+Keyword names for the paper's symbols (the `KazmierczakParams` fields and `model.<field>` keep the paper symbol):
+`glen_n` (n, Glen's flow law exponent), `flux_W_exponent` (alpha), `flux_grad_exponent` (beta),
+`bed_bump_height` (h_b, typical bed obstacle height [m]), `H0_efficient` (H_0, canal thickness for soft bed
+deformation [m]), `conduit_spacing` (l_c, distance between conduits [m]), `water_viscosity` (eta_w, dynamic
+viscosity of water [Pa s]). The (q, N) Picard loop is controlled by `max_qN_iters`, `qN_rtol` and `qN_verbose`.
+
 The `psi_out_algorithm` keyword (`TapedPsiOut()` by default) selects which flow-routing
 implementation `resolve_q!` uses each sweep to compute psi_out -- see the `AbstractPsiOutAlgorithm`
 docstring above for the `RecursivePsiOut`/`IterativePsiOut` speed-vs-stack-robustness trade-off.
@@ -1066,17 +1072,17 @@ function KazmierczakHydroModel(
     rho_i         = 917.0,                        # Density of ice [kg/m3]
     g             = 9.81,                         # Gravitational acceleration [m/s2]
     L_w           = KAZMIERCZAK_DEFAULT_L_W,       # Latent heat of fusion for ice [J/kg]
-    n             = 3.0,                          # Glen's flow law exponent (typically 3)
-    h_b           = 0.1,                          # Typical bed obstacle height [m]
-    alpha         = 5/4,                          # Power law exponent for hydraulic transmissivity (m-scale)
-    beta          = 3/2,                          # Power law exponent for hydraulic transmissivity (opening/closing)
+    glen_n        = 3.0,                          # n: Glen's flow law exponent (typically 3)
+    bed_bump_height = 0.1,                        # h_b: typical bed obstacle height [m]
+    flux_W_exponent = 5/4,                        # alpha: power law exponent for hydraulic transmissivity (m-scale)
+    flux_grad_exponent = 3/2,                     # beta: power law exponent for hydraulic transmissivity (opening/closing)
     f             = 0.1,                          # Darcy-Weisbach friction factor -- shared between K (S_inf/H/N_inf) and DarcyWeisbachThickness, not a separate value for each; see KazmierczakParams' field comment
     F_till        = 1.1,                          # Till compressibility/yield factor for soft-bed transition
     Q_c           = 1.0,                          # Threshold discharge for laminar-to-turbulent transition [m3/s]
     drainage_mode = BothDrainage(),               # BothDrainage()/EfficientOnly()/InefficientOnly(): which opening terms update_N_inf! includes and which effective Q_c update_H! uses -- see AbstractDrainageMode
-    H_0           = 0.1,                          # Thickness of canals for soft bed deformation [m]
-    l_c           = 10000.0,                      # Distance between conduits [m]
-    eta_w         = perYear2perSecond(1.8e-3),     # Dynamic viscosity of water [Pa s] -- matches KORI-ULB's own par.waterviscosity, not literal SI water viscosity
+    H0_efficient  = 0.1,                          # H_0: thickness of canals for soft bed deformation [m]
+    conduit_spacing = 10000.0,                    # l_c: distance between conduits [m]
+    water_viscosity = perYear2perSecond(1.8e-3),  # eta_w: dynamic viscosity of water [Pa s] -- matches KORI-ULB's own par.waterviscosity, not literal SI water viscosity
     Wmin          = 0.0,                          # Minimum subglacial water layer thickness [m]; no floor by default -- pass 1e-8 for KORI-ULB's own Wdmin
     Wmax          = Inf,                          # Maximum subglacial water layer thickness [m]; no ceiling by default -- pass 0.015 for KORI-ULB's own Wdmax
     water_thickness_algorithm = DarcyWeisbachThickness(), # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
@@ -1097,9 +1103,9 @@ function KazmierczakHydroModel(
     dissipation_melt        = true,                # Whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     = true,                # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
     sliding_law         = NoFrictionSlidingLaw(),          # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
-    max_coupling_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
-    coupling_rtol       = 1e-8,                    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
-    coupling_verbose    = true,                    # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
+    max_qN_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
+    qN_rtol       = 1e-8,                    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
+    qN_verbose    = true,                    # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
 )
 
     expected_size = (grid.Nx, grid.Ny)
@@ -1116,17 +1122,17 @@ function KazmierczakHydroModel(
     rho_i         = T(rho_i)
     g             = T(g)
     L_w           = T(L_w)
-    n             = T(n)
-    h_b           = T(h_b)
-    alpha         = T(alpha)
-    beta          = T(beta)
+    n             = T(glen_n)
+    h_b           = T(bed_bump_height)
+    alpha         = T(flux_W_exponent)
+    beta          = T(flux_grad_exponent)
     f             = T(f)
     F_till        = T(F_till)
     Q_c           = T(Q_c)
-    H_0           = T(H_0)
-    l_c           = T(l_c)
+    H_0           = T(H0_efficient)
+    l_c           = T(conduit_spacing)
     K             = (T(2)/T(pi))^(T(0.25)) * sqrt((T(pi) + T(2)) / (rho_w * f))
-    eta_w         = T(eta_w)
+    eta_w         = T(water_viscosity)
     Wmin          = T(Wmin)
     Wmax          = T(Wmax)
 
@@ -1173,8 +1179,8 @@ function KazmierczakHydroModel(
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol)
     dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
-    max_coupling_iters  = Int(max_coupling_iters)
-    coupling_rtol       = T(coupling_rtol)
+    max_qN_iters  = Int(max_qN_iters)
+    qN_rtol       = T(qN_rtol)
     sliding_law         = convert_sliding_law(T, sliding_law)
 
     # Geometric potential
@@ -1221,7 +1227,7 @@ function KazmierczakHydroModel(
     params = KazmierczakParams(
         rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
-        sliding_law, max_coupling_iters, coupling_rtol, coupling_verbose
+        sliding_law, max_qN_iters, qN_rtol, qN_verbose
 )
 
     workspace = KazmierczakWorkspace(

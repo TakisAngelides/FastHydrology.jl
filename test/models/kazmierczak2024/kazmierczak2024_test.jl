@@ -198,7 +198,7 @@
         reg_coulomb = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
         model_c = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                         sliding_law = reg_coulomb, dissipation_melt = false,
-                                        dissipation_verbose = false, coupling_verbose = false)
+                                        dissipation_verbose = false, qN_verbose = false)
         state_c = HydroState(grid, mask, h, b)
         run!(SteadyStateSimulation(model_c, grid, state_c))
         @test all(!=(0.0), field_values(model_c.tau_b))
@@ -276,7 +276,7 @@
 
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                            sliding_law = law, dissipation_melt = dissipation_melt,
-                                           dissipation_verbose = false, coupling_verbose = false)
+                                           dissipation_verbose = false, qN_verbose = false)
             state = HydroState(grid, mask, h, b)
             run!(SteadyStateSimulation(model, grid, state))
 
@@ -289,11 +289,11 @@
             @test all(field_values(model.mdot_total) .>= field_values(model.mdot_fixed))
         end
 
-        # max_coupling_iters is a hard cap: it must not error even when it cuts the Picard
+        # max_qN_iters is a hard cap: it must not error even when it cuts the Picard
         # iteration off before convergence.
         model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                               sliding_law = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
-                                              max_coupling_iters = 1, coupling_verbose = false)
+                                              max_qN_iters = 1, qN_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
         @test all(isfinite, field_values(model_capped.q))
     end

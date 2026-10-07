@@ -92,7 +92,7 @@ sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2p
 model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, ṁ;
                                        sliding_law = sliding_law, longcoupwater = 5.0,
                                        mdot_includes_friction = true,
-                                       dissipation_verbose = false, coupling_verbose = false)
+                                       dissipation_verbose = false, qN_verbose = false)
 state_sliding = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
 
@@ -113,7 +113,7 @@ fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stres
 # made explicit, not silent.
 model_from_G = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
                                       sliding_law = sliding_law, longcoupwater = 5.0,
-                                      dissipation_verbose = false, coupling_verbose = false)
+                                      dissipation_verbose = false, qN_verbose = false)
 state_from_G = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_from_G, grid, state_from_G))
 ```

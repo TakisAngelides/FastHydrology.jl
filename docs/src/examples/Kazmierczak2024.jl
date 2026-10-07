@@ -89,7 +89,7 @@ fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", tran
 sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
 model_sliding = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T;
                                        sliding_law = sliding_law, coupling_length_kamb86 = 10.0,
-                                       dissipation_verbose = false, coupling_verbose = false)
+                                       dissipation_verbose = false, qN_verbose = false)
 state_sliding = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
 
