@@ -334,7 +334,7 @@ Overwrite cells of `dest` for which `predicate(cond)` holds with `scale * src`, 
 and `src` is a scalar. Fused into a single branchless (`ifelse`) pass rather than building the
 intermediate boolean mask array `predicate.(cond)` and assigning through it -- same reasoning as
 `masked_mean` above: this runs inside `update_S_inf!`/`update_N_inf!` (effective_pressure.jl), which
-`update_N!` calls up to `model.max_coupling_iters` times per solve for N-dependent sliding laws, so
+`update_N!` calls up to `model.max_qN_iters` times per solve for N-dependent sliding laws, so
 avoiding a fresh full-size allocation every call is real, measured cost there.
 
 As with `convolve!` and `masked_mean`, the default here assumes fields already behave like plain

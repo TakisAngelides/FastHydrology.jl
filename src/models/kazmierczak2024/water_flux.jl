@@ -30,7 +30,7 @@ depends on the effective pressure N instead, which is itself downstream of q (vi
 reconverge q for a stale N every outer sweep), we widen the existing loop: each sweep recomputes tau_b from the current N, routes q, and then also updates W and N in place before the next
 sweep, converging jointly. `model.sliding_law`'s type determines which `resolve_q!` method runs: `NoFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N (the latter contributes a fixed source
 term, computed but not iterated on), so they fall back to the original q-only dispatch on `model.dissipation_melt`; `AbstractPressureDependentSlidingLaw` always takes the joint (q, N) loop,
-using `model.max_coupling_iters`/`model.coupling_rtol` regardless of `model.dissipation_melt` (which only decides whether the dissipation term is added inside that loop, via `add_dissipation_term!`).
+using `model.max_qN_iters`/`model.qN_rtol` regardless of `model.dissipation_melt` (which only decides whether the dissipation term is added inside that loop, via `add_dissipation_term!`).
 
 The frictional-heating term is always added to `mdot_total` (via `add_friction_term!`); it is zero
 for `NoFrictionSlidingLaw`. The melt rate is only ever built from its terms, so there is no switch for
@@ -399,8 +399,8 @@ depends on N, which is itself downstream of q -- so q and N form a joint fixed p
 `model.dissipation_melt`. Each sweep: recompute tau_b from the current N, add its frictional heat to
 the water source (plus the dissipation term, if `model.dissipation_melt` is on), route q, then update
 N from the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
-changing (each relative to its own peak magnitude) to within `model.coupling_rtol`, capped at
-`model.max_coupling_iters` sweeps. If `model.coupling_verbose` is set, logs (via @info) how long the loop
+changing (each relative to its own peak magnitude) to within `model.qN_rtol`, capped at
+`model.max_qN_iters` sweeps. If `model.qN_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
 
 N starts from whatever `state.N` already holds (zero on a fresh `HydroState`), so the first sweep's
@@ -412,9 +412,9 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     start_time = time()
     converged  = false
-    n_iters    = model.max_coupling_iters
+    n_iters    = model.max_qN_iters
 
-    for iter in 1:model.max_coupling_iters
+    for iter in 1:model.max_qN_iters
 
         model.q_prev .= model.q
         model.N_prev .= state.N
@@ -431,8 +431,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
         q_scale = max(masked_max_abs(grid, model.q, state.mask), eps(eltype(model.q)))
         N_scale = max(masked_max_abs(grid, state.N, state.mask), eps(eltype(state.N)))
-        q_converged = masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.coupling_rtol * q_scale
-        N_converged = masked_max_abs_diff(grid, state.N, model.N_prev, state.mask) <= model.coupling_rtol * N_scale
+        q_converged = masked_max_abs_diff(grid, model.q, model.q_prev, state.mask) <= model.qN_rtol * q_scale
+        N_converged = masked_max_abs_diff(grid, state.N, model.N_prev, state.mask) <= model.qN_rtol * N_scale
 
         if q_converged && N_converged
             converged = true
@@ -442,9 +442,9 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
 
     end
 
-    if model.coupling_verbose
+    if model.qN_verbose
         elapsed = time() - start_time
-        status  = converged ? "converged" : "did NOT converge (hit max_coupling_iters)"
+        status  = converged ? "converged" : "did NOT converge (hit max_qN_iters)"
         @info "Water flux/effective pressure coupling Picard loop: $status after $n_iters iteration(s) in $(round(elapsed, digits = 4)) s"
     end
 

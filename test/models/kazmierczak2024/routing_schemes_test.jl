@@ -109,7 +109,7 @@
         # model plumbing: size check and a full solve with an N-dependent law
         @test_throws ArgumentError KazmierczakHydroModel(grid, z, vb, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0,
                                                          friction_discretization = StaggeredFriction(zeros(3, 3), zeros(3, 3)))
-        model = KazmierczakHydroModel(grid, z, vb2, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0, dissipation_verbose = false, coupling_verbose = false,
+        model = KazmierczakHydroModel(grid, z, vb2, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0, dissipation_verbose = false, qN_verbose = false,
                                       sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5), friction_discretization = StaggeredFriction(ux, uy))
         state = HydroState(grid, ones(Nx, Ny), h, bumpy)
         update_steady_state!(model, grid, state)
