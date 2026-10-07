@@ -52,17 +52,13 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     dy = grid.dy
     # eps(T) rather than a bare Float64 literal like 1e-15: keeps this (and every other
     # division-by-zero guard in this file) in the model's own float type, so a Float32 grid
-    # broadcast doesn't get silently promoted to Float64 by a Float64 literal. Computed as a
-    # plain scalar BEFORE the `@.` broadcast, not as a literal `eps(T)` call inside it:
-    # Oceananigans' `@.` macro lifts every function call syntactically inside a Field-valued
-    # broadcast into its own AbstractOperations framework, and `eps` isn't one of the operators
-    # it supports -- writing `eps(T)` directly inside `@.` throws a MethodError deep inside
-    # Oceananigans.AbstractOperations.broadcasted_to_abstract_operation, not from this file.
+    # broadcast doesn't get silently promoted to Float64 by a Float64 literal. Computed once as a
+    # plain scalar before the `@.` broadcast rather than per cell inside it.
     T = eltype(model.minus_grad_phi0_sx)
     epsT = eps(T)
     # x*x rather than x^2.0: Float64^Float64 dispatches to libm's pow() per element (~17x slower
     # than a plain multiply, benchmarked), and x^2 (integer literal) hits the literal_pow issue
-    # noted on DarcyWeisbachThickness below -- x*x is both the fast path and Oceananigans-safe.
+    # noted on DarcyWeisbachThickness below -- x*x is the fast path.
     @. model.corfac = (abs(model.minus_grad_phi0_sx) * dy + abs(model.minus_grad_phi0_sy) * dx) /
                        (sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy) + epsT)
 
@@ -505,8 +501,8 @@ gradient instead (matching the convention `update_S_inf!` uses). The turbulent a
 thin-sheet quantity. The `+ eps(T)` guards degenerate cells where `abs_grad_phi0` is exactly zero
 (e.g. flat cells outside the glacier extent). Uses `q*q` rather than `q^2.0`: `Float64^Float64`
 dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a plain multiply for no
-numerical difference, and `q^2` (integer literal) hits a separate issue -- `@.`'s `literal_pow`
-rewrite isn't supported by Oceananigans' `AbstractOperation` broadcasting.
+numerical difference, and `q*q` also sidesteps `@.`'s `literal_pow` rewrite of `q^2`, which not
+every field type's broadcasting supports.
 """
 function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, algorithm::DarcyWeisbachThickness)
     update_W_darcy_weisbach!(model, grid, state, algorithm.gradient_convention)
@@ -514,8 +510,7 @@ function update_W!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
 end
 
 function update_W_darcy_weisbach!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::LocalGradient)
-    # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note on
-    # why `eps(T)` cannot be written literally inside an Oceananigans `@.` broadcast expression.
+    # eps(T) computed once as a plain scalar before the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
     epsT = eps(T)
     @. state.W = min(model.Wmax, max(model.Wmin,

@@ -24,14 +24,14 @@ Set a field to a given input value where the mask is not 1. Does not touch plott
 (just field indexing), so unlike `visualize_field`/`visualize_grid` this has a real implementation
 here rather than living behind the `FastHydrologyMakieExt` extension.
 """
-function mask_field(field::Oceananigans.Fields.Field, mask, value)
+function mask_field(field::AbstractMatrix, mask, value)
 
     Nx, Ny = size(mask)
     res = deepcopy(field)
     for j in 1:Ny
         for i in 1:Nx
             if mask[i, j] != 1.0
-                res[i, j, 1] = value
+                res[i, j] = value
             end
         end
     end

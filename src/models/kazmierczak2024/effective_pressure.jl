@@ -242,9 +242,7 @@ basal velocity, constrained by ice overburden pressure limits.
 """
 function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
-    # As in update_p_w!, the purely-scalar sub-expression `model.n^(-model.n)` must be
-    # precomputed outside the broadcast to avoid breaking Oceananigans' AbstractOperation
-    # conversion.
+    # Purely-scalar sub-expressions precomputed once rather than re-evaluated per cell.
     denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
     inv_n = 1.0 / model.n
 

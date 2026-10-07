@@ -1,5 +1,5 @@
     @testset "KazmierczakHydroModel steady state" begin
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         # A flat h/b gives a zero geometric-potential gradient everywhere, which is
         # degenerate for this flux-routing model (division by ~0 in the correction
@@ -18,17 +18,17 @@
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
 
-        @test all(isfinite, field_values(state.N))
-        @test all(isfinite, field_values(state.W))
-        @test all(>=(0.0), field_values(state.N))
-        @test all(>=(0.0), field_values(state.W))
+        @test all(isfinite, state.N)
+        @test all(isfinite, state.W)
+        @test all(>=(0.0), state.N)
+        @test all(>=(0.0), state.W)
         # Wmin/Wmax default to 0.0/Inf (no clamp -- see KazmierczakHydroModel's docstring), so there's
         # no clamp bound to check against defaults here; the water_thickness_algorithm testset below
         # passes explicit KORI-ULB-matching Wmin/Wmax to actually exercise the clamping logic.
     end
 
     @testset "water_thickness_algorithm keyword selects the update_W! closure" begin
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -64,10 +64,10 @@
             sim = SteadyStateSimulation(model, grid, state)
             run!(sim)
 
-            @test all(isfinite, field_values(state.W))
-            @test all(>=(0.0), field_values(state.W))
+            @test all(isfinite, state.W)
+            @test all(>=(0.0), state.W)
             if clamped
-                @test all(w -> model.Wmin <= w <= model.Wmax, field_values(state.W))
+                @test all(w -> model.Wmin <= w <= model.Wmax, state.W)
             end
         end
     end
@@ -79,7 +79,7 @@
         # literal 1e5 used to make this clamp a no-op (~3.16e7x too permissive to ever bind). Force
         # an extreme mdot so q would blow well past perYear2perSecond(1e5) unclamped, and check it's
         # actually capped there.
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -98,14 +98,14 @@
 
         run!(SteadyStateSimulation(model, grid, state))
 
-        @test all(<=(q_max), field_values(model.q))
-        @test any(>=(q_max - 1e-12), field_values(model.q))
+        @test all(<=(q_max), model.q)
+        @test any(>=(q_max - 1e-12), model.q)
     end
 
     @testset "KazmierczakHydroModel dissipation melt term" begin
         # dissipation_melt toggles whether update_q! includes the |q * grad(phi0)| / L_w
         # source term (Eq. 3, Sec. 2.2.2 of Kazmierczak et al 2024, dropped there as negligible).
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -127,34 +127,34 @@
         run!(SteadyStateSimulation(model_off, grid, HydroState(grid, mask, h, b)))
 
         # With the term off, the routing algorithm's source is exactly mdot.
-        @test all(field_values(model_off.mdot_total) .== field_values(model_off.mdot_fixed))
+        @test all(model_off.mdot_total .== model_off.mdot_fixed)
 
         # With the term on, mdot_total = mdot + |q * grad(phi0)| / L_w is pointwise >= mdot.
-        @test all(field_values(model_on.mdot_total) .>= field_values(model_on.mdot_fixed))
+        @test all(model_on.mdot_total .>= model_on.mdot_fixed)
 
-        q_on  = field_values(model_on.q)
-        q_off = field_values(model_off.q)
+        q_on  = model_on.q
+        q_off = model_off.q
 
         # The term has a real (if small) effect on the solution...
         @test q_on != q_off
         # ...consistent with the paper's own claim that it's negligible.
         @test maximum(abs.(q_on .- q_off)) / maximum(abs.(q_off)) < 0.05
 
-        @test all(isfinite, field_values(model_on.q))
-        @test all(isfinite, field_values(model_off.q))
+        @test all(isfinite, model_on.q)
+        @test all(isfinite, model_off.q)
 
         # max_dissipation_iters is a hard cap: it must not error even when it cuts the Picard
         # iteration off before convergence.
         model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_dissipation_iters = 1, dissipation_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
-        @test all(isfinite, field_values(model_capped.q))
+        @test all(isfinite, model_capped.q)
     end
 
     @testset "KazmierczakHydroModel melt rate from terms" begin
         # The water source is built from individual terms: mdot_fixed = (G - q_T)/L_w is the
         # fixed part, and mdot_total adds the frictional heat Q_b = tau_b*|u_b| and the dissipation
         # heat Q_diss, each kept as its own field [W/m2]. There is no way to supply a whole melt rate.
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -170,17 +170,17 @@
         # No friction (default law), no dissipation: mdot_total is exactly the fixed part
         model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; i_eb = ws,
                                       dissipation_melt = false, dissipation_verbose = false)
-        @test field_values(model.mdot_fixed) ≈ (G .- q_T) ./ L_w
+        @test model.mdot_fixed ≈ (G .- q_T) ./ L_w
         run!(SteadyStateSimulation(model, grid, HydroState(grid, mask, h, b)))
-        @test all(==(0.0), field_values(model.Q_b))
-        @test all(==(0.0), field_values(model.Q_diss))
-        @test field_values(model.mdot_total) ≈ field_values(model.mdot_fixed) .+ ws
+        @test all(==(0.0), model.Q_b)
+        @test all(==(0.0), model.Q_diss)
+        @test model.mdot_total ≈ model.mdot_fixed .+ ws
 
         # set_basal_terms! changes the given terms and the fixed part; unspecified terms are kept
         set_basal_terms!(model; G = fill(0.2, 5, 5))
-        @test field_values(model.mdot_fixed) ≈ (fill(0.2, 5, 5) .- q_T) ./ L_w
-        @test field_values(model.q_T) ≈ q_T
-        @test field_values(model.i_eb) ≈ ws
+        @test model.mdot_fixed ≈ (fill(0.2, 5, 5) .- q_T) ./ L_w
+        @test model.q_T ≈ q_T
+        @test model.i_eb ≈ ws
 
         # Prescribed friction and dissipation: both terms are kept as fields and added
         tau_b   = fill(5e4, 5, 5)
@@ -188,11 +188,11 @@
                                         sliding_law = PrescribedFieldSlidingLaw(grid, tau_b),
                                         dissipation_melt = true, dissipation_verbose = false)
         run!(SteadyStateSimulation(model_f, grid, HydroState(grid, mask, h, b)))
-        @test field_values(model_f.Q_b) ≈ tau_b .* abs_v_b
-        @test all(>=(0.0), field_values(model_f.Q_diss))
-        @test any(>(0.0), field_values(model_f.Q_diss))
-        @test field_values(model_f.mdot_total) ≈
-              field_values(model_f.mdot_fixed) .+ (field_values(model_f.Q_b) .+ field_values(model_f.Q_diss)) ./ L_w
+        @test model_f.Q_b ≈ tau_b .* abs_v_b
+        @test all(>=(0.0), model_f.Q_diss)
+        @test any(>(0.0), model_f.Q_diss)
+        @test model_f.mdot_total ≈
+              model_f.mdot_fixed .+ (model_f.Q_b .+ model_f.Q_diss) ./ L_w
 
         # N-dependent law: tau_b and N couple with q, and friction enters the source every sweep
         reg_coulomb = RegularizedCoulombSlidingLaw(c_till = 0.5, q = 1/3, u0 = perYear2perSecond(100.0))
@@ -201,10 +201,10 @@
                                         dissipation_verbose = false, qN_verbose = false)
         state_c = HydroState(grid, mask, h, b)
         run!(SteadyStateSimulation(model_c, grid, state_c))
-        @test all(!=(0.0), field_values(model_c.tau_b))
-        @test field_values(model_c.Q_b) ≈ field_values(model_c.tau_b) .* abs_v_b
-        @test field_values(model_c.mdot_total) ≈ field_values(model_c.mdot_fixed) .+ field_values(model_c.Q_b) ./ L_w
-        @test all(>(0.0), field_values(state_c.N))
+        @test all(!=(0.0), model_c.tau_b)
+        @test model_c.Q_b ≈ model_c.tau_b .* abs_v_b
+        @test model_c.mdot_total ≈ model_c.mdot_fixed .+ model_c.Q_b ./ L_w
+        @test all(>(0.0), state_c.N)
     end
 
     @testset "Sliding laws: calc_tau_b" begin
@@ -230,7 +230,7 @@
 
     @testset "KazmierczakHydroModel with WeertmanSlidingLaw" begin
         # Weertman tau_b does not depend on N, so it needs no Picard loop: a single pass is exact.
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -248,9 +248,9 @@
 
         run!(SteadyStateSimulation(model, grid, state))
 
-        @test all(isfinite, field_values(model.q))
-        @test all(field_values(model.tau_b) .≈ 1e7 .* field_values(model.abs_v_b) .^ (1/3))
-        @test all(field_values(model.mdot_total) .>= field_values(model.mdot_fixed))
+        @test all(isfinite, model.q)
+        @test all(model.tau_b .≈ 1e7 .* model.abs_v_b .^ (1/3))
+        @test all(model.mdot_total .>= model.mdot_fixed)
     end
 
     @testset "KazmierczakHydroModel with N-dependent sliding laws (q, N) coupling" begin
@@ -258,7 +258,7 @@
         # itself downstream of q, so resolve_q! widens its Picard loop to also update N each sweep
         # (see water_flux.jl). Exercise both laws, with and without the (independent) dissipation
         # melt term, and confirm the joint loop produces finite, physically sane results.
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -280,13 +280,13 @@
             state = HydroState(grid, mask, h, b)
             run!(SteadyStateSimulation(model, grid, state))
 
-            @test all(isfinite, field_values(state.N))
-            @test all(isfinite, field_values(model.q))
-            @test all(isfinite, field_values(model.tau_b))
-            @test all(>=(0.0), field_values(state.N))
-            @test all(>=(0.0), field_values(model.tau_b))
+            @test all(isfinite, state.N)
+            @test all(isfinite, model.q)
+            @test all(isfinite, model.tau_b)
+            @test all(>=(0.0), state.N)
+            @test all(>=(0.0), model.tau_b)
             # Frictional heating only adds to the background melt rate.
-            @test all(field_values(model.mdot_total) .>= field_values(model.mdot_fixed))
+            @test all(model.mdot_total .>= model.mdot_fixed)
         end
 
         # max_qN_iters is a hard cap: it must not error even when it cuts the Picard
@@ -295,7 +295,7 @@
                                               sliding_law = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
                                               max_qN_iters = 1, qN_verbose = false)
         run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
-        @test all(isfinite, field_values(model_capped.q))
+        @test all(isfinite, model_capped.q)
     end
 
     @testset "KazmierczakHydroModel with a flat, zero-flux region" begin
@@ -304,7 +304,7 @@
         # update_S_inf! evaluated 0^(negative) * 0^(positive) = Inf * 0 = NaN there, since
         # (1-beta)/alpha < 0 for the default alpha, beta. Build a grid with such a flat/ungrounded
         # region and confirm N stays finite.
-        grid = OGRectHydroGrid(10, 10, (0.0, 1000.0), (0.0, 1000.0))
+        grid = ArrayHydroGrid(10, 10, (0.0, 1000.0), (0.0, 1000.0))
         mask = [i <= 5 ? 1.0 : 0.0 for i in 1:10, j in 1:10]
         h    = [i <= 5 ? 500.0 - 5.0 * i : 0.0 for i in 1:10, j in 1:10]
         b    = [i <= 5 ? -100.0 - 2.0 * j : 0.0 for i in 1:10, j in 1:10]
@@ -320,24 +320,24 @@
         sim = SteadyStateSimulation(model, grid, state)
         run!(sim)
 
-        @test all(isfinite, field_values(model.S_inf))
-        @test all(isfinite, field_values(state.N))
+        @test all(isfinite, model.S_inf)
+        @test all(isfinite, state.N)
     end
 
     @testset "update_q_from_psi_out! stays finite where corfac == 0" begin
         # A cell with an identically-zero potential gradient has corfac == 0; q = psi_out / corfac
         # was 0/0 = NaN there when psi_out == 0 (net refreezing).
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         state = HydroState(grid, ones(5, 5), fill(500.0, 5, 5), fill(-100.0, 5, 5))
         model = KazmierczakHydroModel(grid, zeros(5, 5), fill(1e-6, 5, 5), fill(1e-24, 5, 5), fill(1e-6 * FastHydrology.KAZMIERCZAK_DEFAULT_L_W, 5, 5), zeros(5, 5);
                                        coupling_length_kamb86 = 0.0)
         model.corfac .= 0.0
         model.psi_out .= 0.0
         FastHydrology.update_q_from_psi_out!(model)
-        @test all(==(0.0), field_values(model.q))
+        @test all(==(0.0), model.q)
         model.psi_out .= 1.0
         FastHydrology.update_q_from_psi_out!(model)
-        @test all(isfinite, field_values(model.q))
+        @test all(isfinite, model.q)
     end
 
     @testset "update_psi_out_iterative! matches recursive update_psi_out!" begin
@@ -349,7 +349,7 @@
         # A roughly circular grounded region (rather than a filled rectangle) gives every cell a
         # different number/arrangement of grounded neighbours, exercising the boundary- and
         # masked-neighbour branches that a uniform mask never reaches.
-        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
         mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
@@ -369,10 +369,10 @@
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_psi_out_calls, routing_scheme = GDSWarner())
             run!(SteadyStateSimulation(model, grid, state))
 
-            psi_out_recursive = copy(field_values(model.psi_out))
+            psi_out_recursive = copy(model.psi_out)
 
             update_psi_out_iterative!(model, grid, state)
-            psi_out_iterative = field_values(model.psi_out)
+            psi_out_iterative = model.psi_out
 
             @test psi_out_iterative[mask .== 1] == psi_out_recursive[mask .== 1]
             # Net-refreezing cells cut off by the cap must not leave negative flux behind.
@@ -387,7 +387,7 @@
         # default). Build two otherwise-identical models differing only in that keyword and confirm
         # a full run! (including the dissipation-melt Picard loop, so route_psi_out! is called
         # several times) converges to the same q and N.
-        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
         mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
@@ -410,8 +410,8 @@
         run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
         run!(SteadyStateSimulation(model_iterative, grid, state_iterative))
 
-        @test field_values(model_iterative.q)[mask .== 1] == field_values(model_recursive.q)[mask .== 1]
-        @test field_values(state_iterative.N)[mask .== 1] == field_values(state_recursive.N)[mask .== 1]
+        @test model_iterative.q[mask .== 1] == model_recursive.q[mask .== 1]
+        @test state_iterative.N[mask .== 1] == state_recursive.N[mask .== 1]
     end
 
     @testset "TopologicalPsiOut matches RecursivePsiOut on acyclic (idealized) grids" begin
@@ -423,7 +423,7 @@
         # that TopologicalPsiOut is safe on real data, which is exactly why it errors by default
         # (allow_cycles = false) rather than silently degrading -- see the dedicated cycle-detection
         # testset below for that safety mechanism itself.
-        grid = OGRectHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
+        grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
         mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
@@ -444,8 +444,8 @@
             run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
             run!(SteadyStateSimulation(model_topological, grid, state_topological))
 
-            @test isapprox(field_values(model_topological.q)[mask .== 1], field_values(model_recursive.q)[mask .== 1]; rtol = 1e-10)
-            @test isapprox(field_values(state_topological.N)[mask .== 1], field_values(state_recursive.N)[mask .== 1]; rtol = 1e-10)
+            @test isapprox(model_topological.q[mask .== 1], model_recursive.q[mask .== 1]; rtol = 1e-10)
+            @test isapprox(state_topological.N[mask .== 1], state_recursive.N[mask .== 1]; rtol = 1e-10)
         end
     end
 
@@ -456,7 +456,7 @@
         # forces a mutual edge between two adjacent cells by overwriting their post-smoothing gradient
         # fields after the normal update_q! pre-routing steps have run, then calls
         # update_psi_out_topological! on that doctored state.
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         mask = ones(5, 5)
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -479,12 +479,12 @@
         # Force cells (2,2) and (3,2) to flow into each other: (2,2)'s gradient points toward (3,2)
         # (+x direction, i.e. minus_grad_phi0_sx > 0) and (3,2)'s gradient points back toward (2,2)
         # (-x direction), each with zero y-component so only the x-direction test matters.
-        interior(model.minus_grad_phi0_sx, :, :, 1)[2, 2] = 1.0
-        interior(model.minus_grad_phi0_sy, :, :, 1)[2, 2] = 0.0
-        interior(model.abs_grad_phi0_s, :, :, 1)[2, 2] = 1.0
-        interior(model.minus_grad_phi0_sx, :, :, 1)[3, 2] = -1.0
-        interior(model.minus_grad_phi0_sy, :, :, 1)[3, 2] = 0.0
-        interior(model.abs_grad_phi0_s, :, :, 1)[3, 2] = 1.0
+        model.minus_grad_phi0_sx[2, 2] = 1.0
+        model.minus_grad_phi0_sy[2, 2] = 0.0
+        model.abs_grad_phi0_s[2, 2] = 1.0
+        model.minus_grad_phi0_sx[3, 2] = -1.0
+        model.minus_grad_phi0_sy[3, 2] = 0.0
+        model.abs_grad_phi0_s[3, 2] = 1.0
 
         @test_throws ErrorException FastHydrology.update_psi_out_topological!(model, grid, state, false)
 
@@ -492,7 +492,7 @@
         # (with a warning, not an error) and leave every other cell -- outside the forced cycle --
         # finite, since only (2,2)/(3,2) themselves are inside it.
         @test_logs (:warn, r"cycle") FastHydrology.update_psi_out_topological!(model, grid, state, true)
-        @test all(isfinite, field_values(model.psi_out))
+        @test all(isfinite, model.psi_out)
     end
 
     @testset "coupling_length_kamb86 maps onto Kamb & Echelmeyer's ice-thickness multiple" begin
@@ -502,7 +502,7 @@
         # (longcoupwater = coupling_length_kamb86 / 2, since the kernel's true 2D area-weighted
         # effective coupling length works out to 2 * longcoupwater * mean_ice_thickness -- see
         # update_smoothed_potential_gradients! in water_flux.jl).
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
         A_visc  = fill(1e-24, 5, 5)
@@ -528,7 +528,7 @@
     end
 
     @testset "N_from_ub!: N for a new sliding speed with the routing held" begin
-        grid = OGRectHydroGrid(7, 7, (0.0, 7000.0), (0.0, 7000.0))
+        grid = ArrayHydroGrid(7, 7, (0.0, 7000.0), (0.0, 7000.0))
         mask = ones(7, 7)
         h    = [800.0 - 20.0 * i + 5.0 * j for i in 1:7, j in 1:7]
         b    = [-100.0 - 8.0 * j + 3.0 * i for i in 1:7, j in 1:7]
@@ -547,7 +547,7 @@
         end
 
         model, state = build(ub_slow)
-        N_slow = copy(field_values(state.N))
+        N_slow = copy(state.N)
 
         # Trait: K24 responds to u_b unless the sliding opening term is dropped; HAB does not
         @test N_responds_to_ub(model)
@@ -556,13 +556,13 @@
 
         # The same u_b reproduces the full update's N (the routing held is the one it used)
         N_from_ub!(model, grid, state, ub_slow)
-        @test field_values(state.N) == N_slow
+        @test state.N == N_slow
 
         # A faster u_b opens more cavities: N changes, and with q independent of u_b (no friction)
         # it is exactly what a full update at the new u_b gives
         N_from_ub!(model, grid, state, ub_fast)
-        @test field_values(model.abs_v_b) == ub_fast
+        @test model.abs_v_b == ub_fast
         _, state_fast = build(ub_fast)
-        @test !(field_values(state.N) ≈ N_slow)
-        @test field_values(state.N) ≈ field_values(state_fast.N) rtol = 1e-12
+        @test !(state.N ≈ N_slow)
+        @test state.N ≈ state_fast.N rtol = 1e-12
     end

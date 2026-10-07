@@ -1,9 +1,8 @@
 module FastHydrology
 
 using Statistics: mean
-using Oceananigans
-using Oceananigans.BoundaryConditions: fill_halo_regions!
 using ImageFiltering
+using SpecialFunctions: erf
 using FFTW
 using OffsetArrays
 using DocStringExtensions
@@ -11,7 +10,6 @@ using MAT
 using NCDatasets
 
 include("common/grid.jl")
-include("common/operations.jl")
 include("common/fft_convolution.jl")
 include("common/model.jl")
 include("common/state.jl")
@@ -38,7 +36,7 @@ include("models/hab/run.jl")
 include("models/shakti/model.jl")
 
 # common/grid.jl
-export AbstractHydroGrid, OGRectHydroGrid, ArrayHydroGrid
+export AbstractHydroGrid, ArrayHydroGrid
 export fill_halo!, alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
 export minus_gradient_x!, minus_gradient_y!

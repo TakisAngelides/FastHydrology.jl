@@ -26,10 +26,9 @@ An [`AbstractHydroGrid`](@ref) describes the geometry of the simulation domain (
 spacing) together with a small set of backend-specific operations -- allocating fields, filling
 halo/ghost points, convolution, gradients, masked reductions, and masked overwrites -- that the
 physics code in [Water Flux](@ref) and [Effective Pressure](@ref) is written against instead of
-reaching into a specific backend's internals directly. Two concrete grids are provided:
-[`OGRectHydroGrid`](@ref), wrapping an `Oceananigans.RectilinearGrid`, and [`ArrayHydroGrid`](@ref),
-built on plain `Array`s with no Oceananigans dependency (see [Plain-array grid](@ref ArrayGrid)). A
-different array/mesh backend can be supported the same way `ArrayHydroGrid` was, by implementing the
+reaching into a specific backend's internals directly. The concrete grid provided is
+[`ArrayHydroGrid`](@ref), built on plain `Array`s. A different array/mesh backend can be supported
+the same way `ArrayHydroGrid` is, by implementing the
 same interface (`alloc_field`, [`fill_halo!`](@ref), [`convolve!`](@ref),
 [`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`masked_mean`](@ref),
 [`masked_max_abs`](@ref), [`masked_max_abs_diff`](@ref), [`overwrite_where!`](@ref)) for a new
@@ -39,7 +38,6 @@ backend like `ArrayHydroGrid` only needs to implement `alloc_field`.
 
 ```@docs
 AbstractHydroGrid
-OGRectHydroGrid
 ArrayHydroGrid
 alloc_field
 fill_halo!

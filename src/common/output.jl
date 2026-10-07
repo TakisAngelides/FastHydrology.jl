@@ -158,8 +158,7 @@ end
 $(TYPEDSIGNATURES)
 
 Appends one time-slice to `writer`'s file: `fields[name]` for each `name` in `writer.field_names`
-(a `NamedTuple`, e.g. `(N = state.N, W = state.W)` -- values can be either an Oceananigans `Field`
-or a plain `Array`, matching whichever grid backend is in use), tagged with `step`/`time`. Flushes
+(a `NamedTuple`, e.g. `(N = state.N, W = state.W)`), tagged with `step`/`time`. Flushes
 to disk immediately (`NCDatasets.sync`) so the write actually lands even if the process is killed
 right after this call returns -- the entire point of this writer.
 """

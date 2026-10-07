@@ -23,8 +23,8 @@ T = Float64
 path = joinpath(@__DIR__, "input", "Kazmierczak2024", "THWAITES2km_m3_HAB_toto.mat")
 Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ = load_Kazmierczak(path)
 
-# Prepare a grid using the Oceananigans rectilinear grid, and visualize it.
-grid = OGRectHydroGrid(Nx, Ny, xlims, ylims; T = T)
+# Prepare a grid backed by plain arrays, and visualize it.
+grid = ArrayHydroGrid(Nx, Ny, xlims, ylims; T = T)
 fig = visualize_grid(grid)
 
 # Build the model using the data from the input file above. The model holds its model-specific
@@ -39,7 +39,7 @@ run!(sim)
 state.N .*= 1e-6 # makes N [MPa]
 state.N .= mask_field(state.N, state.mask, NaN)
 
-fig_N = visualize_field(state.N; plot_title = "N", transpose_data = true, colorrange = (0, 10))
+fig_N = visualize_field(grid, state.N; plot_title = "N", transpose_data = true, colorrange = (0, 10))
 ```
 
 ## Result
