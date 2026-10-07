@@ -74,9 +74,8 @@ Pkg.add(url="https://github.com/TakisAngelides/FastHydrology.jl")
 ```julia
 using FastHydrology
 
-# 1. Build a rectilinear grid. ArrayHydroGrid (plain Arrays, no Oceananigans) is a drop-in swap --
-#    see [Plain-array grid](@ref ArrayGrid).
-grid = OGRectHydroGrid(Nx, Ny, xlims, ylims)
+# 1. Build a rectilinear grid backed by plain Arrays.
+grid = ArrayHydroGrid(Nx, Ny, xlims, ylims)
 
 # 2. Build a model, providing the model-specific input fields. The melt rate is built from its
 #    terms: geothermal heat G and conductive heat into the ice q_T [W/m^2], plus frictional and
@@ -101,7 +100,7 @@ arguments, units, and governing equations.
 ## Examples
 
 Four examples are included. [Coupling to Shakti.jl](@ref ShaktiCoupling) and
-[Plain-array grid](@ref ArrayGrid) run on small synthetic geometry and execute live as part of the
+[Synthetic ice sheet](@ref Synthetic) run on small synthetic geometry and execute live as part of the
 docs build. [Kazmierczak et al 2024](@ref Kazmierczak2024) and [Height above buoyancy (HAB)](@ref
 HAB) run against real Thwaites Glacier data instead; that dataset (~90 MB) isn't shipped with the
 repository, so those two pages render pre-generated figures from a real run, with the full
@@ -111,7 +110,7 @@ yourself:
 - [Kazmierczak et al 2024](@ref Kazmierczak2024)
 - [Height above buoyancy (HAB)](@ref HAB)
 - [Coupling to Shakti.jl](@ref ShaktiCoupling)
-- [Plain-array grid (no Oceananigans)](@ref ArrayGrid)
+- [Synthetic ice sheet](@ref Synthetic)
 
 ## Checkpointing and periodic output
 
@@ -153,7 +152,7 @@ The package is organized around four abstractions:
 
 | Abstraction | Purpose | Concrete implementation(s) provided |
 |---|---|---|
-| [`AbstractHydroGrid`](@ref) | Grid geometry and the backend-specific glue (field allocation, halo filling, and a few array operations physics code needs without knowing the backend) | [`OGRectHydroGrid`](@ref) (wraps an `Oceananigans.RectilinearGrid`), [`ArrayHydroGrid`](@ref) (plain `Array`s, no Oceananigans) -- any grid backend can implement this interface |
+| [`AbstractHydroGrid`](@ref) | Grid geometry and the backend-specific glue (field allocation, halo filling, and a few array operations physics code needs without knowing the backend) | [`ArrayHydroGrid`](@ref) (plain `Array`s) -- any grid backend can implement this interface |
 | [`AbstractHydroModel`](@ref) | Model-specific constants and fields | [`KazmierczakHydroModel`](@ref), [`HABHydroModel`](@ref), [`ShaktiHydroModel`](@ref) |
 | [`AbstractHydroState`](@ref) | Fields common to every model: mask, ice thickness, bedrock elevation (inputs), effective pressure and water thickness (outputs) | [`HydroState`](@ref) (not used by [`ShaktiHydroModel`](@ref), which brings its own state) |
 | [`AbstractSimulation`](@ref) | How to run a model | [`SteadyStateSimulation`](@ref), [`TimeSimulation`](@ref) |
@@ -175,13 +174,10 @@ new model needs to add.
 
 **`src/common/`** -- shared infrastructure, touched by every model:
 
-- `grid.jl` -- the grid abstraction and its `OGRectHydroGrid`/`ArrayHydroGrid` implementations.
-- `operations.jl` -- registers `min`, `max`, `erf` as broadcastable Oceananigans field operations.
+- `grid.jl` -- the grid abstraction and its `ArrayHydroGrid` implementation.
 - `fft_convolution.jl` -- a cached, plan-reusing FFT convolution (used by the stress-gradient
   coupling smoothing in `models/kazmierczak2024/water_flux.jl`) that avoids ImageFiltering.jl's
-  per-call allocation. `grid.jl`'s [`convolve!`](@ref) passes it `interior(...)` views of the
-  Oceananigans `Field`s directly (not `Field.data`, which carries halo padding
-  `cached_fft_convolve!` would otherwise mistake for real domain) so there is no extra copy either.
+  per-call allocation.
 - `model.jl` -- just `abstract type AbstractHydroModel end`, the type every model subtypes.
 - `state.jl` -- `HydroState`.
 - `simulation.jl` -- [`AbstractSimulation`](@ref), [`SteadyStateSimulation`](@ref),

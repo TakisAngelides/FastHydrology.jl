@@ -156,10 +156,9 @@ Cached equivalent of `imfilter!(dest, src, centered(kernel))` with the default "
 for a point-symmetric `kernel` (so convolution and correlation coincide). `dest`, `src`, `kernel` are
 plain 2D `AbstractMatrix`es -- `kernel` is `(2*frb_x+1, 2*frb_y+1)`, not necessarily square. `dest`
 and `src` are read/written exactly as given (no `parent`-unwrapping), so the caller must pass views
-already restricted to the true logical domain -- e.g. `interior(field, :, :, 1)` for an Oceananigans
-`Field`, not `field.data` (which additionally carries halo padding `interior` already strips; unwrapping
-via `parent` inside this function used to silently reintroduce that padding as if it were domain,
-corrupting the result -- see `convolve!`'s `OGRectHydroGrid` method in grid.jl). Since `src`/`dest`
+already restricted to the true logical domain -- for a grid backend whose fields carry halo
+padding, a view of the interior cells, never the padded storage (which would be convolved as if it
+were domain, corrupting every cell). Since `src`/`dest`
 are only ever read/written through broadcasting into this function's own cached buffers below, using
 them as given (rather than materializing a plain-`Array` copy first) costs nothing extra: no
 allocation happens here beyond the one-time cache build in `get_fft_conv_cache!`. `cache_ref` should

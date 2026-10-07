@@ -10,7 +10,7 @@ internal loop of its own to hook a fixed interval into (see `AbstractOutputWrite
 """
 
 @testset "NetCDFOutputWriter: write, close, read back" begin
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mask = ones(5, 5)
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -33,7 +33,7 @@ internal loop of its own to hook a fixed interval into (see `AbstractOutputWrite
         for k in 1:3
             run!(sim)
             write_output!(writer, k, Float64(k), (N = state.N, W = state.W, mdot = model.mdot_fixed))
-            expected_N[k] = copy(field_values(state.N))
+            expected_N[k] = copy(state.N)
         end
         close_output!(writer)
 
@@ -49,7 +49,7 @@ internal loop of its own to hook a fixed interval into (see `AbstractOutputWrite
 end
 
 @testset "NetCDFOutputWriter: overwrite keyword" begin
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mktempdir() do dir
         path = joinpath(dir, "out.nc")
         writer = NetCDFOutputWriter(path, grid, [:N])
@@ -71,7 +71,7 @@ end
     # output file already has slices up through step 5 written by the time the process was killed
     # -- resuming from the step-3 checkpoint must not leave duplicate/orphaned slices for steps
     # 4-5 once the caller's loop replays them.
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mask = ones(5, 5)
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -113,7 +113,7 @@ end
 @testset "NetCDFOutputWriter: resume_step with nothing to trim" begin
     # No slices past resume_step exist -- _trim_output_after! should be a no-op, not corrupt or
     # empty the file.
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mktempdir() do dir
         path = joinpath(dir, "out.nc")
         writer = NetCDFOutputWriter(path, grid, [:N])
@@ -133,7 +133,7 @@ end
 end
 
 @testset "NetCDFOutputWriter: missing field errors" begin
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mktempdir() do dir
         path = joinpath(dir, "out.nc")
         writer = NetCDFOutputWriter(path, grid, [:N, :W])
@@ -143,7 +143,7 @@ end
 end
 
 @testset "save_checkpoint/load_checkpoint!: round-trip on HydroState" begin
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mask = ones(5, 5)
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
@@ -166,16 +166,16 @@ end
 
         @test step == 42
         @test time == 123.5
-        @test field_values(fresh.mask) == field_values(state.mask)
-        @test field_values(fresh.h)    == field_values(state.h)
-        @test field_values(fresh.b)    == field_values(state.b)
-        @test field_values(fresh.N)    == field_values(state.N)
-        @test field_values(fresh.W)    == field_values(state.W)
+        @test fresh.mask == state.mask
+        @test fresh.h    == state.h
+        @test fresh.b    == state.b
+        @test fresh.N    == state.N
+        @test fresh.W    == state.W
     end
 end
 
 @testset "save_checkpoint: atomic write leaves no partial .tmp file behind" begin
-    grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+    grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
     mask = ones(5, 5)
     h    = fill(500.0, 5, 5)
     b    = fill(-100.0, 5, 5)

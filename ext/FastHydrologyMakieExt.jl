@@ -10,11 +10,14 @@ running a simulation -- users who never call `visualize_field`/`visualize_grid` 
 module FastHydrologyMakieExt
 
 using FastHydrology
-using FastHydrology: AbstractHydroGrid, OGRectHydroGrid
+using FastHydrology: AbstractHydroGrid
 using CairoMakie
 using CairoMakie: Reverse
-using Oceananigans
-using Oceananigans: interior, nodes, xnodes, ynodes, xspacings, yspacings, Center
+
+# Cell-centre coordinates of `grid`, measured from its lower-left corner (grids only store
+# `Nx`/`Ny`/`dx`/`dy`, not an absolute origin).
+_xcenters(grid::AbstractHydroGrid) = ((1:grid.Nx) .- 0.5) .* grid.dx
+_ycenters(grid::AbstractHydroGrid) = ((1:grid.Ny) .- 0.5) .* grid.dy
 
 """
     visualize_field(x, y, data; kwargs...)
@@ -65,33 +68,30 @@ function FastHydrology.visualize_field(x, y, data;
 end
 
 """
-    visualize_field(field::Oceananigans.Fields.Field; kwargs...)
+    visualize_field(grid::AbstractHydroGrid, field; kwargs...)
 
-Visualize an Oceananigans field.
+Visualize a cell-centred `field` on `grid`, with axes in grid coordinates measured from the grid's
+lower-left corner.
 """
-function FastHydrology.visualize_field(field::Oceananigans.Fields.Field; kwargs...)
+function FastHydrology.visualize_field(grid::AbstractHydroGrid, field; kwargs...)
 
-    data = interior(field)[:, :, 1]
-    x, y = nodes(field)
-    FastHydrology.visualize_field(x, y, data; kwargs...)
+    FastHydrology.visualize_field(_xcenters(grid), _ycenters(grid), field; kwargs...)
 
 end
 
 """
-    visualize_grid(grid::OGRectHydroGrid)
+    visualize_grid(grid::AbstractHydroGrid)
 
-Visualize the corners of an `OGRectHydroGrid`, showing cell centers and boundaries. For grid types
-other than `OGRectHydroGrid`, add a method that extracts x/y node positions and spacings
-appropriate to that grid.
+Visualize the corners of `grid`, showing cell centers and boundaries. Works for any grid type that
+exposes the `Nx`, `Ny`, `dx`, `dy` fields of the grid interface; coordinates are measured from the
+grid's lower-left corner.
 """
-function FastHydrology.visualize_grid(grid::OGRectHydroGrid)
+function FastHydrology.visualize_grid(grid::AbstractHydroGrid)
 
-    og = grid.grid  # Oceananigans-specific internals, kept local to this method
-
-    xc = xnodes(og, Center())
-    yc = ynodes(og, Center())
-    dx = xspacings(og, Center())
-    dy = yspacings(og, Center())
+    xc = _xcenters(grid)
+    yc = _ycenters(grid)
+    dx = fill(grid.dx, grid.Nx)
+    dy = fill(grid.dy, grid.Ny)
 
     Nx = grid.Nx
     Ny = grid.Ny

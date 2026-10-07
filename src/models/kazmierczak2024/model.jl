@@ -588,7 +588,7 @@ real `taub` field is already available).
 # Fields
 - `tau_b::A`: fixed per-cell basal shear stress magnitude [Pa], wrapped via `alloc_field(grid, ...)`
   at construction (same idiom `KazmierczakHydroModel`'s own constructor uses for
-  `kappa`/`abs_v_b`/`A_visc`) so it's a proper `Field` on an `OGRectHydroGrid`, not a bare `Array`
+  `kappa`/`abs_v_b`/`A_visc`) so it has the grid's own field type
 """
 struct PrescribedFieldSlidingLaw{A} <: AbstractSlidingLaw
     tau_b::A
@@ -673,10 +673,9 @@ Shakti.jl's own `RegularizedCoulombV0SlidingLaw` (same field-`C`-plus-fixed-`u0`
 
 # Fields
 - `c_till::A`: per-cell till-strength coefficient field, wrapped via `alloc_field(grid, ...)` at
-  construction (same units/role as the scalar version's `c_till`) -- not a bare `Array`: mixing a
-  raw `Array` into a multi-operand `@.` expression alongside `Field`s (as `update_tau_b!` needs to,
-  see `sliding_law.jl`) hits Oceananigans' `AbstractOperations` machinery, which expects a proper
-  `Field`, not an arbitrary `AbstractArray`.
+  construction (same units/role as the scalar version's `c_till`), so it has the grid's own field
+  type and mixes cleanly with the model's other fields in `update_tau_b!`'s `@.` expression (see
+  `sliding_law.jl`).
 - `q::F`: velocity exponent (dimensionless)
 - `u0::F`: velocity scale [m/s]
 """
@@ -690,7 +689,7 @@ $(TYPEDSIGNATURES)
 
 Builds a [`RegularizedCoulombFieldSlidingLaw`](@ref) on grid `g` from a per-cell `c_till` field,
 wrapping it via `alloc_field(g, c_till)` (same idiom `KazmierczakHydroModel`'s own constructor uses
-for `kappa`/`abs_v_b`/`A_visc`) so it's a proper `Field` on an `OGRectHydroGrid`, not a bare `Array`.
+for `kappa`/`abs_v_b`/`A_visc`) so it has the grid's own field type.
 """
 RegularizedCoulombFieldSlidingLaw(g::AbstractHydroGrid, c_till; q = 1/3, u0 = perYear2perSecond(100.0)) =
     RegularizedCoulombFieldSlidingLaw(alloc_field(g, float.(c_till)), float(q), float(u0))
@@ -716,10 +715,8 @@ diagnostic helper the other laws provide for tests, see its own docstring in `sl
 intentionally not defined for this type since `lambda` can't be reduced to one number; only
 `update_tau_b!` (the field version `resolve_q!` actually calls) is implemented.
 
-`lambda` is wrapped via `alloc_field(grid, ...)` at construction, not a bare `Array` -- see
-[`RegularizedCoulombFieldSlidingLaw`](@ref)'s own field docstring for why that matters (a raw
-`Array` mixed into `update_tau_b!`'s multi-operand `@.` expression alongside `Field`s hits
-Oceananigans' `AbstractOperations` machinery, which expects a proper `Field`).
+`lambda` is wrapped via `alloc_field(grid, ...)` at construction -- see
+[`RegularizedCoulombFieldSlidingLaw`](@ref)'s own field docstring for why.
 
 # Fields
 - `C::F`: Coulomb friction coefficient (matches Shakti.jl's `RegularizedCoulombSlidingLaw.C`)
@@ -758,13 +755,9 @@ Convert a sliding law's parameters to float type `T`, mirroring the explicit `T(
 type-stable with the rest of the model when `T` is not `Float64` (e.g. `Float32` grids).
 """
 convert_sliding_law(::Type{T}, law::NoFrictionSlidingLaw) where {T <: AbstractFloat} = law
-# Field-valued laws: `T.(field)` does NOT preserve Field-ness (Oceananigans' AbstractOperations
-# broadcast over a Field materializes its underlying padded/halo array instead, silently corrupting
-# the shape) -- rather than converting through that broadcast, skip the conversion entirely when
-# it's already a no-op (eltype already T, the only case our own runs ever hit; we don't mix
-# precisions), and error otherwise rather than silently produce a corrupted Field.
+# Field-valued laws: returned unchanged (no copy) when the eltype already matches.
 convert_sliding_law(::Type{T}, law::PrescribedFieldSlidingLaw) where {T <: AbstractFloat} =
-    eltype(law.tau_b) === T ? law : error("convert_sliding_law: changing PrescribedFieldSlidingLaw's float type is not supported (would corrupt its Field) -- construct it directly with the target type instead")
+    eltype(law.tau_b) === T ? law : PrescribedFieldSlidingLaw(T.(law.tau_b))
 convert_sliding_law(::Type{T}, law::WeertmanSlidingLaw) where {T <: AbstractFloat} =
     WeertmanSlidingLaw(C = T(law.C), q = T(law.q))
 convert_sliding_law(::Type{T}, law::PowerPlasticSlidingLaw) where {T <: AbstractFloat} =
@@ -772,9 +765,9 @@ convert_sliding_law(::Type{T}, law::PowerPlasticSlidingLaw) where {T <: Abstract
 convert_sliding_law(::Type{T}, law::RegularizedCoulombSlidingLaw) where {T <: AbstractFloat} =
     RegularizedCoulombSlidingLaw(c_till = T(law.c_till), q = T(law.q), u0 = T(law.u0))
 convert_sliding_law(::Type{T}, law::RegularizedCoulombFieldSlidingLaw) where {T <: AbstractFloat} =
-    eltype(law.c_till) === T ? law : error("convert_sliding_law: changing RegularizedCoulombFieldSlidingLaw's float type is not supported (would corrupt its Field) -- construct it directly with the target type instead")
+    eltype(law.c_till) === T ? law : RegularizedCoulombFieldSlidingLaw(T.(law.c_till), T(law.q), T(law.u0))
 convert_sliding_law(::Type{T}, law::ShaktiRegularizedCoulombSlidingLaw) where {T <: AbstractFloat} =
-    eltype(law.lambda) === T ? law : error("convert_sliding_law: changing ShaktiRegularizedCoulombSlidingLaw's float type is not supported (would corrupt its Field) -- construct it directly with the target type instead")
+    eltype(law.lambda) === T ? law : ShaktiRegularizedCoulombSlidingLaw(T(law.C), T(law.n), T(law.inv_n), T.(law.lambda))
 
 
 """

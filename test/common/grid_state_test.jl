@@ -1,5 +1,5 @@
     @testset "Grid and state construction" begin
-        grid = OGRectHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
+        grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
         @test grid.Nx == 5
         @test grid.Ny == 5
 
@@ -8,6 +8,6 @@
         b    = fill(-100.0, 5, 5)
         state = HydroState(grid, mask, h, b)
 
-        @test all(isfinite, field_values(state.N))
-        @test all(isfinite, field_values(state.W))
+        @test all(isfinite, state.N)
+        @test all(isfinite, state.W)
     end

@@ -32,7 +32,7 @@ Literate.markdown(
 )
 
 Literate.markdown(
-    joinpath(@__DIR__, "src", "examples", "ArrayGrid.jl"),
+    joinpath(@__DIR__, "src", "examples", "Synthetic.jl"),
     joinpath(@__DIR__, "src", "examples");
     config = Dict("credit" => false)
 )
@@ -41,7 +41,7 @@ example_pages = [
     "examples/Kazmierczak2024.md",
     "examples/HAB.md",
     "examples/ShaktiCoupling.md",
-    "examples/ArrayGrid.md",
+    "examples/Synthetic.md",
 ]
 
 ref_pages = ["API_public.md", "references.md"]

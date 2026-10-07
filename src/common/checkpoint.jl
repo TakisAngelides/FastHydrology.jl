@@ -13,21 +13,17 @@
 """
 $(TYPEDSIGNATURES)
 
-Reads a state/model field back as a plain `Array{Float64}`, ready to write to disk:
-`interior(...)` for an Oceananigans `Field` (`OGRectHydroGrid`), the array itself otherwise
-(`ArrayHydroGrid`). Shared by [`save_checkpoint`](@ref) and [`write_output!`](@ref).
+Reads a state/model field back as a plain `Array`, ready to write to disk. A grid backend whose
+fields are not plain arrays adds a method here. Shared by [`save_checkpoint`](@ref) and [`write_output!`](@ref).
 """
-_output_array(field::Oceananigans.Fields.Field) = Array(interior(field, :, :, 1))
 _output_array(field::AbstractArray) = Array(field)
 
 """
 $(TYPEDSIGNATURES)
 
-Copies plain array `data` into `field` in place: broadcasts into `interior(...)` for an
-Oceananigans `Field` (`OGRectHydroGrid`), into `field` directly otherwise (`ArrayHydroGrid`).
-Inverse of [`_output_array`](@ref); used by [`load_checkpoint!`](@ref).
+Copies plain array `data` into `field` in place. A grid backend whose fields are not plain arrays
+adds a method here. Inverse of [`_output_array`](@ref); used by [`load_checkpoint!`](@ref).
 """
-_copy_into!(field::Oceananigans.Fields.Field, data) = (interior(field, :, :, 1) .= data; nothing)
 _copy_into!(field::AbstractArray, data) = (field .= data; nothing)
 
 """

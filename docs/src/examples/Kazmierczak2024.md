@@ -28,8 +28,8 @@ T = Float64
 path = joinpath(@__DIR__, "input", "Kazmierczak2024", "THWAITES2km_m3_HAB_toto.mat")
 Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, ṁ, κ = load_Kazmierczak(path; bed_rheology = :hard)
 
-# Prepare a grid using the Oceananigans rectilinear grid, and visualize it.
-grid = OGRectHydroGrid(Nx, Ny, xlims, ylims; T = T)
+# Prepare a grid backed by plain arrays, and visualize it.
+grid = ArrayHydroGrid(Nx, Ny, xlims, ylims; T = T)
 fig = visualize_grid(grid)
 
 # Build the model using the data from the input file above. The model holds its model-specific
@@ -63,9 +63,9 @@ model.q .= mask_field(model.q, state.mask, NaN)
 state.N .= mask_field(state.N, state.mask, NaN)
 state.W .= mask_field(state.W, state.mask, NaN)
 
-fig_q = visualize_field(model.q; plot_title = "Distributed water flux q [10⁴ m² a⁻¹]", transpose_data = true, colorrange = (0, 10))
-fig_W = visualize_field(state.W; plot_title = "Water thickness W [m] (DarcyWeisbachThickness)", transpose_data = true, colorrange = extrema(filter(!isnan, state.W.data)))
-fig_N = visualize_field(state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, colorrange = (0, 10))
+fig_q = visualize_field(grid, model.q; plot_title = "Distributed water flux q [10⁴ m² a⁻¹]", transpose_data = true, colorrange = (0, 10))
+fig_W = visualize_field(grid, state.W; plot_title = "Water thickness W [m] (DarcyWeisbachThickness)", transpose_data = true, colorrange = extrema(filter(!isnan, state.W)))
+fig_N = visualize_field(grid, state.N; plot_title = "Effective pressure N [MPa]", transpose_data = true, colorrange = (0, 10))
 
 # ## Adding a basal sliding law
 #
@@ -98,7 +98,7 @@ run!(SteadyStateSimulation(model_sliding, grid, state_sliding))
 
 model_sliding.tau_b .*= 1e-6 # makes tau_b [MPa]
 model_sliding.tau_b .= mask_field(model_sliding.tau_b, state_sliding.mask, NaN)
-fig_tau_b = visualize_field(model_sliding.tau_b; plot_title = "Basal shear stress tau_b [MPa]", transpose_data = true, colorrange = extrema(filter(!isnan, model_sliding.tau_b.data)))
+fig_tau_b = visualize_field(grid, model_sliding.tau_b; plot_title = "Basal shear stress tau_b [MPa]", transpose_data = true, colorrange = extrema(filter(!isnan, model_sliding.tau_b)))
 
 # ## Computing the melt rate faithfully from Eq. 3
 #
