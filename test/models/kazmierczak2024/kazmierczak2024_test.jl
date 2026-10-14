@@ -566,3 +566,31 @@
         @test !(state.N ≈ N_slow)
         @test state.N ≈ state_fast.N rtol = 1e-12
     end
+
+@testset "rho_sw in the erf argument of N (N = 0 at flotation)" begin
+    Nx, Ny, dx = 20, 5, 1e3
+    grid = ArrayHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dx))
+    b = [-1000.0 - 0.02 * (i - 0.5) * dx - 0.005 * (j - 0.5) * dx for i in 1:Nx, j in 1:Ny]  # sloped: nonzero potential gradients
+    h = fill(2000.0, Nx, Ny)
+    i0 = 10
+    h[i0, :] .= -1028.0 .* b[i0, :] ./ 917.0    # exactly at flotation in seawater of density 1028
+    z = zeros(Nx, Ny)
+    mdot = fill(1e-6, Nx, Ny)
+    G = mdot .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W
+    function run(; kw...)
+        m = KazmierczakHydroModel(grid, z, z .+ 1, z .+ 1e-24, G, z; coupling_length_kamb86 = 0.0,
+                                  dissipation_melt = false, dissipation_verbose = false, kw...)
+        s = HydroState(grid, ones(Nx, Ny), copy(h), copy(b))
+        update_steady_state!(m, grid, s)
+        return m, s
+    end
+    m0, s0 = run()
+    m1, s1 = run(rho_sw = 1028.0)
+    mw, sw = run(rho_sw = 1000.0)
+    @test m0.rho_sw == m0.rho_w
+    @test s0.N == sw.N                          # default is literal K24 Eq. 7
+    @test s0.N[i0, 3] > 0.01 * m0.N_inf[i0, 3]  # freshwater phi0 leaves N > 0 at flotation
+    @test s1.N[i0, 3] < 1e-6 * m1.N_inf[i0, 3]  # seawater density: N -> 0 at flotation
+    @test all(isfinite, s1.N)
+    @test all(s1.N .<= s0.N .+ 1e-9)           # b < 0: rho_sw only lowers the erf argument, never raises N
+end

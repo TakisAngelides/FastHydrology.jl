@@ -814,6 +814,7 @@ for how the split is made transparent to callers.
 struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
+    rho_sw          ::T    # Density of sea water [kg/m3], used only for the b term of the erf argument in update_N! (so N -> 0 at flotation); defaults to rho_w (literal K24 Eq. 7)
     rho_i           ::T    # Density of ice [kg/m3]
     g               ::T    # Gravitational acceleration [m/s2]
     L_w             ::T    # Latent heat of fusion for ice [J/kg]
@@ -1062,6 +1063,7 @@ function KazmierczakHydroModel(
     q_T_in::AbstractArray{<:AbstractFloat};
     i_eb          = nothing,                      # Water reaching the bed from above, not melted there [kg/m2/s]; nothing = zero
     rho_w         = 1000.0,# Density of fresh water [kg/m3]
+    rho_sw        = nothing,                      # Density of sea water [kg/m3] for the erf argument of N (N = 0 at flotation); nothing = rho_w, i.e. the paper's Eq. 7 as written. Use the ice model's flotation density (e.g. 1028 for Yelmo) in coupled runs
     rho_i         = 917.0,                        # Density of ice [kg/m3]
     g             = 9.81,                         # Gravitational acceleration [m/s2]
     L_w           = KAZMIERCZAK_DEFAULT_L_W,       # Latent heat of fusion for ice [J/kg]
@@ -1112,6 +1114,7 @@ function KazmierczakHydroModel(
 
     # Physical constants
     rho_w         = T(rho_w)
+    rho_sw        = T(something(rho_sw, rho_w))
     rho_i         = T(rho_i)
     g             = T(g)
     L_w           = T(L_w)
@@ -1218,7 +1221,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
+        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_qN_iters, qN_rtol, qN_verbose
 )

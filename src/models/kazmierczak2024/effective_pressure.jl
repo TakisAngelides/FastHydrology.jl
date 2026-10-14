@@ -16,7 +16,12 @@ H_soft, H, Po, N_inf, N -- is computed only on grounded cells, in one fused pass
 rho_i*g*h everywhere). On grounded cells each quantity is the same expression, evaluated in the same
 order, as the standalone `update_Q!`/`update_S_inf!`/`update_H!`/`update_Po!`/`update_N_inf!`
 broadcasts below (kept for direct use and tests), so the grounded values are bit-identical to calling
-those in sequence. Fusing them also avoids 8 separate full-grid passes, which mattered because this
+those in sequence.
+
+The erf argument is `rho_i*g*h + rho_sw*g*b` (`model.rho_sw`, default `rho_w`), not `model.phi0`: the paper's
+`phi0` uses freshwater density, so at flotation (`rho_i*h = -rho_sw*b`) it equals `(rho_sw - rho_w)*g*|b|`
+instead of 0, and N would not reach 0 at the grounding line (K24 Eq. 5c). Routing, gradients and dissipation
+keep `phi0`. Fusing them also avoids 8 separate full-grid passes, which mattered because this
 runs every sweep of the `(q, N)` coupling loop.
 """
 function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
@@ -34,7 +39,7 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     update_N_grounded_kernel!(state.N, model.Q, model.S_inf, model.H_hard, model.H_soft, model.H, model.Po, model.N_inf,
         model.q, model.abs_grad_phi0, model.kappa, model.abs_v_b, model.A_visc, model.phi0, state.h, state.mask,
         grid.Nx, grid.Ny, model.l_c, K_fac, grad_exp, Q_exp, model.H_0, model.F_till, Q_c, model.rho_i, model.g,
-        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.sigmat, sqrt_pi)
+        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.sigmat, sqrt_pi, state.b, model.rho_sw)
 
     for f in (state.N, model.Q, model.S_inf, model.H, model.Po, model.N_inf)
         fill_halo!(f, grid)
@@ -103,7 +108,7 @@ end
 function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
                                    q, abs_grad_phi0, kappa, abs_v_b, A_visc, phi0, h, mask,
                                    Nx, Ny, l_c, K_fac, grad_exp, Q_exp, H_0, F_till, Q_c, rho_i, g,
-                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, sigmat, sqrt_pi)
+                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, sigmat, sqrt_pi, b, rho_sw)
     z = zero(eltype(N))
     @inbounds for i in 1:Nx
 
@@ -141,8 +146,10 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
                 sigmat * Po_ij), Po_ij)
         end
 
-        # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment)
-        N_ij = Ninf_ij == 0.0 ? z : max(0.0, erf(sqrt_pi * phi0[i, j] / (2 * Ninf_ij)) * Ninf_ij)
+        # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment). The erf argument
+        # uses the seawater density for the b term, so it vanishes at flotation (N = 0 at the GL, K24 Eq. 5c)
+        phi0_N = rho_i * g * h[i, j] + rho_sw * g * b[i, j]
+        N_ij = Ninf_ij == 0.0 ? z : max(0.0, erf(sqrt_pi * phi0_N / (2 * Ninf_ij)) * Ninf_ij)
 
         Q[i, j] = Q_ij; S_inf[i, j] = S_ij; H_hard[i, j] = Hh; H_soft[i, j] = Hs; H[i, j] = H_ij
         N_inf[i, j] = Ninf_ij; N[i, j] = N_ij
