@@ -1,0 +1,66 @@
+%==============================================================================
+\section{Fixed points: dissipation, $(q, N)$ and the coupled velocity}\label{sec:fixedpoints}
+%==============================================================================
+
+The steady K24 model is explicit except for two feedbacks, both through the water source: the dissipation melt depends
+on $q$, and the frictional heat of an $N$-dependent sliding law depends on $N$, which depends on $q$. Both are solved by
+Picard iteration around the routing. A third feedback, between $N$ and the ice velocity, is the host's to solve, with
+\code{N\_from\_ub!}.
+
+\subsection{Which loop runs}\label{fp:which}
+\code{resolve\_q!} dispatches on the pair (dissipation trait, sliding law):
+\begin{center}\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.4cm}>{\raggedright\arraybackslash}p{5.2cm}>{\raggedright\arraybackslash}p{6.4cm}}
+\toprule
+dissipation & sliding law & what runs \\
+\midrule
+off & NoFriction, PrescribedField, Weertman & one routing pass \\
+on & NoFriction, PrescribedField, Weertman & Picard on $q$: \code{max\_dissipation\_iters} = 20, \code{dissipation\_rtol} = $10^{-12}$ \\
+either & PowerPlastic, RegularizedCoulomb(Field), ShaktiRegularizedCoulomb & joint Picard on $(q, N)$: \code{max\_qN\_iters} = 20, \code{qN\_rtol} = $10^{-8}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The $N$-independent laws compute $\tau_b$ once. The joint loop is a widening of the dissipation loop rather than a second loop
+around it: nesting would reconverge $q$ fully for a stale $N$ at every outer sweep.
+
+\subsection{The dissipation loop}\label{fp:diss}
+Each sweep: $\mdot_{\rm total} = \mdot_{\rm fixed} + \ieb + Q_b/L_w + Q_{\rm diss}(q_{\rm prev})/L_w$; route; $q$. The stopping test is relative to
+the largest $q$ on grounded cells,
+\[
+\max_{\rm grounded}|q - q_{\rm prev}| \le 10^{-12}\max_{\rm grounded}|q|.
+\]
+The dissipation is a small fraction of the source on realistic geometries, so the iteration contracts quickly; the
+tour checks that one more sweep after convergence changes $q$ by less than $10^{-10}$. $q$ persists in the model between
+calls, so in a coupled run the first sweep starts from the previous step's $q$. With \code{FaceDissipation} the term uses the
+face fluxes of the previous sweep (they are computed after routing, in \code{update\_q\_from\_psi\_out!}).
+
+\subsection{The $(q, N)$ loop}\label{fp:qN}
+Each sweep: $\tau_b(N)$; source with friction and (if on) dissipation; route; $q$; \code{update\_N!}. It stops when both $q$ and
+$N$ have converged to \code{qN\_rtol} relative to their own maxima. $N$ starts from \code{state.N}: zero on a fresh state, so the
+first sweep has no friction and the heat ramps up over the sweeps (a cold start, not a bug). In a coupled run \code{state.N}
+carries over between steps, so the loop starts warm. If the cap is reached, \code{qN\_verbose} (on by default) logs ``did NOT
+converge'' with the sweep count; the model then carries on with the last iterate.
+
+Convergence is not guaranteed in general: a strongly $N$-dependent friction with large sliding speeds can make the map
+$N\mapsto\tau_b\mapsto q\mapsto N$ expansive. The tour's fixture converges, and its extra sweep changes $q$ and $N$ by less than
+$10^{-6}$. For coupled runs the Kryonomos drivers use \code{PrescribedFieldSlidingLaw} with Yelmo's own $\tau_b$, which needs no
+loop at all.
+
+\subsection{$N$ and the ice velocity}\label{fp:ub}
+$\Ninf$ grows with $|u_b|$ (cavity opening), and the ice model's sliding falls steeply with $N$. If the ice model takes $N$ once
+per step from the previous velocity, the two alternate between two states from step to step (the docstring of
+\code{N\_responds\_to\_ub}). The cure is to solve them together: inside the ice model's velocity (Picard) iteration, call
+\begin{verbatim}
+N_from_ub!(model, grid, state, abs_v_b_of_this_iteration)
+\end{verbatim}
+which holds the routing ($q$, $|\nabla\phi_0|$, $\phi_0$) from the step's full update and re-evaluates only \code{update\_N!}, a
+single threaded pass over grounded cells. Holding the routing is exact when $q$ does not depend on $u_b$, which is the case
+with a prescribed $\tau_b$ and no dissipation; with friction from a sliding law in the source, the routing lags the velocity
+iteration by one full update. \code{N\_responds\_to\_ub(model)} tells the host whether to install the hook (\code{false} for
+\code{EfficientOnly}, HAB and Shakti).
+
+\subsection{Cost per sweep}\label{fp:cost}
+Per sweep the loops do one source update (broadcasts), one replay of the tape, one $q$ conversion (with face fluxes for the
+face options) and, in the joint loop, one \code{update\_N!}. The potential, filling, smoothing, fractions and the recording of
+the tape are done once per \code{update\_q!}, outside the loop. Measured times on the real grids are in
+Section~\ref{life:timing}.

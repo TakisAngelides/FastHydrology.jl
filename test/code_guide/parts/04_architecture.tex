@@ -1,0 +1,153 @@
+%==============================================================================
+\section{How the package is built}\label{sec:architecture}
+%==============================================================================
+
+FastHydrology is plain Julia on plain arrays: no GPU backend, no preferences, no macros of its own. Its structure
+rests on four ideas: one grid interface every model is written against; a state shared by all models and a
+model object that holds everything model-specific; every option a type, so each choice is made once by dispatch;
+and optional dependencies as package extensions.
+
+\subsection{Abstract types and what each concrete type supplies}\label{arch:types}
+\begin{center}\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{7.2cm}}
+\toprule
+abstract type & concrete types & contract \\
+\midrule
+\code{Abstract\allowbreak{}Hydro\allowbreak{}Grid} & \code{ArrayHydroGrid\{T\}} & fields \code{Nx}, \code{Ny}, \code{dx}, \code{dy}; \code{alloc\_field}; optionally the field operations of \file{common/\allowbreak{}grid.jl} \\
+\code{Abstract\allowbreak{}Hydro\allowbreak{}State} & \code{HydroState\{A\}} & any fields; checkpoints use \code{fieldnames} \\
+\code{Abstract\allowbreak{}Hydro\allowbreak{}Model} & \code{Kazmierczak\allowbreak{}Hydro\allowbreak{}Model}, \code{HABHydroModel}, \code{Shakti\allowbreak{}Hydro\allowbreak{}Model} & \code{update\_steady\_state!(model, grid, state)} (steady models) or \code{run!}/\code{step!} on a \code{TimeSimulation}; optionally \code{N\_responds\_to\_ub} \\
+\code{Abstract\allowbreak{}Simulation} & \code{Steady\allowbreak{}State\allowbreak{}Simulation}, \code{TimeSimulation} & \code{run!} \\
+\code{Abstract\allowbreak{}Output\allowbreak{}Writer} & \code{Net\allowbreak{}CDFOutput\allowbreak{}Writer} & \code{write\_output!}, \code{close\_output!} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The grid interface.} A grid exposes \code{Nx}, \code{Ny}, \code{dx}, \code{dy} as fields, read directly by the
+physics code (\code{grid.dx}); the float type is \code{typeof(grid.dx)}. The only function a new grid must implement is
+\code{alloc\_field}, the one place that knows the field type. The others have plain-array defaults in
+\file{common/grid.jl}: \code{fill\_halo!} (a no-op), \code{convolve!} (ImageFiltering's \code{imfilter!}),
+\code{minus\_gradient\_x!/y!}, \code{masked\_mean}, \code{masked\_max\_abs}, \code{masked\_max\_abs\_diff},
+\code{overwrite\_where!}. \code{ArrayHydroGrid} overrides only \code{alloc\_field} and \code{convolve!} (with the cached FFT).
+The interface is the remnant of v1, where an Oceananigans-backed grid carried halo storage; that grid was removed in
+v2.0.0 (commit \code{56f381e}), and the calls to \code{fill\_halo!} that remain in the physics are no-ops.
+
+\paragraph{State versus model.} \code{HydroState} holds only what every model shares: inputs \code{mask}, \code{h}, \code{b}
+and outputs \code{N}, \code{W}. Everything else (inputs such as $\kappa$, $|u_b|$, $A$, $G$, $q_T$, and every intermediate
+field) lives on the model. One state type thus serves all models, and the checkpoint code needs no knowledge of any
+model.
+
+\subsection{Options as types}\label{arch:options}
+Every switch of the K24 model is a value of an abstract option type, stored in the model's type parameters or fields,
+and each function that depends on it has one method per value. The choice is therefore resolved by the compiler
+when the model's type is known, not tested in the loops. For example, the dissipation melt:
+\begin{verbatim}
+abstract type AbstractDissipationMelt end
+struct DissipationMeltOn  <: AbstractDissipationMelt end
+struct DissipationMeltOff <: AbstractDissipationMelt end
+add_dissipation_term!(model, ::DissipationMeltOff) = (model.Q_diss .= 0; nothing)
+add_dissipation_term!(model, ::DissipationMeltOn)  =
+    add_dissipation_term!(model, model.dissipation_discretization)
+\end{verbatim}
+The constructor turns the user's \code{dissipation\_melt = true} into \code{DissipationMeltOn()}. The option families:
+\begin{center}\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{5.2cm}>{\raggedright\arraybackslash}p{5.4cm}}
+\toprule
+abstract type & values & dispatched in \\
+\midrule
+\endhead
+\code{Abstract\allowbreak{}Dissipation\allowbreak{}Melt} & \code{Dissipation\allowbreak{}Melt\allowbreak{}On}, \code{Dissipation\allowbreak{}Melt\allowbreak{}Off} & \code{resolve\_q!}, \code{add\_dissipation\_term!} \\
+\code{Abstract\allowbreak{}Psi\allowbreak{}Out\allowbreak{}Algorithm} & \code{TapedPsiOut}, \code{RecursivePsiOut}, \code{IterativePsiOut}, \code{Topological\allowbreak{}Psi\allowbreak{}Out} & \code{route\_psi\_out!} \\
+\code{Abstract\allowbreak{}Routing\allowbreak{}Scheme} & \code{Warner}, \code{GDSWarner}, \code{Quinn}, \code{Tarboton}, \code{Modified\allowbreak{}Tarboton}, \code{GDSTarboton} & \code{prepare\_routing!}, \code{cell\_weights!}, \code{n\_directions} \\
+\code{Abstract\allowbreak{}Fill\allowbreak{}Algorithm} & \code{Priority\allowbreak{}Flood\allowbreak{}Fill}, \code{JacobiFill}, \code{Lowest\allowbreak{}Neighbour\allowbreak{}Fill} & \code{fill\_potential!} \\
+\code{Abstract\allowbreak{}QConversion} & \code{QFrom\allowbreak{}Face\allowbreak{}Average}, \code{QFromOutflow} & \code{q\_from\_psi\_out!} \\
+\code{Abstract\allowbreak{}Dissipation\allowbreak{}Discretization} & \code{FaceDissipation}, \code{Cell\allowbreak{}Centred\allowbreak{}Dissipation} & \code{add\_dissipation\_term!} \\
+\code{Abstract\allowbreak{}Friction\allowbreak{}Discretization} & \code{Cell\allowbreak{}Centred\allowbreak{}Friction}, \code{Staggered\allowbreak{}Friction} & \code{add\_friction\_term!} \\
+\code{Abstract\allowbreak{}Water\allowbreak{}Thickness\allowbreak{}Algorithm} & \code{Darcy\allowbreak{}Weisbach\allowbreak{}Thickness\{G\}}, \code{Laminar\allowbreak{}Thickness\{G\}}, \code{Areal\allowbreak{}Conduit\allowbreak{}Thickness} & \code{update\_W!} \\
+\code{Abstract\allowbreak{}Gradient\allowbreak{}Convention} & \code{MeanGradient}, \code{LocalGradient} & \code{update\_W\_darcy\_weisbach!}, \code{update\_W\_laminar!} \\
+\code{Abstract\allowbreak{}Sliding\allowbreak{}Law} (\code{Abstract\allowbreak{}Pressure\allowbreak{}Dependent\allowbreak{}Sliding\allowbreak{}Law}) & seven laws, Section~\ref{phys:sliding} & \code{update\_tau\_b!}, \code{calc\_tau\_b}, \code{resolve\_q!} \\
+\code{Abstract\allowbreak{}Drainage\allowbreak{}Mode} & \code{BothDrainage}, \code{EfficientOnly}, \code{InefficientOnly} & \code{effective\_Q\_c}, \code{opening\_coefficients}, \code{N\_responds\_to\_ub} \\
+\bottomrule
+\end{longtable}
+\end{center}
+Five of these (dissipation melt, sliding law, psi-out algorithm, water thickness, drainage mode) are type parameters of
+\code{KazmierczakParams}, so a model's type spells out its configuration. The fill algorithm, routing scheme, $q$
+conversion and the two discretisations are stored in abstractly typed fields; their dispatch happens once per call at
+a function barrier (\code{fill\_potential!}, \code{prepare\_routing!}, \code{q\_from\_psi\_out!}, \ldots), outside the hot loops.
+
+The gradient convention is a type parameter of the thickness closure rather than a \code{Bool}, because the mean case
+divides by a scalar and the local case by a field: a runtime switch would leave a small \code{Union} inside the
+broadcast.
+
+\subsection{The K24 model: parameters, workspace and \code{getproperty}}\label{arch:split}
+\code{KazmierczakHydroModel} has two fields: \code{params::KazmierczakParams} (39 immutable constants and options) and
+\code{workspace::KazmierczakWorkspace} (38 arrays and buffers, allocated once and updated in place). Neither struct is
+\code{mutable}: nothing ever reassigns a field, only the contents of the arrays (\code{model.q .= ...}). The split keeps the
+two positional constructor calls short and grouped, instead of one 80-argument call that silently breaks if a field is
+inserted out of order. \code{Base.getproperty} is overloaded so that \code{model.<name>} looks first in \code{params}, then
+in \code{workspace}:
+\begin{verbatim}
+function Base.getproperty(model::KazmierczakHydroModel, name::Symbol)
+    name === :params    && return getfield(model, :params)
+    name === :workspace && return getfield(model, :workspace)
+    params = getfield(model, :params)
+    hasfield(typeof(params), name) && return getfield(params, name)
+    return getfield(getfield(model, :workspace), name)
+end
+\end{verbatim}
+So \code{model.rho\_w} and \code{model.q} both work, and the physics code was not changed by the split. \code{hasfield} on a
+concrete type is resolved at compile time, so the forwarding costs nothing. \code{propertynames} lists both sets.
+Appendix~\ref{app:fields} lists every field.
+
+\subsection{Float type}\label{arch:float}
+The float type is the grid's: \code{ArrayHydroGrid(...; T = Float32)} makes every field and every scalar parameter
+\code{Float32} (the constructor converts them, and \code{convert\_sliding\_law} converts the law). The code avoids
+silent promotion: division guards use \code{eps(T)} rather than a literal \code{1e-15}, \code{accumulate\_psi\_out!} returns
+\code{zero(eltype(...))} rather than \code{0.0}, and powers are written \code{x*x} rather than \code{x\^{}2.0}
+(\code{Float64\^{}Float64} calls libm's \code{pow}, measured 17 times slower). Three places still compute in
+\code{Float64} whatever \code{T} is: the FFT cache buffers, the \code{StaggeredFriction} velocity arrays, and a few
+\code{max(0.0, ...)} literals (Section~\ref{pit:open}).
+
+\subsection{Package extensions}\label{arch:ext}
+Two weak dependencies (\code{[weakdeps]} in \code{Project.toml}) load code only when the user loads them:
+\begin{itemize}[leftmargin=1.5em]
+\item \code{CairoMakie} $\to$ \extfile{FastHydrologyMakieExt.jl}: methods for \code{visualize\_field} and
+  \code{visualize\_grid}. CairoMakie is slow to compile and not needed to run a model.
+\item \code{Shakti} $\to$ \extfile{FastHydrologyShaktiExt.jl}: \code{run!} and \code{step!} for
+  \code{TimeSimulation\{<:ShaktiHydroModel\}}. Shakti pulls in CUDA, Metal, AlgebraicMultigrid and more.
+\end{itemize}
+The functions are declared in \code{src/} without methods (\code{function step! end}, \code{function visualize\_field end}),
+so their names belong to FastHydrology and the extension extends them. \code{ShaktiHydroModel\{S\}} is defined in
+\file{models/shakti/model.jl} with no reference to Shakti: its field type is a parameter. FastHydrology and Shakti both
+export \code{run!} and \code{step!}; a script that loads both must qualify the names, or \code{import} one of them (the tour
+uses \code{import Shakti}).
+
+\subsection{Load order}\label{arch:order}
+\file{FastHydrology.jl} includes the files in the order of the tour PARTs: the eleven \file{common/} files, then the
+seven K24 files, the three HAB files and the Shakti wrapper. The order matters only where a type is named in a struct
+field or method signature, which Julia resolves when the definition is evaluated: \file{common/grid.jl} comes first
+(nearly every signature names \code{AbstractHydroGrid}); \file{common/state.jl} and \file{common/model.jl} come before
+the files whose methods take \code{HydroState} or \code{AbstractHydroModel}; \file{models/kazmierczak2024/model.jl}, which
+defines every option type, precedes the files that dispatch on them. Names used only inside function bodies may refer
+forward: \code{update\_steady\_state!} in \file{models/kazmierczak2024/run.jl} calls \code{update\_q!} from
+\file{water\_flux.jl}, and \code{update\_q\_from\_psi\_out!(model, grid, state)} is called in \file{water\_flux.jl} but defined
+in \file{routing.jl}, which comes after it. The tour checks at run time that its PART order is the include order.
+
+\subsection{Dependencies}\label{arch:deps}
+\begin{center}\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.3cm}>{\raggedright\arraybackslash}p{11.8cm}}
+\toprule
+package & used for \\
+\midrule
+ImageFiltering & \code{imfilter!}/\code{centered}: the generic \code{convolve!} default (and the tour's reference) \\
+FFTW & the cached convolution (\code{plan\_rfft}, \code{plan\_irfft}) \\
+OffsetArrays & loaded with ImageFiltering's \code{centered}; no direct use \\
+SpecialFunctions & \code{erf} in Eq.~\eqref{eq:N} \\
+Statistics, LinearAlgebra & \code{mean} (data loaders), \code{mul!} (FFT) \\
+MAT & \code{load\_Kazmierczak} (KORI-ULB \code{.mat} output) \\
+NCDatasets & \code{load\_yelmox}, checkpoints, \code{Net\allowbreak{}CDFOutput\allowbreak{}Writer} \\
+DocStringExtensions & \code{\$(TYPEDSIGNATURES)} in docstrings \\
+\bottomrule
+\end{tabular}
+\end{center}
+Julia $\ge$ 1.10.10 (\code{[compat]}). The test environment (\code{test/Project.toml}) adds MAT, NCDatasets, Shakti (from
+GitHub) and pins ParallelStencil to 0.16.0, the version Shakti requires.

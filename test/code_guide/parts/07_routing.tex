@@ -1,0 +1,92 @@
+%==============================================================================
+\section{Routing in depth}\label{sec:routing}
+%==============================================================================
+
+Routing, Eq.~\eqref{eq:psi}, is the step that takes most of the design effort in the code: it is a graph problem, not
+an array operation, its cost and robustness depend on the traversal, and real ice-sheet data make the graph cyclic. This
+section explains the four traversals, why the default is to record and replay, what cycles do, and how conservation
+is guaranteed.
+
+\subsection{The routing graph}\label{rt:graph}
+Draw an edge $n\to c$ between neighbouring grounded cells when $w_{n\to c} > 0$. Then $\psiout(c)$ depends on
+$\psiout(n)$ for every edge $n\to c$. If the graph is a DAG (no cycle), Eq.~\eqref{eq:psi} has a unique solution, obtained
+by evaluating cells in any topological order. If it has a cycle, Eq.~\eqref{eq:psi} is a linear system around the cycle,
+which none of the traversals solves; they each produce some approximation.
+
+\subsection{Four traversals}\label{rt:algos}
+\begin{center}\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{5.2cm}>{\raggedright\arraybackslash}p{7.2cm}}
+\toprule
+algorithm & how & properties \\
+\midrule
+\code{RecursivePsiOut} & depth-first recursion from each grounded cell, \code{visited} flags (\code{accumulate\_psi\_out!}) & KORI-ULB's
+  algorithm. Recurses as deep as the longest flow path: on real grids this can exceed the process stack (\code{ulimit -s}) and crash
+  with a \code{Stack\allowbreak{}Overflow\allowbreak{}Error}, before the visit cap binds. GDSWarner only. \\
+\code{IterativePsiOut} & the same traversal with an explicit stack (\code{update\_psi\_out\_iterative!}) & Same field bit for bit,
+  no depth limit; the source measured it 30--40 times slower per sweep than the recursion on Thwaites 2\,km and pan-Antarctica
+  8\,km. GDSWarner only. \\
+\code{Topological\allowbreak{}Psi\allowbreak{}Out} & Kahn's algorithm on the edge list (\code{update\_psi\_out\_topological!}) & $O(n)$, no cap, no stack. Exact only on a
+  DAG; errors on a cycle unless \code{allow\_cycles = true}. GDSWarner only. \\
+\code{TapedPsiOut} (default) & record the recursion's operations once per \code{update\_q!}, replay them every sweep & Same field as the recursion
+  bit for bit, including partial reads in cycles and the cap; no depth limit; every scheme. \\
+\bottomrule
+\end{tabular}
+\end{center}
+\paragraph{Why record and replay.} The order in which the recursion visits cells and folds in contributions depends only on
+the mask and the fractions $w$, i.e.\ on the geometry, never on the source. Within one \code{update\_q!} the geometry is fixed, but
+the dissipation and $(q,N)$ loops route the same graph with a new $\mdot_{\rm total}$ up to 20 times. \code{TapedPsiOut} records the
+traversal as a flat list of \code{dst += src * w} and \code{dst = max(0, dst)} operations (with an explicit stack, so no depth
+limit) and each sweep replays it: a single linear pass over five vectors, with no branching on the graph. The tape is
+invalidated at the start of every \code{update\_q!}, since the gradients are recomputed there. Recording applies every source up
+front rather than on first visit; this changes no value read, because a cell is never read before its first visit. A
+replay is linear in the source as long as no clamp binds (the tour doubles the source and gets exactly double
+$\psiout$).
+
+\paragraph{The explicit stack.} A frame is $(i, j, k)$: $k = 0$ means not yet visited; $1\le k\le K$ means neighbour $k$ is next
+($K = 4$, or 8 for 8-neighbour schemes); $k = K+1$ means done (clamp, pop). When neighbour $k$ is unvisited, it is pushed
+\emph{without} advancing the parent's $k$; after it is resolved and popped, the parent finds the same neighbour, now visited,
+and folds its value in. This is exactly how a return value reaches a paused caller in the recursion, which is why the
+results agree bit for bit.
+
+\subsection{Cycles}\label{rt:cycles}
+In the recursion, a cell on the stack whose descendant routes back to it is read while still incomplete: the descendant
+receives a partial value, with no warning. The recursion never fails on a cycle, but the result depends on the visiting
+order. A topological sort cannot process the cells of a cycle at all (their in-degree never reaches zero), which is why
+\code{TopologicalPsiOut} errors by default: the docstring records a case where silently using the truncated field made the
+correlation of $q$ with the recursion's fall to near zero.
+
+Which graphs have cycles:
+\begin{itemize}[leftmargin=1.5em]
+\item GDS schemes: the fractions come from the smoothed gradient components, normalised per cell, which is not the gradient of
+  any one surface. The source records cycles on roughly half the grounded cells of Thwaites 2\,km at \code{longcoupwater} = 5,
+  more (37\,514 of 51\,945) with no smoothing at all, and 2573 of 3242 on an 8\,km coarsening: real, noisy topography alone is
+  enough. Smoothness alone does not prevent them: the two cells either side of a valley line each have a centred
+  gradient pointing at the other, a 2-cycle. The tour's bump-free fixture, whose thickness varies as $\sin(y)$, has
+  such a valley and the topological sort refuses it; with a uniform flow direction the graph is acyclic and the tour
+  checks topological = recursive there.
+\item Warner, Quinn and Tarboton: water goes only to strictly lower cells of $\phif$ (Tarboton's chosen facet has both slopes
+  positive, or sends everything to its one lower neighbour), so there is no cycle; the test suite checks conservation for all
+  three. ModifiedTarboton takes its direction from the centred gradient of $\phif$ and can send water to a higher neighbour.
+\end{itemize}
+The water lost to cycles is the main reason Warner replaced GDSWarner as the default: the source gives 3\,\%, 8\,\% and 34\,\% of
+the positive basal melt lost with GDSWarner on Thwaites 2\,km, Greenland 8\,km and Antarctica 16\,km, and none with Warner.
+
+\subsection{Conservation}\label{rt:conservation}
+With Warner (or Quinn, or Tarboton) and \code{PriorityFloodFill}, routing conserves water exactly: every grounded cell has a strictly lower
+neighbour or is an outlet, the graph is a DAG, and each cell's outflow fractions sum to 1 or 0. Summing Eq.~\eqref{eq:psi}
+over the grounded cells, every routed volume ends either in a non-grounded cell (across the grounding line or ice margin),
+or at a grounded edge cell with nowhere lower to go (a sink, which keeps it). The tour checks
+\[
+\sum_{c\ \rm grounded} \frac{\mdot_c\Dx\Dy}{\rhow}
+= \sum_{c} \psiout(c)\sum_{d:\ \text{off-domain or not grounded}} w_{c,d} \;+\; \sum_{c:\ \sum_d w_{c,d} = 0}\psiout(c)
+\]
+to $10^{-12}$ on its bumpy fixture, provided no clamp binds ($\mdot\ge0$ everywhere) and the visit cap is not reached. With
+face fluxes the same balance holds cell by cell: the net outflow through a cell's four faces equals its source.
+
+Two things break conservation by design: the clamp $\psiout\ge0$ (a refreezing cell destroys the inflow it refreezes; this
+is physical, and \code{freeze\_on\_capacity!} reports the water available for it), and the visit cap.
+
+\subsection{Cost}\label{rt:cost}
+Recording costs one traversal with stack manipulation and vector pushes; replaying is a tight loop over the operation list,
+whose length is about the number of grounded-to-grounded edges with $w>0$ plus one clamp per cell. For the timings of the
+whole solve on the real grids, see Section~\ref{life:timing}.

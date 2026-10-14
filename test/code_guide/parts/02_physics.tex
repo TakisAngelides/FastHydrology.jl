@@ -1,0 +1,179 @@
+%==============================================================================
+\section{The physical models}\label{sec:physics}
+%==============================================================================
+
+This section states the equations the code solves, in the code's symbols. Each equation names the function that
+evaluates it; Section~\ref{sec:discretisation} shows how.
+
+\subsection{Geometry and the hydraulic potential}
+The inputs are the ice thickness $h$, the bed elevation $b$ (negative below sea level) and the grounded mask, all
+on cell centres (\code{HydroState}). The K24 model routes water down the \emph{geometric potential}
+\begin{equation}\label{eq:phi0}
+\phi_0 = \rhoi g h + \rhow g b \qquad[\text{Pa}],
+\end{equation}
+the hydraulic potential of water at the bed when the water pressure equals the overburden (Shreve 1972). It is
+also the effective pressure that a bed connected to the ocean would have: with $p_w = -\rhow g b$,
+$p_o - p_w = \phi_0$. Water flows along $-\nabla\phi_0$. (\code{update\_phi0!}; $\rhoi = 917$, $\rhow = 1000$,
+$g = 9.81$ by default.) The overburden is $p_o = \rhoi g h$ (\code{Po}, \code{update\_Po!}).
+
+\subsection{The water source}
+K24 Eq.~3 builds the basal melt from heat fluxes. The code keeps every term as its own field and never accepts a
+finished melt rate:
+\begin{equation}\label{eq:source}
+\mdot_{\rm total} = \underbrace{\frac{G - q_T}{L_w}}_{\code{mdot\_fixed}} + \frac{Q_b + Q_{\rm diss}}{L_w} + \ieb
+\qquad[\text{kg\,m}^{-2}\text{s}^{-1}],
+\end{equation}
+with $G$ the geothermal flux, $q_T$ the heat conducted from the bed into the ice, $Q_b = \tau_b\cdot u_b$ the frictional
+heat of sliding, $Q_{\rm diss} = |q\,\nabla\phi_0|$ the heat dissipated by the flowing water, all in W\,m$^{-2}$,
+$L_w = 3.34\times10^5$\,J\,kg$^{-1}$, and $\ieb$ water reaching the bed from above that was not melted there
+(surface water through moulins, drained englacial water; the $i_{eb}$ of Sommers et al.\ 2018). $G$, $q_T$ and
+$\ieb$ are inputs (\code{set\_basal\_terms!}); $Q_b$ comes from the sliding law, and $Q_{\rm diss}$ from $q$ itself,
+so both are recomputed during the solve. $\mdot_{\rm total}$ may be negative where the ice conducts away more heat
+than the bed supplies (freeze-on); the routing then removes water, never below zero.
+
+\subsection{Routing: the distributed flux $q$}\label{phys:routing}
+In steady state the water flux $\mathbf q$ [m$^2$\,s$^{-1}$] satisfies $\nabla\cdot\mathbf q = \mdot_{\rm total}/\rhow$ and
+points down the routing potential. Integrating over the area upstream of a cell gives the volume flux leaving it,
+\begin{equation}\label{eq:psi}
+\psiout(c) = \max\Bigl(0,\; \frac{\mdot_{\rm total}(c)\,\Dx\,\Dy}{\rhow} + \sum_{n\,\to\,c} w_{n\to c}\,\psiout(n)\Bigr)
+\qquad[\text{m}^3\text{s}^{-1}],
+\end{equation}
+where the sum runs over the neighbours $n$ that send water to $c$ and $w_{n\to c}$ is the fraction of $n$'s outflow
+that goes to $c$ (Le Brocq et al.\ 2006, 2009). The fractions are set by the routing scheme
+(Section~\ref{disc:schemes}); the $\max(0,\cdot)$ stops a refreezing cell from passing on negative water. The
+distributed flux is $\psiout$ divided by the width of the cell normal to the flow,
+\begin{equation}\label{eq:corfac}
+q = \frac{\psiout}{c_f}, \qquad c_f = \frac{|s_x|\,\Dy + |s_y|\,\Dx}{|\mathbf s|},
+\end{equation}
+with $\mathbf s = -\nabla\phi$ the flow direction (\code{corfac}, Le Brocq Eq.~9; derived in the K24 review replies,
+Eq.~R4). With face-based routing $q$ is instead taken from the face fluxes (Section~\ref{disc:qconv}).
+
+Before routing, the pits of the potential are filled (water would be trapped in them), and the potential or its
+gradient is smoothed over a few ice thicknesses to represent longitudinal stress coupling (Kamb and Echelmeyer
+1986): the driving stress at a point feels the ice geometry some distance away (Section~\ref{disc:smoothing}). The
+filled and smoothed surface decides only where water goes; $N$, the conduit law and the dissipation use the true
+$\phi_0$.
+
+\subsection{The conduit and the far-field effective pressure}
+K24 lets the distributed flux $q$ drain through conduits spaced $l_c$ apart (\code{conduit\_spacing}, 10\,km), each
+carrying
+\begin{equation}
+Q = q\,l_c \qquad[\text{m}^3\text{s}^{-1}] \qquad(\code{update\_Q!}).
+\end{equation}
+Turbulent Darcy--Weisbach flow in a conduit of cross-section $\Sinf$ gives $Q = K\,\Sinf^{\alpha}\,|\nabla\phi_0|^{\beta-1}$
+with $\alpha = 5/4$, $\beta = 3/2$ and $K = (2/\pi)^{1/4}\sqrt{(\pi+2)/(\rhow f)}$, $f = 0.1$, so
+\begin{equation}\label{eq:Sinf}
+\Sinf = K^{-1/\alpha}\,|\nabla\phi_0|^{(1-\beta)/\alpha}\,Q^{1/\alpha} \qquad(\code{update\_S\_inf!}).
+\end{equation}
+The conduit height $H$ blends a hard bed and a soft bed with the bed-type indicator $\kappa\in[0,1]$
+(0 hard, 1 soft):
+\begin{align}
+H_{\rm hard} &= \sqrt{\Sinf}, \qquad
+H_{\rm soft} = \max\Bigl(0,\; H_0 + \Bigl(\frac{\sqrt{\Sinf}}{F_{\rm till}} - H_0\Bigr)e^{-Q/Q_c}\Bigr), \nonumber\\
+H &= (1-\kappa)\,H_{\rm hard} + \kappa\,H_{\rm soft} \qquad(\code{update\_H!}).\label{eq:H}
+\end{align}
+On a soft bed small discharges ($Q\ll Q_c$) flow in canals of thickness $H_0 = 0.1$\,m (efficient), large ones in
+an inter-clastic film of thickness $\sqrt{\Sinf}/F_{\rm till}$ (inefficient), with $Q_c = 1$\,m$^3$\,s$^{-1}$ and
+$F_{\rm till} = 1.1$. The far-field effective pressure balances conduit opening by sliding over bed bumps of height
+$h_b$ and by melt of the walls against creep closure:
+\begin{equation}\label{eq:Ninf}
+2A\Bigl(\frac{\Ninf}{n}\Bigr)^{n}\frac{\Sinf^2}{H^2}
+= |u_b|\,h_b + \frac{Q\,|\nabla\phi_0|}{\rhoi L_w}
+\quad\Longrightarrow\quad
+\Ninf = \Bigl[\frac{H^2}{\Sinf^2}\,\frac{\rhoi L_w |u_b| h_b + Q|\nabla\phi_0|}{2\,n^{-n}\rhoi L_w A}\Bigr]^{1/n},
+\end{equation}
+clamped to $[\sigma_t\,p_o,\; p_o]$ (\code{update\_N\_inf!}; $n=3$, $h_b = 0.1$\,m, $A$ is Glen's rate factor
+\code{A\_visc}, $\sigma_t$ = \code{sigmat}, 0 by default). Where there is no flux, $\Sinf = 0$ and $\Ninf = p_o$.
+
+\subsection{The effective pressure}
+Near the grounding line the bed is connected to the ocean and $N\to\phi_0$; far inland $N\to\Ninf$. K24 joins the
+two with an error function:
+\begin{equation}\label{eq:N}
+N = \operatorname{erf}\Bigl(\frac{\sqrt\pi\,\phi_0}{2\,\Ninf}\Bigr)\Ninf \qquad(\code{update\_N!}).
+\end{equation}
+For $\phi_0\ll\Ninf$, $\operatorname{erf}(x)\approx 2x/\sqrt\pi$ and $N\approx\phi_0$; for $\phi_0\gg\Ninf$, $N\to\Ninf$.
+Since $x\operatorname{erf}(c/x)$ increases with $x$, $N$ increases with $\Ninf$, hence with the sliding speed. $N$ is
+computed on grounded cells only and is 0 elsewhere; it is clamped below at 0.
+
+\paragraph{Which $\phi_0$ goes in the erf.} The boundary condition behind Eq.~\eqref{eq:N} is $N = 0$ at the grounding
+line (K24 Eq.~5c), which needs the argument to vanish where the ice floats. But flotation is decided with seawater,
+$\rhoi h = -\rhosw b$, whereas $\phi_0 = \rhoi g h + \rhow g b$ uses freshwater density, so at the grounding line
+$\phi_0 = (\rhosw-\rhow)\,g\,|b|$ (about 0.27\,MPa per km of bed depth) rather than 0. That is negligible for a hard
+bed ($\Ninf\approx 1.7$\,MPa) but not for a soft one ($\Ninf\approx 0.25$\,MPa), where $N\approx 0.87\,\Ninf$ is left at
+the grounding line. The code therefore evaluates the erf with
+$\phi_0^{N} = \rhoi g h + \rhosw g b$, with \code{rho\_sw} a model keyword that defaults to \code{rho\_w} (the paper's
+Eq.~\eqref{eq:N} as written, results unchanged); coupled runs set it to the ice model's flotation density (e.g.\ 1028
+for Yelmo). It applies to every grounded cell, so $N$ stays continuous, and it is inert far inland where
+$\operatorname{erf}\approx1$. Routing, $|\nabla\phi_0|$, $\Sinf$ and the dissipation melt keep the freshwater $\phi_0$.
+
+\subsection{The water-layer thickness}\label{phys:W}
+$W$ (\code{state.W}) is reported for the ice model (Yelmo's \code{H\_w}) and feeds back into nothing. Three closures
+(\code{water\_thickness\_algorithm}):
+\begin{align}
+\text{Darcy--Weisbach (default):}\quad & W = \Bigl(\frac{f\rhow q^2}{4\,\overline{|\nabla\phi_0|}}\Bigr)^{1/3},\\
+\text{Laminar (Le Brocq 2009, K22 Eq.~8):}\quad & W = \Bigl(\frac{12\,\eta_w q}{\overline{|\nabla\phi_0|_s}}\Bigr)^{1/3},\\
+\text{Areal conduit:}\quad & W = \Sinf/l_c,
+\end{align}
+the first two clamped to $[W_{\min}, W_{\max}]$ (default $[0,\infty)$). The overbar is a mean over grounded cells by
+default (\code{MeanGradient}, as KORI-ULB's \code{SubWaterFlux.m}), or the local value (\code{LocalGradient}).
+$|\nabla\phi_0|_s$ is the smoothed gradient. $\eta_w = 1.8\times10^{-3}$\,Pa\,yr (sic: KORI-ULB's
+\code{par.waterviscosity}, converted to Pa\,s by $1/\text{yr}$, not the SI viscosity of water).
+
+\subsection{Drainage modes}\label{phys:drainage}
+K24 Sect.~3.2 forces the drainage to one type everywhere. \code{EfficientOnly} drops the sliding opening term in
+Eq.~\eqref{eq:Ninf} and sets $Q_c = 0$ (so $H_{\rm soft} = H_0$ wherever $Q>0$); \code{InefficientOnly} drops the
+melt opening term and sets $Q_c = \infty$ ($H_{\rm soft} = \sqrt\Sinf/F_{\rm till}$). The paper as published swaps
+the two values of $Q_c$; the authors confirmed by e-mail that this is a typo, and the code follows the corrected
+assignment, which is also the only one consistent with the limits of $e^{-Q/Q_c}$.
+
+\subsection{Sliding laws}\label{phys:sliding}
+The sliding law gives the basal shear stress $\tau_b$ for the frictional heat $Q_b = \tau_b|u_b|$; it does not change
+the ice velocity, which is an input. All are cell-centred and scalar.
+\begin{center}\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{7.2cm}>{\raggedright\arraybackslash}p{6.4cm}>{\raggedright\arraybackslash}p{1.6cm}}
+\toprule
+law & $\tau_b$ & $N$-dep. \\
+\midrule
+\code{No\allowbreak{}Friction\allowbreak{}Sliding\allowbreak{}Law} (default) & $0$ & no \\
+\code{Prescribed\allowbreak{}Field\allowbreak{}Sliding\allowbreak{}Law(grid, tau\_b)} & a given field & no \\
+\code{Weertman\allowbreak{}Sliding\allowbreak{}Law(; C, q = 1/\allowbreak{}3)} & $C|u_b|^q$ & no \\
+\code{Power\allowbreak{}Plastic\allowbreak{}Sliding\allowbreak{}Law(; c\_till, q = 1, u0 = 100 m/\allowbreak{}yr)} & $c\,N(|u_b|/u_0)^q$ (Yelmo \code{beta\_method} 1, 2) & yes \\
+\code{Regularized\allowbreak{}Coulomb\allowbreak{}Sliding\allowbreak{}Law(; c\_till, q = 1/\allowbreak{}3, u0 = 100 m/\allowbreak{}yr)} & $c\,N\bigl(|u_b|/(|u_b|+u_0)\bigr)^q$ (Joughin et al.\ 2019; Yelmo 3, 5) & yes \\
+\code{Regularized\allowbreak{}Coulomb\allowbreak{}Field\allowbreak{}Sliding\allowbreak{}Law(grid, c\_till; q, u0)} & as above, $c$ a field (e.g.\ Yelmo's \code{cb\_ref}) & yes \\
+\code{Shakti\allowbreak{}Regularized\allowbreak{}Coulomb\allowbreak{}Sliding\allowbreak{}Law(grid, A, C; n = 3, lambda\_coeff = 1.5)} & $C N\bigl(|u_b|/(|u_b| + |N|^n\lambda)\bigr)^{1/n}$, $\lambda = 1.5A$ (Shakti's own law) & yes \\
+\bottomrule
+\end{tabular}
+\end{center}
+An $N$-dependent law couples $\tau_b$, the source, $q$ and $N$ into one fixed point (Section~\ref{sec:fixedpoints}).
+For velocities on a C-grid, \code{StaggeredFriction} forms $Q_b$ from face drag (Section~\ref{disc:friction}).
+
+\subsection{The height-above-buoyancy model}\label{phys:hab}
+HAB (Kazmierczak et al.\ 2022, Sec.~2.1.1, Eq.~3) assumes the bed is hydraulically connected to the ocean:
+\begin{equation}\label{eq:hab}
+p_w = \begin{cases} 0 & b\ge 0,\\ P_w\,\rhoi g h & \text{not grounded},\ b<0,\\ -P_w\,\rhosw g\,b & \text{grounded},\ b<0,\end{cases}
+\qquad N = \max(p_o - p_w,\ \sigma_t\,p_o),
+\end{equation}
+with $P_w = 0.96$, $\rhosw = 1027$, $\sigma_t = 0.02$ (\code{update\_p\_w!}, \code{update\_N!}). All five constants are
+fixed in the constructor. HAB does not depend on the velocity or the melt, and writes no $W$.
+
+\subsection{Default parameters}\label{phys:defaults}
+\begin{center}\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{5.6cm}}
+\toprule
+constructor keyword & symbol & default & note \\
+\midrule
+\endhead
+\code{rho\_w}, \code{rho\_i}, \code{g} & $\rhow,\rhoi,g$ & 1000, 917, 9.81 & HAB also 917 (Shakti uses 910) \\
+\code{L\_w} & $L_w$ & $3.34\times10^5$ J/kg & \code{KAZMIERCZAK\_DEFAULT\_L\_W} \\
+\code{glen\_n} & $n$ & 3 & \\
+\code{bed\_bump\_height} & $h_b$ & 0.1 m & \\
+\code{flux\_W\_exponent}, \code{flux\_grad\_exponent} & $\alpha,\beta$ & 5/4, 3/2 & \\
+\code{f} & $f$ & 0.1 & in $K$ and in the Darcy--Weisbach $W$ \\
+\code{F\_till}, \code{Q\_c}, \code{H0\_efficient} & $F_{\rm till}, Q_c, H_0$ & 1.1, 1 m$^3$/s, 0.1 m & \\
+\code{conduit\_spacing} & $l_c$ & $10^4$ m & \\
+\code{water\_viscosity} & $\eta_w$ & $1.8\times10^{-3}/\text{yr}$ & KORI-ULB's value and units \\
+\code{coupling\_length\_kamb86} & $2\lambda$ & warns, then 10 & $\lambda$ = \code{longcoupwater} \\
+\code{sigmat}, \code{Wmin}, \code{Wmax}, \code{q\_min}, \code{q\_max} & & 0, 0, $\infty$, 0, $\infty$ & KORI-ULB: 0.02, $10^{-8}$, 0.015, --, $10^5$ m$^2$/yr \\
+\bottomrule
+\end{longtable}
+\end{center}

@@ -11,3 +11,16 @@ docs/src/examples/input/
 !/test/runtests.jl
 !/test/common
 !/test/models
+
+# The code guide (LaTeX sources) and the code tour (script, notebook, notebook generator) are
+# maintained documentation, so they are tracked; their build products, logs, outputs and
+# environments stay ignored.
+!/test/code_guide
+/test/code_guide/build/
+!/test/code_tour
+/test/code_tour/Manifest*.toml
+/test/code_tour/logs/
+/test/code_tour/output/
+/test/code_tour/previous/
+/test/code_tour/notebook_check.log
+/test/code_tour/notebook_extracted_check.jl

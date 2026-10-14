@@ -1,0 +1,111 @@
+%------------------------------------------------------------------------------
+\subsection{\file{models/kazmierczak2024/model.jl}: the K24 model, its options and its sliding laws}\label{ref:k24model}
+\emph{Tour PART 12.}
+
+The largest declarative file: every option type of Section~\ref{arch:options}, the seven sliding laws, the routing tape,
+the parameter and workspace structs, the model and its constructor. Its docstrings carry most of the design history
+(why each default is what it is); the essentials are below.
+
+\subsubsection*{Option types}
+\begin{fnlist}
+\item[AbstractDissipationMelt, DissipationMeltOn, DissipationMeltOff] Whether $Q_{\rm diss}$ enters the source. The paper drops it as
+  negligible; the code keeps it on by default, ``for generality''. With it off and an $N$-independent law, the solve is a single
+  routing pass.
+\item[AbstractPsiOutAlgorithm, RecursivePsiOut, IterativePsiOut, TopologicalPsiOut(allow\_cycles), TapedPsiOut] How the routing graph is
+  traversed (Section~\ref{sec:routing}). Recursive and iterative give the same field bit for bit; taped replays a recorded traversal
+  and also matches bit for bit; topological is exact only on an acyclic graph and errors on a cycle unless \code{allow\_cycles = true}.
+  The keyword constructor \code{TopologicalPsiOut(; allow\_cycles = false)}. Default: \code{TapedPsiOut()}; the other three implement
+  only the GDSWarner routing.
+\item[AbstractFrictionDiscretization, CellCentredFriction, StaggeredFriction\{M\}(ux, uy, quadrature, u\_floor)] Section~\ref{disc:friction}. The
+  outer constructor \code{StaggeredFriction(ux, uy; quadrature = false, u\_floor = perYear2perSecond(1e-3))} stores the velocities as
+  \code{Matrix\{Float64\}} copies; a coupled driver overwrites them in place each step.
+\item[AbstractRoutingScheme, GDSWarner, Warner, Quinn(original), Tarboton, ModifiedTarboton, GDSTarboton] Section~\ref{disc:schemes}.
+  \code{Quinn(; original = false)}.
+\item[n\_directions(scheme)] 4 for \code{GDSWarner} and \code{Warner}, 8 otherwise. Face-based options need 4.
+\item[AbstractQConversion, QFromOutflow, QFromFaceAverage] Section~\ref{disc:qconv}.
+\item[AbstractDissipationDiscretization, CellCentredDissipation, FaceDissipation] Section~\ref{disc:dissipation}.
+\item[AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill(epsilon)] Section~\ref{disc:filling};
+  \code{PriorityFloodFill(; epsilon = 1.0)} [Pa].
+\item[RoutingTape\{T\}] Mutable. The recorded traversal: operation $k$ is \code{psi\_out[dst] += psi\_out[src] * w[k]}, or the clamp
+  \code{psi\_out[dst] = max(0, psi\_out[dst])} when \code{src\_i[k] == 0} (indices stored as \code{Int32}); \code{valid}; and the arrays shared
+  by the non-GDSWarner schemes: \code{w8} $(8, N_x, N_y)$ outflow fractions, face fluxes \code{Fx} $(N_x{+}1, N_y)$ and \code{Fy}
+  $(N_x, N_y{+}1)$ [m$^3$/s], and \code{diss}, the face-assembled dissipation melt [kg\,m$^{-2}$\,s$^{-1}$].
+  \code{RoutingTape\{T\}(Nx, Ny)} builds an empty, invalid tape.
+\item[AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness\{G\}, LaminarThickness\{G\}] Section~\ref{phys:W}. The
+  docstring explains why $H$ (the depth inside one conduit, not an areal quantity) is deliberately not offered as \code{state.W}. Keyword
+  constructors \code{DarcyWeisbachThickness(; gradient\_convention = MeanGradient())}, likewise \code{LaminarThickness}.
+\item[AbstractGradientConvention, LocalGradient, MeanGradient] Local or grounded-mean gradient in the two sheet closures.
+\item[AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly] Section~\ref{phys:drainage}.
+\end{fnlist}
+
+\subsubsection*{Sliding laws}
+\begin{fnlist}
+\item[AbstractSlidingLaw, AbstractPressureDependentSlidingLaw] The second marks laws whose $\tau_b$ depends on $N$, which makes
+  \code{resolve\_q!} take the joint $(q, N)$ loop.
+\item[NoFrictionSlidingLaw] $\tau_b = 0$. The default: frictional heat is opt-in.
+\item[PrescribedFieldSlidingLaw\{A\}(tau\_b), PrescribedFieldSlidingLaw(grid, tau\_b)] A fixed scalar $|\tau_b|$ field (e.g.\ Yelmo's
+  \code{taub}, or $\sqrt{\tau_x^2+\tau_y^2}$), wrapped with \code{alloc\_field}. Mirrors Shakti's \code{PrescribedSlidingLaw}; the docstring
+  argues a real $\tau_b$ field is better grounded than a guessed Coulomb coefficient, and it needs no $(q,N)$ loop. This is what the
+  coupled Yelmo runs use.
+\item[WeertmanSlidingLaw\{T\}(C, q), WeertmanSlidingLaw(; C, q = 1/3)] $C|u_b|^q$.
+\item[PowerPlasticSlidingLaw\{T\}(c\_till, q, u0); keyword constructor] $c N (|u_b|/u_0)^q$; $q = 1$, $u_0 = 100$\,m/yr; Yelmo's
+  \code{\_calc\_beta\_aa\_power\_plastic!}.
+\item[RegularizedCoulombSlidingLaw\{T\}(c\_till, q, u0); keyword constructor] $c N (|u_b|/(|u_b|+u_0))^q$; $q = 1/3$; Yelmo's
+  \code{\_calc\_beta\_aa\_reg\_coulomb!}.
+\item[RegularizedCoulombFieldSlidingLaw\{A, F\}; (grid, c\_till; q, u0)] Same, with a per-cell $c$ (e.g.\ Yelmo's \code{cb\_ref}).
+\item[ShaktiRegularizedCoulombSlidingLaw\{A, F\}(C, n, inv\_n, lambda); (grid, A\_visc, C; n = 3, lambda\_coeff = 1.5)] Shakti's own
+  regularisation with $\lambda = 1.5A$ per cell, for bit-for-bit parity with a Shakti run. Has no \code{calc\_tau\_b} method, since
+  $\lambda$ is a field.
+\item[convert\_sliding\_law(T, law)] Converts a law's scalars to the model's float type; field laws are returned unchanged
+  (\code{===}) when their element type already matches, converted otherwise.
+\end{fnlist}
+
+\subsubsection*{The model}
+\begin{fnlist}
+\item[KazmierczakParams\{T, D, L, P, WT, M\}] 39 immutable fields: the physical constants (\code{rho\_w} \ldots \code{eta\_w}), the clamps
+  (\code{Wmin}, \code{Wmax}, \code{sigmat}, \code{q\_min}, \code{q\_max}), \code{longcoupwater}, every option, and the iteration controls
+  (\code{fill\_iters}, \code{max\_psi\_out\_calls}, \code{max\_dissipation\_iters}, \code{dissipation\_rtol}, \code{dissipation\_verbose},
+  \code{max\_qN\_iters}, \code{qN\_rtol}, \code{qN\_verbose}). Type parameters: float type, dissipation trait, sliding law, psi-out algorithm,
+  thickness closure, drainage mode.
+\item[KazmierczakWorkspace\{A, R\}] 38 fields, all allocated once: the potential and its gradients (9 fields), the routing and source
+  fields (\code{visited}, \code{h}, \code{G}, \code{q\_T}, \code{i\_eb}, \code{Q\_b}, \code{Q\_diss}, \code{mdot\_fixed}, \code{mdot\_total}, \code{psi\_out},
+  \code{corfac}, \code{q}, \code{q\_prev}, \code{tau\_b}, \code{N\_prev}), the \code{routing\_tape} and three filling scratch buffers, and the
+  conduit fields (\code{Q}, \code{kappa}, \code{abs\_v\_b}, \code{A\_visc}, \code{S\_inf}, \code{H\_hard}, \code{H\_soft}, \code{H}, \code{N\_inf},
+  \code{Po}). Appendix~\ref{app:fields} lists them all.
+\item[KazmierczakHydroModel\{T, A, D, L, P, WT, M\}(params, workspace)] Section~\ref{arch:split}.
+\item[getproperty(model, name), propertynames(model)] Forward \code{model.<name>} to \code{params}, then \code{workspace}.
+\item[KAZMIERCZAK\_DEFAULT\_L\_W] $3.34\times10^5$ J/kg; the tests use it to supply a melt rate as $G = \mdot L_w$.
+\item[KazmierczakHydroModel(grid, kappa, abs\_v\_b, A\_visc, G, q\_T; kwargs...)] The constructor. In order: checks every input (and
+  \code{i\_eb}) is \code{(Nx, Ny)}; converts every scalar to \code{T = typeof(grid.dx)}; computes $K$; handles
+  \code{coupling\_length\_kamb86} (unset: a long \code{@warn} explaining how to choose it from the grid resolution, then 10; negative:
+  \code{ArgumentError}; \code{longcoupwater} = value/2); fills the unset \code{fill\_algorithm}, \code{q\_conversion} and
+  \code{dissipation\_discretization} from the routing scheme; rejects a non-GDSWarner scheme without \code{TapedPsiOut}, a
+  \code{StaggeredFriction} of the wrong size, and face-based options with an 8-neighbour scheme; turns \code{dissipation\_melt} into the
+  trait; converts the sliding law; allocates the workspace and sets \code{mdot\_fixed} $= (G - q_T)/L_w$. All keywords are listed in
+  Section~\ref{opt:k24}.
+\item[set\_basal\_terms!(model; G, q\_T, i\_eb)] Replaces any of the given terms in place (a \code{nothing} keyword keeps the
+  current value) and recomputes \code{mdot\_fixed}. The only way to change the source: the model never takes a melt rate, so a
+  coupled model exchanges heat fluxes and water, not melt.
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\file{models/kazmierczak2024/sliding\_law.jl}: $\tau_b$ and the frictional heat}\label{ref:sliding}
+\emph{Tour PART 13.}
+\begin{fnlist}
+\item[calc\_tau\_b(law, N, abs\_v\_b)] The scalar formula of each $N$-free or scalar-coefficient law (NoFriction, Weertman,
+  PowerPlastic, RegularizedCoulomb), for tests and diagnostics.
+\item[update\_tau\_b!(model, state, law)] Writes \code{model.tau\_b} from \code{state.N} and \code{model.abs\_v\_b}, one method per law. The
+  formulas are written out again, with the law's parameters pulled into local scalars, rather than calling \code{calc\_tau\_b} inside the
+  broadcast, so the broadcast is plain arithmetic on fields and scalars. RegularizedCoulomb and its field variant share one method
+  (broadcasting handles a scalar or field $c$); the tour checks they agree exactly for a uniform field.
+\item[add\_friction\_term!(model, fd::StaggeredFriction)] $Q_b$ from the C-grid velocities (\code{staggered\_friction\_kernel!}), then
+  \code{mdot\_total += Q\_b/L\_w}. (The generic and cell-centred methods are in \file{water\_flux.jl}.)
+\item[stagger\_beta(tau\_b, abs\_v\_b, u\_floor, i, j)] $\beta = \tau_b/\max(|u_b|, u_{\rm floor})$ at a centre.
+\item[GQ\_S3, GQ\_PTS, gq\_interp(c, p)] The $2\times2$ Gauss points $(\pm1/\sqrt3, \pm1/\sqrt3)$ of the reference cell and bilinear
+  interpolation from the SW, SE, NE, NW corner values (Yelmo's \code{gq2D}).
+\item[acx\_corners(F, i, j, im1, jm1, jp1), acy\_corners(F, i, j, im1, ip1, jm1)] Corner (ab-node) values of an acx/acy field around cell
+  $(i,j)$, each the mean of the two faces meeting there.
+\item[staggered\_friction\_kernel!(Q\_b, tau\_b, abs\_v\_b, ux, uy, Nx, Ny, u\_floor, quadrature)] First the face tractions
+  $\tau_x = \tfrac12(\beta_i + \beta_{i+1})u_x$, $\tau_y$ likewise (edge faces clamp the neighbour index), then either the face
+  products averaged to the centre or the Gauss-point average of $|\mathbf u||\boldsymbol\tau|$. Allocates two scratch arrays per call.
+\end{fnlist}

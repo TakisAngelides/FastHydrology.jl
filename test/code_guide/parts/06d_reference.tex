@@ -1,0 +1,110 @@
+%------------------------------------------------------------------------------
+\subsection{\file{models/kazmierczak2024/effective\_pressure.jl}: from $q$ to $N$}\label{ref:k24ep}
+\emph{Tour PART 16.}
+\begin{fnlist}
+\item[update\_N!(model, grid, state)] Hoists the scalar factors ($Q_c$ for the drainage mode, $K^{-1/\alpha}$, the exponents,
+  $2n^{-n}\rhoi L_w$, $1/n$, the opening coefficients, $\sqrt\pi$) and runs \code{update\_N\_grounded\_kernel!}: on grounded cells
+  the chain $Q\to\Sinf\to H\to p_o\to\Ninf\to N$ of Section~\ref{sec:physics} in one fused pass, everywhere else $N = 0$ and zero
+  conduit fields ($p_o$ is still written). Each quantity is the same expression in the same order as the standalone functions
+  below, so the grounded values are bit-identical to calling them in sequence (tour). Fusing replaced eight full-grid
+  passes, which mattered because this runs in every sweep of the $(q, N)$ loop and in every call of \code{N\_from\_ub!}.
+\item[N\_responds\_to\_ub(model::KazmierczakHydroModel)] \code{true} unless \code{EfficientOnly}, the only mode whose $\Ninf$ has no sliding
+  term.
+\item[N\_from\_ub!(model, grid, state, abs\_v\_b)] Sets \code{model.abs\_v\_b} and calls \code{update\_N!}, with the routing ($q$,
+  $|\nabla\phi_0|$, $\phi_0$) held from the last full update; returns \code{state.N}. For an ice model to call inside its velocity
+  iteration, so $N$ and $u_b$ are solved together. The docstring states what must be current (\code{abs\_v\_b}; from the last full
+  update \code{q}, \code{abs\_grad\_phi0}, \code{phi0}, \code{kappa}; and \code{state.h}, \code{state.mask}, \code{model.A\_visc}, which the host
+  refreshes) and why coupled runs use a friction law: with \code{NoFrictionSlidingLaw} the source at cold bases is $-Q_b/L$ (when $q_T$
+  already contains the frictional heat) and the two-state cycle remains.
+\item[update\_N\_grounded\_kernel!(args...)] Splits the columns over threads (\code{Threads.@threads}, dynamic scheduler) when
+  \code{nthreads() > 1}, a plain loop otherwise. Every cell is independent, so the result does not depend on the thread count.
+\item[update\_N\_grounded\_column!(j, N, Q, S\_inf, \ldots)] One column; the degenerate cases of Section~\ref{disc:N}.
+\item[effective\_Q\_c(mode, Q\_c)] $Q_c$, $0$ or $\infty$ for Both, Efficient, Inefficient.
+\item[update\_H!(model, grid)] Eq.~\eqref{eq:H} as broadcasts, with the $Q_c = 0$, $Q = 0$ case resolved to $H_{\rm soft} = 0$.
+\item[update\_S\_inf!(model, grid)] Eq.~\eqref{eq:Sinf}; $K^{-1/\alpha}$ hoisted (it was a third \code{pow} per cell, ~60\,\% of
+  \code{update\_N!}'s cost); $Q = 0 \Rightarrow \Sinf = 0$. (The docstring says Manning/Gauckler--Manning--Strickler; the law and $K$
+  are Darcy--Weisbach.)
+\item[opening\_coefficients(mode, T)] The (sliding, melt) multipliers (1, 1), (0, 1), (1, 0).
+\item[update\_N\_inf!(model, grid)] Eq.~\eqref{eq:Ninf} with the clamp to $[\sigma_t p_o, p_o]$ and $\Sinf = 0\Rightarrow\Ninf = p_o$;
+  \code{(H*H)/(S*S)} rather than \code{(H/S)\^{}2.0}.
+\item[update\_Q!(model, grid)] $Q = q\,l_c$.
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\file{models/kazmierczak2024/run.jl}}\label{ref:k24run}
+\emph{Tour PART 17.}
+\begin{fnlist}
+\item[update\_steady\_state!(model::KazmierczakHydroModel, grid, state)] \code{update\_q!}, \code{update\_N!}, \code{update\_W!}, in that order
+  (Section~\ref{life:solve}).
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\file{models/kazmierczak2024/data\_loaders.jl}: real inputs}\label{ref:loaders}
+\emph{Tour PART 18.}
+
+Both loaders return the 13-tuple \code{(Nx, Ny, xlims, ylims, mask, h, b, abs\_v\_b, A\_visc, G, q\_T, tau\_b, kappa)} in SI units,
+ready for \code{ArrayHydroGrid(Nx, Ny, xlims, ylims)}, \code{HydroState} and the model constructor. Each unit conversion is
+justified in a comment by the source data's own convention.
+\begin{fnlist}
+\item[initialize\_\ensuremath{\kappa}(Nx, Ny, b; bed\_rheology)] $\kappa$ from the bed elevation: \code{:hard} 0, \code{:soft} 1, \code{:mixed} 1 where
+  $b < -1000$\,m, \code{:mixed\_smooth} 0 above $-500$\,m, 1 below $-1500$\,m, linear between. Anything else is an error.
+\item[load\_Kazmierczak(path; bed\_rheology = :hard, k\_ice = 2.1)] KORI-ULB's Thwaites \code{.mat}: \code{MASKo}, \code{H}, \code{B};
+  \code{ub} and \code{A} are per year (KORI-ULB's own \code{SchoofWaterFarField.m} divides \code{A} by \code{secperyear}; left unconverted,
+  $A$ was $3\times10^7$ too large and pinned $\Ninf$ at its floor); \code{G} in W\,m$^{-2}$; $q_T = k_{\rm ice}(T_{\rm base} - T_{\rm above})/\Delta z$
+  from the two lowest levels of \code{tmp} on \code{zeta}; $\tau_b$ = \code{taudxy}, the stress KORI-ULB itself multiplies by $u_b$ in
+  its basal heat balance; $x$ and $y$ are swapped in the file and given in km.
+\item[load\_Kazmierczak\_melt(path)] KORI-ULB's own melt \code{Bmelt} (per year, water-equivalent thickness) as kg\,m$^{-2}$\,s$^{-1}$, for
+  comparison only.
+\item[load\_yelmox(path; bed\_rheology = :mixed\_smooth)] A Yelmo restart: \code{xc}, \code{yc} in km (not exact: the 16\,km restart gives $\Dx = 16000.0013$\,m, so compare spacings with a
+  tolerance); mask \code{f\_ice*f\_grnd > 0};
+  \code{H\_ice}, \code{z\_bed}; $|u_b|$ from \code{ux\_b}, \code{uy\_b} (m/yr); $A$ the vertical mean of \code{ATT} (per year); \code{Q\_geo} and
+  \code{Q\_ice\_b} in mW\,m$^{-2}$ (some older restarts label \code{Q\_ice\_b} W\,m$^{-2}$, but the values are mW); $\tau_b$ = \code{taub}.
+  The dataset is opened with \code{NCDataset(path)} and never closed (Section~\ref{pit:open}).
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\file{models/hab/model.jl}, \file{effective\_pressure.jl}, \file{run.jl}: HAB}\label{ref:hab}
+\emph{Tour PARTs 19--21.}
+\begin{fnlist}
+\item[HABHydroModel\{T, A\}(rho\_sw, rho\_i, g, P\_w, sigmat, Po, p\_w)] Five constants and two arrays. Not mutable.
+\item[HABHydroModel(grid)] $\rhosw = 1027$, $\rhoi = 917$, $g = 9.81$, $P_w = 0.96$, $\sigma_t = 0.02$ in the grid's float type; no keywords.
+\item[update\_p\_w!(model::HABHydroModel, grid, state)] Eq.~\eqref{eq:hab}: $-P_w\rhosw g b$ everywhere, then $P_w\rhoi g h$ where
+  \code{mask == 0}, then 0 where $b\ge0$ (in that order, so $b\ge0$ wins). Note the test is \code{mask == 0}, not \code{mask != 1}: a
+  fractional mask keeps the ocean formula.
+\item[update\_N!(model::HABHydroModel, grid, state)] \code{update\_Po!}, \code{update\_p\_w!}, $N = \max(p_o - p_w, \sigma_t p_o)$, on every
+  cell (not only grounded ones).
+\item[update\_steady\_state!(model::HABHydroModel, grid, state)] \code{update\_N!}.
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\file{models/shakti/model.jl}: the Shakti wrapper}\label{ref:shakti}
+\emph{Tour PART 22.}
+\begin{fnlist}
+\item[ShaktiHydroModel\{S\}(sim)] Holds a \code{Shakti.Simulation}, which already owns its grid, state and parameters. Defined without
+  any reference to Shakti, so FastHydrology loads without it.
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\extfile{FastHydrologyMakieExt.jl}: plotting}\label{ref:makieext}
+\emph{Tour PART 23.}
+\begin{fnlist}
+\item[\_xcenters(grid), \_ycenters(grid)] Cell centres $(i - \tfrac12)\Dx$ from the lower-left corner.
+\item[visualize\_field(x, y, data; plot\_title, transpose\_data, colorrange, display\_flag, colormap = Reverse(:RdBu), colorscale, savefig\_path)]
+  A $900\times700$ heatmap with a colorbar and equal aspect. Without \code{colorrange}: the extrema of the finite values, $(0, 1)$ if
+  there are none, $(-1, 1)$ for an all-zero field, $\pm10\,\%$ for a flat one. Displays unless \code{display\_flag = false}; saves if
+  \code{savefig\_path}. Returns the \code{Figure}.
+\item[visualize\_field(grid, field; kwargs...)] The same on the grid's centres.
+\item[visualize\_grid(grid)] Four panels with the cell centres and edges of the $5\times5$ corners (needs $N_x, N_y\ge5$).
+\end{fnlist}
+
+%------------------------------------------------------------------------------
+\subsection{\extfile{FastHydrologyShaktiExt.jl}: running Shakti}\label{ref:shaktiext}
+\emph{Tour PART 24.}
+\begin{fnlist}
+\item[run!(sim::TimeSimulation\{<:ShaktiHydroModel\}; kwargs...)] \code{Shakti.run!(sim.model.sim; kwargs...)}: Shakti's loop, observers
+  and checkpoints (\code{checkpoint\_every}, \code{checkpoint\_path}, \code{restart\_path}, \code{extend\_path}).
+\item[step!(sim::TimeSimulation\{<:ShaktiHydroModel\})] \code{Shakti.step!(s)} then \code{s.total\_time[] += s.dt[]}, which
+  \code{Shakti.run!} would otherwise do; without it, time-dependent forcing (\code{SeasonalMeltInput}) would see the same time on every
+  call. For a coupled driver: update \code{sim.model.sim.state} (\code{zb}, \code{zs}, \code{H}, \code{mask}, \ldots) in place, call
+  \code{step!}, read \code{sim.model.sim.state.N}. The tour checks it equals \code{Shakti.step!} plus the time update, bit for bit.
+\end{fnlist}

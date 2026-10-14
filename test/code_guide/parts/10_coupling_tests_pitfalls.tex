@@ -1,0 +1,134 @@
+%==============================================================================
+\section{Coupling, tests and pitfalls}
+%==============================================================================
+
+\subsection{Coupling to an ice-sheet model}\label{sec:coupling}
+The steady models are built to be called by an ice model once per time step. The Yelmo drivers in Kryonomos.jl
+(\code{examples/fasthydrology/Antarctica\_yelmo-fasthydrology.jl}, \code{Greenland\_...}) use this pattern, which every
+function below exists to support:
+\begin{enumerate}[leftmargin=1.5em]
+\item \emph{Build once:} grid, \code{HydroState}, \code{KazmierczakHydroModel} (with \code{PrescribedFieldSlidingLaw(grid, taub)} and,
+  optionally, \code{StaggeredFriction(ux\_acx, uy\_acy)}), \code{SteadyStateSimulation}.
+\item \emph{Each step, ice $\to$ hydrology, in place:} \code{state.mask}, \code{state.h}, \code{state.b}; \code{model.abs\_v\_b} (m/s!),
+  \code{model.A\_visc}; \code{set\_basal\_terms!(model; G, q\_T, i\_eb)} with Yelmo's \code{Q\_geo}, \code{Q\_ice\_b} (mW\,m$^{-2}$ $\to$
+  W\,m$^{-2}$) and surface water; \code{model.friction\_discretization.ux .= ...}; \code{model.sliding\_law.tau\_b .= taub}.
+\item \code{run!(sim)}.
+\item \emph{Hydrology $\to$ ice:} \code{state.N} to Yelmo's \code{N\_eff}, \code{state.W} to \code{H\_w}, and
+  \code{freeze\_on\_capacity!(C, model, grid, state)} for Yelmo's capacity basal boundary condition (the water a cold base may
+  refreeze).
+\item \emph{Inside Yelmo's velocity iteration:} if \code{N\_responds\_to\_ub(model)}, a hook calls \code{N\_from\_ub!(model, grid, state,
+  u\_b)} with the iteration's speed (Section~\ref{fp:ub}), so $N$ and $u_b$ are solved together.
+\item \emph{Output and restart:} \code{write\_output!} every $k$ steps; \code{save\_checkpoint} with the ice model's own restart;
+  \code{NetCDFOutputWriter(...; resume\_step)} and \code{load\_checkpoint!} on resuming.
+\end{enumerate}
+Because the model keeps $q$ and \code{state.N} between calls, the Picard loops start warm from the previous step. Nothing else
+carries over: the routing tape is re-recorded each \code{update\_q!}.
+
+For Shakti, the driver builds a \code{Shakti.Simulation}, wraps it (\code{TimeSimulation(ShaktiHydroModel(sim))}), updates
+\code{sim.model.sim.state} in place each step and calls \code{step!} (or uses Shakti's own API directly, as the Kryonomos drivers do).
+
+\subsection{The test suite}\label{tests:suite}
+\code{test/runtests.jl} (\code{Pkg.test()}; CI on Ubuntu with the latest Julia 1.x, \code{.github/workflows/CI.yml}). Its environment
+\code{test/Project.toml} adds MAT, NCDatasets, Shakti (from GitHub) and pins ParallelStencil to 0.16.0.
+\begin{center}\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{5.0cm}>{\raggedright\arraybackslash}p{10.1cm}}
+\toprule
+file & what it checks \\
+\midrule
+\endhead
+\code{common/\allowbreak{}grid\_state\_test.jl} & grid and state construction \\
+\code{common/\allowbreak{}array\_grid\_test.jl} & \code{convolve!} conserves mass; edge gradients are one-sided and full; \code{routing\_weight} matches the face-flux
+  geometry for $\Dx\ne\Dy$; filling changes the routing but not $N$'s potential \\
+\code{common/\allowbreak{}output\_checkpoint\_test.jl} & \code{Net\allowbreak{}CDFOutput\allowbreak{}Writer} write/read, \code{overwrite}, \code{resume\_step} trimming (and with nothing to trim),
+  missing fields; checkpoint round trip; the atomic write leaves no \code{.tmp} \\
+\code{models/\allowbreak{}kazmierczak2024/\allowbreak{}kazmierczak2024\_test.jl} & steady state finite and non-negative; the three $W$ closures and their clamps;
+  \code{q\_max} is per-second; the dissipation melt; the source built from terms; \code{calc\_tau\_b}; Weertman and $N$-dependent laws
+  (the $(q,N)$ loop); a flat zero-flux region; \code{update\_q\_from\_psi\_out!} finite where $c_f = 0$; iterative = recursive; the
+  \code{psi\_out\_algorithm} keyword; topological = recursive on acyclic grids and cycle detection;
+  \code{coupling\_length\_kamb86} = Kamb \& Echelmeyer's multiple; \code{N\_from\_ub!} \\
+\code{models/\allowbreak{}kazmierczak2024/\allowbreak{}routing\_schemes\_test.jl} & Warner, Quinn, Quinn(original), Tarboton conserve water on a priority-flood-filled
+  bumpy surface; ModifiedTarboton and GDSTarboton run; Quinn's original weights; \code{QFrom\allowbreak{}Face\allowbreak{}Average} on a uniform slope;
+  \code{FaceDissipation} positive for downhill flow; invalid combinations rejected; \code{Staggered\allowbreak{}Friction};
+  \code{freeze\_on\_capacity!} closes the routing balance \\
+\code{models/\allowbreak{}kazmierczak2024/\allowbreak{}data\_loaders\_test.jl} & bed-rheology options of both loaders (needs the data files) \\
+\code{models/\allowbreak{}hab/\allowbreak{}hab\_test.jl} & HAB steady state \\
+\code{models/\allowbreak{}shakti/\allowbreak{}shakti\_ext\_test.jl} & \code{run!} through \code{TimeSimulation} reaches \code{tsteps*dt}; \code{step!} advances \code{total\_time} per call
+  (in its own module, because both packages export \code{run!}) \\
+\bottomrule
+\end{longtable}
+\end{center}
+The code tour adds checks the suite does not make: the candidate-list Jacobi fill equals naive passes, the taped routing
+equals the recursion bit for bit (with and without the cap), the cached FFT equals a brute-force convolution, the fused
+\code{update\_N!} equals the step-by-step functions bit for bit, $S_\infty$, $H$, $N_\infty$ at one cell by hand, the face
+divergence and face-dissipation energy identities, \code{step!} equals \code{Shakti.step!} plus the time update, and a coverage
+count of every definition. Only \code{test/runtests.jl}, \code{test/Project.toml}, \code{test/common/} and \code{test/models/} are
+tracked by git; the tour, this guide and the experiment folders under \code{test/} are ignored.
+
+\subsection{Known pitfalls}\label{sec:pitfalls}
+\begin{enumerate}[leftmargin=1.5em]
+\item \emph{Units.} Everything is SI. Velocities and rate factors in m/yr and yr$^{-1}$ must go through \code{perYear2perSecond}; Yelmo's
+  heat fluxes are mW\,m$^{-2}$. A forgotten conversion of $A$ makes $A$ $3\times10^7$ times too large, and $\Ninf$ sits on its
+  floor everywhere.
+\item \emph{\code{coupling\_length\_kamb86} unset.} The constructor warns and uses 10 (ice-sheet upper bound). On coarse grids the
+  coupling length is below a cell: pass 0. The keyword is the effective length in ice thicknesses; \code{longcoupwater} is half of it.
+\item \emph{Flat geometry.} A zero potential gradient has no flow direction: $c_f = 0$, and $q = \psiout/\varepsilon$ is huge where
+  water arrives. Use real or sloped geometry, or \code{q\_max}.
+\item \emph{No grounded cell.} \code{masked\_mean} returns NaN. With the smoothing on, the mean thickness is NaN and
+  \code{coupling\_kernel} throws an \code{InexactError} (from \code{round(Int, NaN)}); with it off, $N = q = 0$ but $W$ = NaN under
+  \code{MeanGradient} (tour PART~14). A coupled run whose domain loses all grounded ice must skip the call.
+\item \emph{Grounded means \code{mask == 1}.} Fractional masks count as not grounded in K24; HAB tests \code{mask == 0} for floating,
+  so a fractional value there is treated as grounded by HAB.
+\item \emph{GDSWarner loses water} to routing cycles (3--34\,\% of the melt on the test data). It is kept to reproduce K24; use Warner.
+\item \emph{RecursivePsiOut} can overflow the stack on large grids; \code{TopologicalPsiOut} errors on real data (cycles). Both
+  only implement GDSWarner. Use the default \code{TapedPsiOut}.
+\item \emph{Changing the routing inputs by hand.} After editing \code{mask} or the gradient fields directly, call
+  \code{invalidate\_routing\_tape!(model)} before \code{route\_psi\_out!}; \code{update\_q!} does it itself.
+\item \emph{No friction in a coupled run.} With \code{NoFrictionSlidingLaw} and a host $q_T$ that already contains the frictional heat,
+  the source at cold bases is $-Q_b/L$ and \code{N\_from\_ub!} cannot remove the step-to-step cycle; use \code{PrescribedFieldSlidingLaw}
+  with the host's $\tau_b$.
+\item \emph{\code{StaggeredFriction} copies its velocities.} Update \code{model.friction\_discretization.ux/uy} in place each step.
+\item \emph{\code{run!} and \code{step!} name clash} with Shakti: qualify them, or \code{import Shakti}.
+\item \emph{Calling \code{Shakti.step!} directly} does not advance \code{total\_time}; \code{FastHydrology.step!} does.
+\item \emph{Comparing with Shakti:} $\rhoi$ is 917 here and 910 in Shakti; Shakti's sliding law is \code{ShaktiRegularizedCoulombSlidingLaw},
+  not \code{RegularizedCoulombSlidingLaw}.
+\item \emph{Plot axes} are measured from the grid's lower-left corner, not in the data's coordinates. \code{load\_Kazmierczak} swaps
+  $x$ and $y$ of the file.
+\item \emph{The $(q,N)$ loop} may stop at \code{max\_qN\_iters} without converging; read the log (\code{qN\_verbose}).
+\end{enumerate}
+
+\subsection{Open issues found while writing this guide}\label{pit:open}
+None of these changes a result of the default configuration; they are listed so they can be fixed or documented.
+\begin{enumerate}[leftmargin=1.5em]
+\item \emph{Stale documentation of the defaults.} The README says \code{RecursivePsiOut()} is the default \code{psi\_out\_algorithm} (it is
+  \code{TapedPsiOut()}) and does not mention the routing schemes, filling algorithms, $q$ conversions or
+  \code{coupling\_length\_kamb86} (it says \code{longcoupwater}). In the source: the docstrings of \code{AbstractPsiOutAlgorithm} and
+  \code{RecursivePsiOut} still call recursion the default; the field comment of \code{psi\_out\_algorithm} lists only
+  Recursive/Iterative; \code{route\_psi\_out!}'s docstring omits \code{TapedPsiOut}; the header of \file{routing.jl} and a comment in
+  \code{update\_q!} call \code{GDSWarner} the default; \code{update\_q!}'s docstring describes a $10^5$\,m$^2$/yr clamp that is now opt-in;
+  a comment in \code{kazmierczak2024\_test.jl} calls \code{LocalGradient} the Darcy--Weisbach default (it is \code{MeanGradient}).
+  \code{update\_S\_inf!}'s docstring names a Manning law; the law and $K$ are Darcy--Weisbach.
+\item \emph{\code{TopologicalPsiOut}'s error message} says cycles are expected ``whenever \code{longcoupwater != 0}'' and suggests
+  \code{longcoupwater = 0}, which its own docstring contradicts (cycles persist without smoothing on real data).
+\item \emph{The minimum-width branch of \code{coupling\_kernel}} sets \code{scale} but not \code{width}; the kernel size and support are
+  computed from \code{width}, so a cone narrower than a cell gives a $1\times1$ kernel (no smoothing), not the ``at least one cell''
+  its comment promises (tour PART~14). The behaviour (no smoothing) is arguably right; the comment or the code should change.
+\item \emph{\code{abs\_grad\_phi0\_s} is $|s_x| + |s_y|$}, an $L^1$ norm, though documented as the magnitude of the smoothed gradient. It
+  is up to $\sqrt2$ larger than the Euclidean magnitude and enters only \code{LaminarThickness}; whether KORI-ULB's \code{gdsmag} is
+  the same should be checked before relying on Laminar $W$ for comparisons.
+\item \emph{No grounded cell} gives an \code{InexactError} with smoothing on and NaN $W$ with it off (pitfall 4). A guard in
+  \code{masked\_mean}'s callers would make the model return $N = 0$ cleanly.
+\item \emph{\code{load\_yelmox}} opens the dataset with \code{NCDataset(path)} and never closes it; \code{NetCDFOutputWriter}'s resume errors
+  (missing variable) leave the file open.
+\item \emph{A failed \code{write\_output!} leaves a partial slice.} It appends \code{step} and \code{time} before checking that every
+  field was passed, so a missing field raises only after the slice exists: the file then has one more step, with the fields
+  after the missing one unwritten (the tour shows this in PART 9). Checking the \code{NamedTuple} first would make the call
+  all or nothing.
+\item \emph{Float32 is not uniform.} The FFT cache and \code{StaggeredFriction} are \code{Float64}; \code{max(0.0, ...)} literals remain in
+  the final clamp of \code{accumulate\_psi\_out!}, the iterative and topological traversals and the $N$ kernel; \code{denom\_const} and
+  \code{inv\_n} in \code{update\_N!} are \code{Float64}. Results are converted on assignment, so a Float32 model works, but parts of it
+  compute in Float64.
+\item \emph{Two thicknesses for $\bar h$.} GDS schemes size the kernel from the filled-potential thickness \code{model.h}, the others
+  from \code{state.h}.
+\item \emph{\code{JacobiFill} ignores the mask:} it also fills non-grounded cells, whose filled values then enter the centred gradient of
+  grounded neighbours.
+\end{enumerate}

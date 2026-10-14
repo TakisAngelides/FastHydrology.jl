@@ -1,0 +1,11 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+FastHydrology = "91547ff3-b885-4d35-ac59-f1ca93abc87d"
+MAT = "23992714-dd62-5051-b70f-ba57cb901cac"
+NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+Preferences = "21216c6a-2e73-6563-6e65-726566657250"
+Shakti = "d638fb90-b6c0-422d-b96d-ad6c4615b4d0"
+
+[sources]
+FastHydrology = {path = "../.."}
+Shakti = {path = "../../../Shakti.jl"}
