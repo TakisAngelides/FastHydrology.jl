@@ -1,4 +1,0 @@
-[Shakti]
-backend = "Threads"
-floattype = "Float64"
-cudss = false
