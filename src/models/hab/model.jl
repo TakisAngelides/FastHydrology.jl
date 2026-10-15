@@ -19,7 +19,7 @@ struct HABHydroModel{T <: AbstractFloat, A} <: AbstractHydroModel
     rho_i  ::T  # Density of ice [kg/m3]
     g      ::T  # Gravitational acceleration [m/s2]
     P_w    ::T  # Water pressure coefficient; see below Eq. (3) of Kazmierczak et al 2022
-    sigmat ::T  # Effective pressure lower bound as fraction of overburden pressure
+    N_min  ::T  # Effective pressure lower bound [Pa]; 0.0 means no floor
 
     # Effective pressure
     Po  ::A  # Ice overburden pressure (rho_i * g * ice_thickness) [Pa]
@@ -48,12 +48,12 @@ function HABHydroModel(grid::AbstractHydroGrid)
     rho_i  = T(917.0)
     g      = T(9.81)
     P_w    = T(0.96)
-    sigmat = T(0.02)
+    N_min  = zero(T)
 
     # Effective pressure fields
     Po  = alloc_field(grid)
     p_w = alloc_field(grid)
 
-    return HABHydroModel(rho_sw, rho_i, g, P_w, sigmat, Po, p_w)
+    return HABHydroModel(rho_sw, rho_i, g, P_w, N_min, Po, p_w)
 
 end

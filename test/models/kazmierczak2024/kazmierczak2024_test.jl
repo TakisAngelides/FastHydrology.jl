@@ -22,9 +22,9 @@
         @test all(isfinite, state.W)
         @test all(>=(0.0), state.N)
         @test all(>=(0.0), state.W)
-        # Wmin/Wmax default to 0.0/Inf (no clamp -- see KazmierczakHydroModel's docstring), so there's
+        # W_min/W_max default to 0.0/Inf (no clamp -- see KazmierczakHydroModel's docstring), so there's
         # no clamp bound to check against defaults here; the water_thickness_algorithm testset below
-        # passes explicit KORI-ULB-matching Wmin/Wmax to actually exercise the clamping logic.
+        # passes explicit KORI-ULB-matching W_min/W_max to actually exercise the clamping logic.
     end
 
     @testset "water_thickness_algorithm keyword selects the update_W! closure" begin
@@ -43,7 +43,7 @@
         # thin-sheet approximation), so only finiteness/non-negativity applies. DarcyWeisbachThickness
         # (both its default LocalGradient() and its MeanGradient() diagnostic variant) and
         # LaminarThickness (both gradient_convention options) all represent a thin sheet and are
-        # clamped to [Wmin, Wmax] -- see AbstractWaterThicknessAlgorithm's docstring in model.jl.
+        # clamped to [W_min, W_max] -- see AbstractWaterThicknessAlgorithm's docstring in model.jl.
         # There is deliberately no ConduitThickness option: model.H is a local conduit depth, not an
         # areal quantity, so it is not offered as a state.W closure (see
         # AbstractWaterThicknessAlgorithm's docstring) -- use model.H directly if you want that
@@ -56,18 +56,18 @@
             (LaminarThickness(gradient_convention = LocalGradient()), true),
         )
             state = HydroState(grid, mask, h, b)
-            # Wmin/Wmax passed explicitly (KORI-ULB's own Wdmin/Wdmax) to actually exercise the
+            # W_min/W_max passed explicitly (KORI-ULB's own Wdmin/Wdmax) to actually exercise the
             # clamping logic below -- they default to 0.0/Inf (no clamp) otherwise.
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                            water_thickness_algorithm = algorithm, dissipation_verbose = false,
-                                           Wmin = 1e-8, Wmax = 0.015)
+                                           W_min = 1e-8, W_max = 0.015)
             sim = SteadyStateSimulation(model, grid, state)
             run!(sim)
 
             @test all(isfinite, state.W)
             @test all(>=(0.0), state.W)
             if clamped
-                @test all(w -> model.Wmin <= w <= model.Wmax, state.W)
+                @test all(w -> model.W_min <= w <= model.W_max, state.W)
             end
         end
     end

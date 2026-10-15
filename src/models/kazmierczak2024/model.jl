@@ -31,11 +31,11 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     l_c             ::T    # Distance between conduits [m]
     K               ::T    # Conductivity coefficient in Darcy-Weisbach relation
     eta_w           ::T    # Dynamic viscosity of water [Pa s]
-    Wmin            ::T    # Minimum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to 0.0 (no floor) -- pass 1e-8 for KORI-ULB's own Wdmin if you want that bound back
-    Wmax            ::T    # Maximum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to Inf (no ceiling) -- pass 0.015 for KORI-ULB's own Wdmax if you want that bound back
+    W_min            ::T    # Minimum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to 0.0 (no floor) -- pass 1e-8 for KORI-ULB's own Wdmin if you want that bound back
+    W_max            ::T    # Maximum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to Inf (no ceiling) -- pass 0.015 for KORI-ULB's own Wdmax if you want that bound back
     water_thickness_algorithm ::WT # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
     longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients -- KORI-ULB's own internal parameter, unchanged in meaning. Set via the constructor's `coupling_length_kamb86` keyword (longcoupwater = coupling_length_kamb86 / 2), not directly -- see that keyword's docstring for why
-    sigmat          ::T    # Effective pressure lower bound as fraction of overburden pressure. Defaults to 0.0 (no floor) -- pass 0.02 for KORI-ULB's own value if you want that bound back
+    N_min           ::T    # Minimum allowed effective pressure N_inf [Pa]. Defaults to 0.0 (no floor) -- pass a small positive value [Pa] if you hit the flat-cell NaN edge case
     q_min           ::T    # Minimum allowed value for the distributed water flux
     q_max           ::T    # Maximum allowed value for the distributed water flux. Defaults to Inf (no ceiling) -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap if you want that bound back
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
@@ -195,21 +195,21 @@ The `water_thickness_algorithm` keyword (`DarcyWeisbachThickness()` by default) 
 docstring (water_thickness.jl) for the three available closures (`ArealConduitThickness`, `DarcyWeisbachThickness`,
 `LaminarThickness`) and how they differ.
 
-`Wmin`/`Wmax`/`sigmat`/`q_max` all default to no-op values (`0.0`/`Inf`/`0.0`/`Inf` respectively) --
-i.e. nothing is clamped unless you ask for it. KORI-ULB's own values (`1e-8`/`0.015`/`0.02`/
-`perYear2perSecond(1e5)`) are still available, just not silently applied: pass them explicitly if you
+`W_min`/`W_max`/`q_max`/`N_min` all default to no-op values (`0.0`/`Inf`/`Inf`/`0.0` respectively) --
+i.e. nothing is clamped unless you ask for it. KORI-ULB's own values (`1e-8`/`0.015`/
+`perYear2perSecond(1e5)`; and `0.02*Po`, which is cell-dependent so has no single `N_min` equivalent) are still available, just not silently applied: pass them explicitly if you
 want that fidelity, or if you hit the numerical-stability edge cases they exist to guard against. Two
 of the four are genuinely load-bearing for robustness, not just KORI-ULB fidelity, so removing them by
 default is a real tradeoff, not a free one:
 - `q_max = Inf` removes the cap Kori-ULB's own `SubWaterFlux.m` applies "for numerical stability"
   (per its own comment) -- without it, a sufficiently pathological cell (steep local gradient, small
   drainage area, high local melt) can drive `q` arbitrarily large, propagating into `S_inf`/`H`/`N_inf`.
-- `sigmat = 0.0` removes `N_inf`'s floor at `sigmat*Po`; at a genuinely flat, zero-potential-gradient
+- `N_min = 0.0` removes any floor on `N_inf`; at a genuinely flat, zero-potential-gradient
   cell (`phi0 = 0` as well as `N_inf = 0`), `update_N!`'s `erf(sqrt(pi)*phi0/(2*N_inf))*N_inf` term
-  hits a `0/0` inside the `erf` argument (`NaN`), whereas a nonzero `sigmat` floor keeps `N_inf` away
+  hits a `0/0` inside the `erf` argument (`NaN`), whereas a positive `N_min` floor keeps `N_inf` away
   from exactly zero.
 
-`Wmin`/`Wmax` are lower risk to leave unclamped: `state.W` is a terminal diagnostic field (see
+`W_min`/`W_max` are lower risk to leave unclamped: `state.W` is a terminal diagnostic field (see
 `update_W!`'s docstring in water_thickness.jl) that feeds back into nothing else in the model, so an
 unclamped value there can't itself destabilize the rest of a solve.
 
@@ -280,11 +280,11 @@ function KazmierczakHydroModel(
     H0_efficient  = 0.1,                          # H_0: thickness of canals for soft bed deformation [m]
     conduit_spacing = 10000.0,                    # l_c: distance between conduits [m]
     water_viscosity = perYear2perSecond(1.8e-3),  # eta_w: dynamic viscosity of water [Pa s] -- matches KORI-ULB's own par.waterviscosity, not literal SI water viscosity
-    Wmin          = 0.0,                          # Minimum subglacial water layer thickness [m]; no floor by default -- pass 1e-8 for KORI-ULB's own Wdmin
-    Wmax          = Inf,                          # Maximum subglacial water layer thickness [m]; no ceiling by default -- pass 0.015 for KORI-ULB's own Wdmax
+    W_min          = 0.0,                          # Minimum subglacial water layer thickness [m]; no floor by default -- pass 1e-8 for KORI-ULB's own Wdmin
+    W_max          = Inf,                          # Maximum subglacial water layer thickness [m]; no ceiling by default -- pass 0.015 for KORI-ULB's own Wdmax
     water_thickness_algorithm = DarcyWeisbachThickness(), # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
     coupling_length_kamb86 = nothing,             # Kamb & Echelmeyer (1986) stress-gradient-coupling length, as a direct multiple of mean ice thickness (>= 0; 0 disables the smoothing); no safe no-op default, so leaving this unspecified defaults to 10.0 and emits a @warn explaining how to choose it
-    sigmat        = 0.0,                          # Effective pressure lower bound as fraction of overburden pressure; no floor by default -- pass 0.02 for KORI-ULB's own value
+    N_min         = 0.0,                          # Minimum effective pressure N_inf [Pa]; no floor by default
     q_min         = 0.0,                          # Minimum allowed value for the distributed water flux
     q_max         = Inf,                          # Maximum allowed value for the distributed water flux; no ceiling by default -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap
     fill_iters    = 10,                           # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
@@ -332,10 +332,10 @@ function KazmierczakHydroModel(
     l_c           = T(conduit_spacing)
     K             = (T(2)/T(pi))^(T(0.25)) * sqrt((T(pi) + T(2)) / (rho_w * f))
     eta_w         = T(water_viscosity)
-    Wmin          = T(Wmin)
-    Wmax          = T(Wmax)
+    W_min          = T(W_min)
+    W_max          = T(W_max)
 
-    # coupling_length_kamb86 has no numerically-safe "no-op" default the way Wmin/Wmax/q_max/sigmat do
+    # coupling_length_kamb86 has no numerically-safe "no-op" default the way W_min/W_max/q_max/N_min do
     # (see this constructor's docstring): its correct value genuinely depends on grid resolution
     # relative to ice thickness, and silently picking a value the grid can't resolve produces different
     # (not obviously wrong) physics rather than an out-of-range number, so there's no way to make an
@@ -353,7 +353,7 @@ function KazmierczakHydroModel(
     # coupling_length_kamb86 equal Kamb & Echelmeyer's ice-thickness multiple directly.
     longcoupwater = T(coupling_length_kamb86) / T(2)
 
-    sigmat        = T(sigmat)
+    N_min         = T(N_min)
     q_min         = T(q_min)
     q_max         = T(q_max)
     fill_iters    = Int(fill_iters)
@@ -427,7 +427,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, friction_discretization,
+        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, W_min, W_max, water_thickness_algorithm, longcoupwater, N_min, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_qN_iters, qN_rtol, qN_verbose
 )

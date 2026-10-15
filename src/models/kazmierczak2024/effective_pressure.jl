@@ -40,7 +40,7 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     update_N_grounded_kernel!(state.N, model.Q, model.S_inf, model.H_hard, model.H_soft, model.H, model.Po, model.N_inf,
         model.q, model.abs_grad_phi0, model.kappa, model.abs_v_b, model.A_visc, model.phi0, state.h, state.mask,
         grid.Nx, grid.Ny, model.l_c, K_fac, grad_exp, Q_exp, model.H_0, model.F_till, Q_c, model.rho_i, model.g,
-        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.sigmat, sqrt_pi, state.b, model.rho_sw)
+        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.N_min, sqrt_pi, state.b, model.rho_sw)
 
     return nothing
 
@@ -104,7 +104,7 @@ end
 function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
                                    q, abs_grad_phi0, kappa, abs_v_b, A_visc, phi0, h, mask,
                                    Nx, Ny, l_c, K_fac, grad_exp, Q_exp, H_0, F_till, Q_c, rho_i, g,
-                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, sigmat, sqrt_pi, b, rho_sw)
+                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, N_min, sqrt_pi, b, rho_sw)
     z = zero(eltype(N))
     @inbounds for i in 1:Nx
 
@@ -139,7 +139,7 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
             min(max(
                 ((H_ij * H_ij) / (S_ij * S_ij) * (sliding_coeff * rho_i * L_w * abs_v_b[i, j] * h_b + melt_coeff * Q_ij * abs_grad_phi0[i, j])
                 / (denom_const * A_visc[i, j]))^inv_n,
-                sigmat * Po_ij), Po_ij)
+                N_min), Po_ij)
         end
 
         # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment). The erf argument
@@ -237,7 +237,7 @@ function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     @. model.N_inf = min(max(
         ((model.H * model.H) / (model.S_inf * model.S_inf) * (sliding_coeff * model.rho_i * model.L_w * model.abs_v_b * model.h_b + melt_coeff * model.Q * model.abs_grad_phi0) # numerator
         / (denom_const * model.A_visc))^inv_n, # denominator
-        model.sigmat * model.Po), model.Po) # min and max values of N_inf
+        model.N_min), model.Po) # min and max values of N_inf
 
     overwrite_where!(grid, model.N_inf, model.S_inf, ==(0.0), model.Po)
 

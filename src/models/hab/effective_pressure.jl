@@ -14,7 +14,7 @@ function update_N!(model::HABHydroModel, grid::AbstractHydroGrid, state::HydroSt
     update_Po!(model, grid, state)
     update_p_w!(model, grid, state)
 
-    @. state.N = max(model.Po - model.p_w, model.sigmat * model.Po)
+    @. state.N = max(model.Po - model.p_w, model.N_min)
 
     return nothing
 

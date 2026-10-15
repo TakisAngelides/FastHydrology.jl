@@ -29,14 +29,14 @@ The three closures still answer different physical questions and are not interch
   the model's own distributed flux `q` and, by default, a domain-wide masked mean of the potential
   gradient (`gradient_convention = MeanGradient()`, the same averaging convention `LaminarThickness`
   uses, kept consistent between the package's two sheet-flow closures): `d = (f*rho_w*q^2 /
-  (4*abs_grad_phi0))^(1/3)`. Clamped to `[Wmin, Wmax]`, since it represents a thin-sheet quantity.
+  (4*abs_grad_phi0))^(1/3)`. Clamped to `[W_min, W_max]`, since it represents a thin-sheet quantity.
   Pass `gradient_convention = LocalGradient()` for the local, per-cell gradient instead (matching the
   convention `update_S_inf!` uses) -- see `AbstractGradientConvention`'s docstring below.
 - [`ArealConduitThickness`](@ref): `S_inf / l_c`, the conduit's cross-sectional area smeared over the
   inter-conduit spacing -- a grid-cell-averaged "equivalent film thickness" comparable to a sheet
   model's W, derived from the same turbulent Manning-Strickler `S_inf` that drives `N_inf`. Bed-type
-  independent (kappa only blends H's shape assumption, not S_inf itself) and not clamped to `[Wmin,
-  Wmax]`: those bounds were chosen for a thin distributed sheet, and this areal quantity can
+  independent (kappa only blends H's shape assumption, not S_inf itself) and not clamped to `[W_min,
+  W_max]`: those bounds were chosen for a thin distributed sheet, and this areal quantity can
   legitimately exceed them too (a dense-enough conduit network smeared over its spacing is not
   bounded the same way a single laminar/turbulent sheet-flow inversion is).
 - [`LaminarThickness`](@ref): the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al
@@ -45,7 +45,7 @@ The three closures still answer different physical questions and are not interch
   `gradient_convention` type parameter. The magnitude is Euclidean, unlike Kori-ULB's L1 `|sx| + |sy|`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's
   laminar sheet closure, but physically inconsistent with K24's own turbulent-flow assumption for
   `q` -- not the default, and not recommended as "the" reported thickness for a K24 run. Clamped to
-  `[Wmin, Wmax]`.
+  `[W_min, W_max]`.
 
 Both `DarcyWeisbachThickness` and `LaminarThickness` take an `AbstractGradientConvention` (see below)
 as a type parameter, the same trait-dispatch pattern as `AbstractDissipationMelt`/`AbstractPsiOutAlgorithm`
@@ -106,7 +106,7 @@ struct ArealConduitThickness <: AbstractWaterThicknessAlgorithm end
 $(TYPEDSIGNATURES)
 
 Report the turbulent Darcy-Weisbach sheet-flow inversion `(f*rho_w*q^2 / (4*abs_grad_phi0))^(1/3)` as
-`state.W`, clamped to `[Wmin, Wmax]`. `KazmierczakHydroModel`'s default `water_thickness_algorithm`
+`state.W`, clamped to `[W_min, W_max]`. `KazmierczakHydroModel`'s default `water_thickness_algorithm`
 (with `gradient_convention = MeanGradient()`). See [`AbstractWaterThicknessAlgorithm`](@ref)'s
 docstring for the full comparison, and [`AbstractGradientConvention`](@ref)'s docstring for what
 `gradient_convention = LocalGradient()` does here instead.
@@ -120,7 +120,7 @@ DarcyWeisbachThickness(; gradient_convention = MeanGradient()) = DarcyWeisbachTh
 $(TYPEDSIGNATURES)
 
 Report the original laminar Le Brocq/Weertman sheet-flow inversion `(12*eta_w*q /
-abs_grad_phi0_s)^(1/3)` as `state.W`, clamped to `[Wmin, Wmax]`, with `gradient_convention =
+abs_grad_phi0_s)^(1/3)` as `state.W`, clamped to `[W_min, W_max]`, with `gradient_convention =
 MeanGradient()` by default (as Kori-ULB's own `SubWaterFlux.m`, but with the Euclidean gradient
 magnitude rather than its L1 `|sx| + |sy|`). See
 [`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for why this closure is kept but not the
@@ -181,7 +181,7 @@ consistent between the package's two sheet-flow closures -- see `AbstractGradien
 docstring above), or, with `gradient_convention = LocalGradient()`, the local, per-cell
 gradient instead (matching the convention `update_S_inf!` uses). The turbulent analogue of
 `LaminarThickness` below, and the closure consistent with K24's own turbulent-flow assumption for `q`
-(unlike `LaminarThickness`) -- clamped to `[Wmin, Wmax]` since it represents the same kind of
+(unlike `LaminarThickness`) -- clamped to `[W_min, W_max]` since it represents the same kind of
 thin-sheet quantity. The `+ eps(T)` guards degenerate cells where `abs_grad_phi0` is exactly zero
 (e.g. flat cells outside the glacier extent). Uses `q*q` rather than `q^2.0`: `Float64^Float64`
 dispatches to libm's `pow()` per element, ~17x slower (benchmarked) than a plain multiply for no
@@ -197,7 +197,7 @@ function update_W_darcy_weisbach!(model::AbstractKazmierczakHydroModel, grid::Ab
     # eps(T) computed once as a plain scalar before the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
     epsT = eps(T)
-    @. state.W = min(model.Wmax, max(model.Wmin,
+    @. state.W = min(model.W_max, max(model.W_min,
         (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + epsT))^(1/3)))
     return nothing
 end
@@ -207,7 +207,7 @@ function update_W_darcy_weisbach!(model::AbstractKazmierczakHydroModel, grid::Ab
     # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
     epsT = eps(T)
-    @. state.W = min(model.Wmax, max(model.Wmin,
+    @. state.W = min(model.W_max, max(model.W_min,
         (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + epsT))^(1/3)))
     return nothing
 end
@@ -217,7 +217,7 @@ end
 $(TYPEDSIGNATURES)
 
 `LaminarThickness`: the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al 2009 Eq. 2),
-clamped to `[Wmin, Wmax]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet
+clamped to `[W_min, W_max]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet
 closure -- see `AbstractWaterThicknessAlgorithm`'s docstring above for why this closure is not
 the default (`DarcyWeisbachThickness` is). Uses a single domain-mean smoothed gradient magnitude by
 default (`gradient_convention = MeanGradient()`), as Kori-ULB's own `mean(gdsmag(...))` in
@@ -236,7 +236,7 @@ end
 
 function update_W_laminar!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
     abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
-    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
+    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
     return nothing
 end
 
@@ -244,6 +244,6 @@ function update_W_laminar!(model::AbstractKazmierczakHydroModel, grid::AbstractH
     # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0_s)
     epsT = eps(T)
-    @. state.W = min(model.Wmax, max(model.Wmin, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + epsT))^(1/3)))
+    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + epsT))^(1/3)))
     return nothing
 end

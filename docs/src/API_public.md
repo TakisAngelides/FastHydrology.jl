@@ -66,7 +66,7 @@ water flux, effective pressure, etc.), all sized to match a given grid. Two mode
   [Sliding Laws](@ref). The flux-routing sweep itself has three interchangeable implementations,
   selected with the `psi_out_algorithm` keyword, and the reportable water layer thickness
   `state.W` has three selectable closures, selected with the `water_thickness_algorithm` keyword
-  -- see [Water Flux](@ref) for both. Its numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`)
+  -- see [Water Flux](@ref) for both. Its numerical-safety bounds (`W_min`/`W_max`/`q_min`/`q_max`/`N_min`)
   default to no-op values rather than KORI-ULB's own (still available as explicit opt-ins);
   `longcoupwater` has no such no-op default and warns if left unspecified -- see
   [`KazmierczakHydroModel`](@ref)'s own docstring for the numerical-stability reasoning behind

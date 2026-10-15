@@ -52,7 +52,7 @@ fig = visualize_grid(grid)
 # the ice-sheet range). 10.0 is appropriate for this dataset's 2 km grid.
 #
 # `state.W`'s closure (`water_thickness_algorithm`, default `DarcyWeisbachThickness()`) and its
-# numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`, all no-op by default -- nothing is
+# numerical-safety bounds (`W_min`/`W_max`/`q_min`/`q_max`/`N_min`, all no-op by default -- nothing is
 # clamped unless you ask for it) are left at their defaults here; see the API reference for the
 # other closures (`ArealConduitThickness`, `LaminarThickness`) and KORI-ULB's own bound values.
 model = KazmierczakHydroModel(grid, κ, abs_v_b, A_visc, G, q_T; sliding_law = PrescribedFieldSlidingLaw(grid, tau_b),

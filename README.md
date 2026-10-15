@@ -59,7 +59,7 @@ Two models are implemented so far, sharing the same grid/state/simulation infras
     subtypes `BothDrainage`/`EfficientOnly`/`InefficientOnly` -- see the
     [API reference](https://TakisAngelides.github.io/FastHydrology.jl/dev/API_public/) for
     details), reproducing Sect. 3.2 of the paper.
-  - **Defaults** -- numerical-safety bounds (`Wmin`/`Wmax`/`q_max`/`sigmat`) default to no-op
+  - **Defaults** -- numerical-safety bounds (`W_min`/`W_max`/`q_min`/`q_max`/`N_min`) default to no-op
     values (nothing is clamped unless you ask for it), with KORI-ULB's own values available as
     explicit opt-ins (see each keyword's docstring). `longcoupwater` has no such safe no-op default
     and emits a warning explaining how to choose it (from grid resolution relative to ice
