@@ -158,7 +158,7 @@ The package is organized around four abstractions:
 | [`AbstractSimulation`](@ref) | How to run a model | [`SteadyStateSimulation`](@ref), [`TimeSimulation`](@ref) |
 
 Physics code (`water_flux.jl`, `effective_pressure.jl`) is written against the grid interface --
-`grid.Nx`, `grid.dx`, `alloc_field`, [`fill_halo!`](@ref), [`convolve!`](@ref),
+`grid.Nx`, `grid.dx`, `alloc_field`, [`convolve!`](@ref),
 [`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`masked_mean`](@ref),
 [`masked_max_abs`](@ref), [`masked_max_abs_diff`](@ref), [`overwrite_where!`](@ref) -- rather than
 reaching into a specific backend's internals directly, so a different grid backend would only need

@@ -41,10 +41,6 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
         grid.Nx, grid.Ny, model.l_c, K_fac, grad_exp, Q_exp, model.H_0, model.F_till, Q_c, model.rho_i, model.g,
         model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.sigmat, sqrt_pi, state.b, model.rho_sw)
 
-    for f in (state.N, model.Q, model.S_inf, model.H, model.Po, model.N_inf)
-        fill_halo!(f, grid)
-    end
-
     return nothing
 
 end
@@ -81,7 +77,6 @@ place if they have changed since the last full update.
 """
 function N_from_ub!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, abs_v_b)
     model.abs_v_b .= abs_v_b
-    fill_halo!(model.abs_v_b, grid)
     update_N!(model, grid, state)
     return state.N
 end
@@ -192,7 +187,6 @@ function update_H!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     end
 
     @. model.H = (1 - model.kappa) * model.H_hard + model.kappa * model.H_soft
-    fill_halo!(model.H, grid)
 
     return nothing
 
@@ -221,7 +215,6 @@ function update_S_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     # resolve this indeterminate form in favor of that limit.
     overwrite_where!(grid, model.S_inf, model.Q, ==(0.0), 0.0)
 
-    fill_halo!(model.S_inf, grid)
 
     return nothing
 
@@ -268,7 +261,6 @@ function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
         model.sigmat * model.Po), model.Po) # min and max values of N_inf
 
     overwrite_where!(grid, model.N_inf, model.S_inf, ==(0.0), model.Po)
-    fill_halo!(model.N_inf, grid)
 
     return nothing
 
@@ -284,7 +276,6 @@ by the characteristic channel spacing l_c.
 function update_Q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
     @. model.Q = model.q * model.l_c
-    fill_halo!(model.Q, grid)
 
     return nothing
 

@@ -22,8 +22,7 @@ confirmed by profiling to allocate its FFT plans and padded/complex buffers fres
 ~20 MB on a realistic grid, since it exposes no hook to reuse them across the repeated calls one
 coupled simulation makes).
 
-Needs no other overrides of the grid interface beyond `alloc_field`: `fill_halo!` is a no-op
-(fields carry no separate halo storage), and the default plain-array implementations of
+Needs no other overrides of the grid interface beyond `alloc_field`: the default plain-array implementations of
 `masked_mean`, `minus_gradient_x!`/`minus_gradient_y!`, etc. already operate correctly on the
 `Array`s this type allocates.
 """
@@ -89,21 +88,6 @@ $(TYPEDSIGNATURES)
 Allocate a scalar cell-centred field on `grid` and initialise it from `data`.
 """
 alloc_field(grid::AbstractHydroGrid, data) = error("alloc_field not implemented for $(typeof(grid))")
-
-"""
-$(TYPEDSIGNATURES)
-
-Fill ghost/halo points of `field` according to the boundary conditions encoded in `grid`.
-
-The default here is a no-op: plain arrays carry no explicit halo storage, and grid backends built
-on them are expected to embed boundary handling directly into their operators instead (e.g. the
-edge-clamped stencil in `minus_gradient_x!`/`minus_gradient_y!` below). Override this only for grid
-backends whose fields carry real halo storage that needs to be kept in sync.
-"""
-function fill_halo!(field, grid::AbstractHydroGrid)
-    return nothing
-end
-
 
 """
 $(TYPEDSIGNATURES)

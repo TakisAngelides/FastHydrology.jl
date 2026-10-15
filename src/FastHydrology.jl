@@ -37,7 +37,7 @@ include("models/shakti/model.jl")
 
 # common/grid.jl
 export AbstractHydroGrid, ArrayHydroGrid
-export fill_halo!, alloc_field
+export alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
 export minus_gradient_x!, minus_gradient_y!
 

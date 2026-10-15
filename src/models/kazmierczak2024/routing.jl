@@ -64,13 +64,10 @@ function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid,
         kernel = coupling_kernel(model, grid, max(masked_mean(grid, state.h, state.mask), 10.0))
         convolve!(grid, model.phi0_filled, model.phi0, kernel)
     end
-    fill_halo!(model.phi0_filled, grid)
     potential_filling!(model, grid, state; from_true_potential = false)
     update_potential_gradients!(model, grid)
     model.minus_grad_phi0_sx .= model.minus_grad_phi0_x
     model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
-    fill_halo!(model.minus_grad_phi0_sx, grid)
-    fill_halo!(model.minus_grad_phi0_sy, grid)
     @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_sx) + abs(model.minus_grad_phi0_sy)
     compute_routing_weights!(model, grid, state)
     return nothing

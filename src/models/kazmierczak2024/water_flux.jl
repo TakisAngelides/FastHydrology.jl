@@ -567,12 +567,11 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Update the geometric potential phi0 and fill halo points.
+Update the geometric potential phi0.
 """
 function update_phi0!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
     @. model.phi0 = model.rho_i * model.g * state.h + model.rho_w * model.g * state.b
-    fill_halo!(model.phi0, grid)
 
     return nothing
 
@@ -596,9 +595,7 @@ function potential_filling!(model::KazmierczakHydroModel, grid::AbstractHydroGri
     # Start from the true potential, unless the caller has already put the surface to fill (e.g. the
     # smoothed potential of a non-GDS routing scheme, see prepare_routing!) into phi0_filled.
     from_true_potential && (phi0 .= model.phi0)
-    fill_halo!(phi0, grid)
     phi0_tmp .= phi0
-    fill_halo!(phi0_tmp, grid)
 
     fill_potential!(model, grid, state, model.fill_algorithm)
 
@@ -644,7 +641,6 @@ function fill_potential!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
         @inbounds for (i, j) in filled
             phi0[i, j] = phi0_tmp[i, j]
         end
-        fill_halo!(phi0, grid)
         pass == model.fill_iters && break
         collect_fill_candidates!(candidates, model.fill_stamp, pass, filled, Nx, Ny)
         empty!(filled)
@@ -716,7 +712,6 @@ function fill_potential!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
         end
     end
 
-    fill_halo!(phi, grid)
     return nothing
 
 end
@@ -820,17 +815,12 @@ function update_potential_gradients!(model::KazmierczakHydroModel, grid::Abstrac
     # then reused for the filled potential's components below.
     minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
     minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
-    fill_halo!(model.minus_grad_phi0_x, grid)
-    fill_halo!(model.minus_grad_phi0_y, grid)
 
     # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
     @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
-    fill_halo!(model.abs_grad_phi0, grid)
 
     minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0_filled)
     minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0_filled)
-    fill_halo!(model.minus_grad_phi0_x, grid)
-    fill_halo!(model.minus_grad_phi0_y, grid)
 
     return nothing
 
@@ -930,8 +920,6 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     convolve!(grid, model.minus_grad_phi0_sx, model.minus_grad_phi0_x, kernel)
     convolve!(grid, model.minus_grad_phi0_sy, model.minus_grad_phi0_y, kernel)
 
-    fill_halo!(model.minus_grad_phi0_sx, grid)
-    fill_halo!(model.minus_grad_phi0_sy, grid)
 
     @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_sx) + abs(model.minus_grad_phi0_sy)
 

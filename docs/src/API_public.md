@@ -29,7 +29,7 @@ physics code in [Water Flux](@ref) and [Effective Pressure](@ref) is written aga
 reaching into a specific backend's internals directly. The concrete grid provided is
 [`ArrayHydroGrid`](@ref), built on plain `Array`s. A different array/mesh backend can be supported
 the same way `ArrayHydroGrid` is, by implementing the
-same interface (`alloc_field`, [`fill_halo!`](@ref), [`convolve!`](@ref),
+same interface (`alloc_field`, [`convolve!`](@ref),
 [`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`masked_mean`](@ref),
 [`masked_max_abs`](@ref), [`masked_max_abs_diff`](@ref), [`overwrite_where!`](@ref)) for a new
 `AbstractHydroGrid` subtype, without touching any physics code -- most of these already have a
@@ -40,7 +40,6 @@ backend like `ArrayHydroGrid` only needs to implement `alloc_field`.
 AbstractHydroGrid
 ArrayHydroGrid
 alloc_field
-fill_halo!
 convolve!
 minus_gradient_x!
 minus_gradient_y!

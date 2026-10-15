@@ -15,7 +15,6 @@ function update_N!(model::HABHydroModel, grid::AbstractHydroGrid, state::HydroSt
     update_p_w!(model, grid, state)
 
     @. state.N = max(model.Po - model.p_w, model.sigmat * model.Po)
-    fill_halo!(state.N, grid)
 
     return nothing
 
@@ -34,7 +33,6 @@ function update_p_w!(model::HABHydroModel, grid::AbstractHydroGrid, state::Hydro
     @. model.p_w = neg_coeff * state.b
     overwrite_where!(grid, model.p_w, state.mask, ==(0.0), state.h; scale = model.P_w * model.rho_i * model.g)
     overwrite_where!(grid, model.p_w, state.b, >=(0.0), 0.0)
-    fill_halo!(model.p_w, grid)
 
     return nothing
 
