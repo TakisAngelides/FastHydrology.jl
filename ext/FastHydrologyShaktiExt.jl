@@ -9,11 +9,12 @@ updates geometry every timestep before/after advancing the hydrology by one step
 """
 module FastHydrologyShaktiExt
 
+using DocStringExtensions: TYPEDSIGNATURES
 using FastHydrology
 using Shakti
 
 """
-    run!(sim::TimeSimulation{<:ShaktiHydroModel}; kwargs...)
+$(TYPEDSIGNATURES)
 
 Runs `sim` by delegating straight to `Shakti.run!(sim.model.sim; kwargs...)`. Any keyword accepted
 by `Shakti.run!` (e.g. `checkpoint_every`, `checkpoint_path`, `restart_path`, `extend_path`) can be
@@ -24,7 +25,7 @@ function FastHydrology.run!(sim::FastHydrology.TimeSimulation{<:FastHydrology.Sh
 end
 
 """
-    step!(sim::TimeSimulation{<:ShaktiHydroModel})
+$(TYPEDSIGNATURES)
 
 Advances `sim` by a single timestep: calls `Shakti.step!(sim.model.sim)` then advances
 `sim.model.sim.total_time[]` by `sim.model.sim.dt`, mirroring one iteration of `Shakti.run!`'s own

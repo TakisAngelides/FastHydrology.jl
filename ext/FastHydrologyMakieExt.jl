@@ -9,6 +9,7 @@ running a simulation -- users who never call `visualize_field`/`visualize_grid` 
 """
 module FastHydrologyMakieExt
 
+using DocStringExtensions: TYPEDSIGNATURES
 using FastHydrology
 using FastHydrology: AbstractHydroGrid
 using CairoMakie
@@ -20,7 +21,7 @@ _xcenters(grid::AbstractHydroGrid) = ((1:grid.Nx) .- 0.5) .* grid.dx
 _ycenters(grid::AbstractHydroGrid) = ((1:grid.Ny) .- 0.5) .* grid.dy
 
 """
-    visualize_field(x, y, data; kwargs...)
+$(TYPEDSIGNATURES)
 
 Visualize a scalar field `data` on coordinates `x`, `y`.
 """
@@ -68,7 +69,7 @@ function FastHydrology.visualize_field(x, y, data;
 end
 
 """
-    visualize_field(grid::AbstractHydroGrid, field; kwargs...)
+$(TYPEDSIGNATURES)
 
 Visualize a cell-centred `field` on `grid`, with axes in grid coordinates measured from the grid's
 lower-left corner.
@@ -80,7 +81,7 @@ function FastHydrology.visualize_field(grid::AbstractHydroGrid, field; kwargs...
 end
 
 """
-    visualize_grid(grid::AbstractHydroGrid)
+$(TYPEDSIGNATURES)
 
 Visualize the corners of `grid`, showing cell centers and boundaries. Works for any grid type that
 exposes the `Nx`, `Ny`, `dx`, `dy` fields of the grid interface; coordinates are measured from the

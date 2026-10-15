@@ -127,6 +127,13 @@ RegularizedCoulombFieldSlidingLaw
 ShaktiRegularizedCoulombSlidingLaw
 calc_tau_b
 update_tau_b!
+set_basal_terms!
+AbstractDissipationDiscretization
+CellCentredDissipation
+FaceDissipation
+AbstractFrictionDiscretization
+CellCentredFriction
+StaggeredFriction
 ```
 
 ## State
@@ -258,16 +265,37 @@ between the two).
 update_q!
 update_phi0!
 potential_filling!
+AbstractFillAlgorithm
+JacobiFill
+LowestNeighbourFill
+PriorityFloodFill
+AbstractGradientDiscretization
+CentredGradient
+FaceGradient
 update_potential_gradients!
 update_smoothed_potential_gradients!
+AbstractRoutingScheme
+GDSWarner
+Warner
+Quinn
+Tarboton
+ModifiedTarboton
+GDSTarboton
+AbstractQConversion
+QFromOutflow
+QFromFaceAverage
+freeze_on_capacity!
 accumulate_psi_out!
 update_psi_out!
 update_psi_out_iterative!
+update_psi_out_taped!
+invalidate_routing_tape!
 route_psi_out!
 AbstractPsiOutAlgorithm
 RecursivePsiOut
 IterativePsiOut
 TopologicalPsiOut
+TapedPsiOut
 update_W!
 AbstractWaterThicknessAlgorithm
 ArealConduitThickness
@@ -293,6 +321,8 @@ et al 2024.
 
 ```@docs
 update_N!
+N_responds_to_ub
+N_from_ub!
 update_Po!
 update_H!
 update_S_inf!
@@ -313,6 +343,7 @@ hand-write that plumbing for the two data formats FastHydrology.jl has been used
 
 ```@docs
 load_Kazmierczak
+load_Kazmierczak_melt
 load_yelmox
 ```
 

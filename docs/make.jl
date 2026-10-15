@@ -70,7 +70,7 @@ makedocs(
     doctest = CI,
     draft = false,
     plugins = [bib],
-    checkdocs = :none,
+    checkdocs = :exports,
     warnonly = true,
 )
 
