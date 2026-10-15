@@ -157,16 +157,6 @@ end
 """
 $(TYPEDSIGNATURES)
 
-The `Q_c` value `update_H!` uses in Eq. (9)'s exp(-Q/Q_c) soft-bed geometry blend, selected by
-`model.drainage_mode` -- see `AbstractDrainageMode` for the physical justification of each case.
-"""
-effective_Q_c(::BothDrainage, Q_c) = Q_c
-effective_Q_c(::EfficientOnly, Q_c::T) where {T} = zero(T)
-effective_Q_c(::InefficientOnly, Q_c::T) where {T} = T(Inf)
-
-"""
-$(TYPEDSIGNATURES)
-
 Update the conduit thickness H by calculating separate values for hard and soft beds,
 then interpolating based on the bed heterogeneity indicator kappa.
 """
@@ -222,19 +212,6 @@ function update_S_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
 end
 
-
-"""
-$(TYPEDSIGNATURES)
-
-Scalar 0/1 coefficients for the sliding-over-obstacles (inefficient) and melt-driven (efficient)
-opening terms of Eq. (5b)/(6a), selected by `model.drainage_mode` -- see `AbstractDrainageMode`.
-Resolved once outside the `@.` broadcast in `update_N_inf!`, the same "precompute the scalar
-sub-expression" pattern as `denom_const` there, so `EfficientOnly`/`InefficientOnly` cost nothing
-beyond multiplying the dropped term by 0.0.
-"""
-opening_coefficients(::BothDrainage, ::Type{T}) where {T} = (one(T), one(T))
-opening_coefficients(::EfficientOnly, ::Type{T}) where {T} = (zero(T), one(T))
-opening_coefficients(::InefficientOnly, ::Type{T}) where {T} = (one(T), zero(T))
 
 """
 $(TYPEDSIGNATURES)

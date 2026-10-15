@@ -4,10 +4,118 @@
 
 # Flux-routing schemes of Le Brocq, Payne & Siegert (2006, Computers & Geosciences 32, 1780-1795,
 # https://doi.org/10.1016/j.cageo.2006.05.003), selected by `model.routing_scheme` -- see
-# `AbstractRoutingScheme` in model.jl. The default `GDSWarner()` keeps its original code path
+# `AbstractRoutingScheme` below. The default `GDSWarner()` keeps its original code path
 # (`record_routing_tape_kernel!` reading the smoothed gradient directly); every other scheme is
 # expressed as per-cell outflow fractions `W[d, i, j]` to the neighbour in direction `d`
 # (`ROUTE_OFFSETS`), which the generic tape recorder below and the face-flux diagnostics use.
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Flux-routing scheme: how each grounded cell's outflow `psi_out` is shared among its neighbours (see
+`KazmierczakHydroModel`'s `routing_scheme` keyword). The options are the algorithms compared by Le
+Brocq, Payne & Siegert (2006, Computers & Geosciences 32, 1780-1795, Sec. 3 and Table 1), named as there:
+
+- [`Warner`](@ref) (default; Budd & Warner 1996, Eq. 8): 4 neighbours, shared in proportion to the
+  potential drop to each downhill neighbour -- i.e. the gradient on each cell face.
+- [`GDSWarner`](@ref) (the original K24/KORI scheme): direction from the Kamb-smoothed gradient
+  components of the filled potential; outflow to at most 2 of the 4 neighbours, by component.
+- [`Quinn`](@ref) (Quinn et al. 1991, Eq. 8): as Warner over all 8 neighbours; `Quinn(original = true)`
+  uses Quinn et al.'s own slope x contour-length weights.
+- [`Tarboton`](@ref) (D-infinity, Tarboton 1997): steepest direction over 8 triangular facets, split
+  between the 2 neighbours bracketing it.
+- [`ModifiedTarboton`](@ref): direction from the local 4-neighbour slope, split between 2 of 8 neighbours.
+- [`GDSTarboton`](@ref): direction from the smoothed gradient components (as GDSWarner), split
+  between 2 of 8 neighbours.
+
+For Warner/Quinn/Tarboton/ModifiedTarboton the Kamb & Echelmeyer (1986) smoothing is applied to the
+potential itself (then filled), rather than to its gradient components -- the same coupling, since
+smoothing commutes with differentiation, but the routing then follows one surface. Warner and Quinn
+only ever send water downhill on that surface, so their routing graph has no cycles and the routed
+flux is conserved exactly (up to cells with no downhill neighbour, which a hollow fill removes -- use
+`PriorityFloodFill` with them). The GDS schemes can send water uphill on the filled potential (Le
+Brocq Sec. 3, Step 5), which is what creates routing cycles: on the Thwaites 2 km / GrIS 8 km / AIS
+16 km test data GDSWarner loses 3% / 8% / 34% of the positive basal melt in them, Warner none. Schemes
+other than `GDSWarner` need `psi_out_algorithm = TapedPsiOut()` (the default).
+
+`fill_algorithm`, `q_conversion`, `dissipation_discretization` and `gradient_discretization` default
+to `nothing`, meaning "the natural partner of `routing_scheme`": `PriorityFloodFill()`,
+`QFromFaceAverage()`, `FaceDissipation()` and `FaceGradient()` for `Warner`; `JacobiFill()`,
+`QFromOutflow()`, `CellCentredDissipation()` and `CentredGradient()` for the GDS schemes (so
+`routing_scheme = GDSWarner()` alone reproduces the original K24 set-up exactly); `PriorityFloodFill()`,
+`QFromOutflow()`, `CellCentredDissipation()` and `CentredGradient()` for the other 8-neighbour
+schemes. Pass any of them explicitly to override.
+"""
+abstract type AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Original K24/KORI routing. See [`AbstractRoutingScheme`](@ref)."""
+struct GDSWarner <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Budd & Warner (1996) 4-neighbour potential-drop (face-gradient) routing; the default. See [`AbstractRoutingScheme`](@ref)."""
+struct Warner <: AbstractRoutingScheme end
+"""
+$(TYPEDSIGNATURES)
+
+Quinn et al. (1991) 8-neighbour multiple-flow-direction routing. See [`AbstractRoutingScheme`](@ref).
+
+- `Quinn()` / `Quinn(original = false)`: as written in Le Brocq et al. (2006) Eq. 8 -- shares
+  proportional to the potential drop to each downhill neighbour, with no distance or contour-length
+  factor (so per unit drop a diagonal gets the same weight as a cardinal neighbour).
+- `Quinn(original = true)`: Quinn et al.'s own weights, `tan(beta_d) * L_d` with
+  `tan(beta_d) = (phi_c - phi_n) / delta_d` (`delta_d` = dx, dy or sqrt(dx^2 + dy^2)) and effective
+  contour lengths `L = 0.5 * Delta` (cardinal) and `0.354 * Delta` (diagonal). For rectangular cells:
+  `0.5 * dy` for x-neighbours, `0.5 * dx` for y-neighbours, `(sqrt(2)/4) * sqrt(dx * dy)` for diagonals.
+"""
+struct Quinn <: AbstractRoutingScheme
+    original::Bool
+end
+Quinn(; original::Bool = false) = Quinn(original)
+"""$(TYPEDSIGNATURES)
+
+Tarboton (1997) D-infinity routing. See [`AbstractRoutingScheme`](@ref)."""
+struct Tarboton <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Le Brocq et al. (2006) modified Tarboton routing. See [`AbstractRoutingScheme`](@ref)."""
+struct ModifiedTarboton <: AbstractRoutingScheme end
+"""$(TYPEDSIGNATURES)
+
+Le Brocq et al. (2006) GDS-Tarboton routing. See [`AbstractRoutingScheme`](@ref)."""
+struct GDSTarboton <: AbstractRoutingScheme end
+
+"""
+$(TYPEDSIGNATURES)
+
+Number of neighbour directions a routing scheme can send water to (4 or 8).
+"""
+n_directions(::Union{GDSWarner, Warner}) = 4
+n_directions(::AbstractRoutingScheme) = 8
+
+"""
+$(TYPEDSIGNATURES)
+
+How the routed flux `psi_out` [m3/s] becomes the cell-centred distributed flux `q` [m2/s] (see
+`KazmierczakHydroModel`'s `q_conversion` keyword):
+- [`QFromOutflow`](@ref) (default for all schemes except `Warner`): `q = psi_out / corfac`, the cell's outflow over the flux
+  cross-section `dx|sin| + dy|cos|` of its flow direction (Le Brocq et al. 2006 Eq. 9). Works for every
+  routing scheme; describes the flux at the cell's downstream side.
+- [`QFromFaceAverage`](@ref): face fluxes `F` from the routing give face-normal `q_x = F/dy`,
+  `q_y = F/dx`; each component is averaged from its two faces to the centre and `q = |(q_x, q_y)|`.
+  Describes the flux at the centre (mean of inflow and outflow). 4-neighbour schemes only; the
+  default with `Warner` routing.
+"""
+abstract type AbstractQConversion end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractQConversion`](@ref)."""
+struct QFromOutflow <: AbstractQConversion end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractQConversion`](@ref)."""
+struct QFromFaceAverage <: AbstractQConversion end
 
 
 const ROUTE_OFFSETS  = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1))
@@ -25,7 +133,7 @@ $(TYPEDSIGNATURES)
 Whether the solve needs face fluxes each sweep: for `QFromFaceAverage` or face-assembled
 dissipation (`FaceDissipation` with the dissipation melt on).
 """
-needs_face_fluxes(model::KazmierczakHydroModel) =
+needs_face_fluxes(model::AbstractKazmierczakHydroModel) =
     model.q_conversion isa QFromFaceAverage ||
     (model.dissipation_melt isa DissipationMeltOn && model.dissipation_discretization isa FaceDissipation)
 
@@ -48,7 +156,7 @@ Build the routing potential and flow directions for `model.routing_scheme`, call
 `abs_grad_phi0` (used by N and the dissipation melt) is always the gradient of the true potential.
 Both magnitudes (and `abs_grad_phi0_s` wherever it is unsmoothed) use `model.gradient_discretization`'s stencil.
 """
-function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, scheme::Union{GDSWarner, GDSTarboton})
+function prepare_routing!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, scheme::Union{GDSWarner, GDSTarboton})
     potential_filling!(model, grid, state)
     update_potential_gradients!(model, grid)
     update_smoothed_potential_gradients!(model, grid, state)
@@ -58,7 +166,7 @@ function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid,
     return nothing
 end
 
-function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::Union{Warner, Quinn, Tarboton, ModifiedTarboton})
+function prepare_routing!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::Union{Warner, Quinn, Tarboton, ModifiedTarboton})
     if model.longcoupwater == 0.0
         model.phi0_filled .= model.phi0
     else
@@ -83,7 +191,7 @@ neighbour in direction `d` (`ROUTE_OFFSETS`), for `model.routing_scheme`. Fracti
 or to 0 for a cell with nowhere downhill to send water (a sink; see `AbstractRoutingScheme`). Water
 sent to a non-grounded neighbour, or (GDS schemes) off the domain edge, leaves the system.
 """
-function compute_routing_weights!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+function compute_routing_weights!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     routing_weights_kernel!(model.routing_tape.w8, model.routing_scheme, model.phi0_filled,
                             model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, grid.Nx, grid.Ny, grid.dx, grid.dy)
     return nothing
@@ -322,7 +430,7 @@ its area and L_w. Boundary faces towards the domain edge have no neighbour poten
 skipped. The result is signed: water pushed up the true potential (out of a filled hollow, or
 uphill under the smoothed GDS direction) gives a negative contribution.
 """
-function update_face_fluxes!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+function update_face_fluxes!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     t = model.routing_tape
     face_fluxes_kernel!(t.Fx, t.Fy, t.diss, model.psi_out, t.w8, state.mask, model.phi0, grid.Nx, grid.Ny, grid.dx, grid.dy,
                         model.L_w, model.dissipation_discretization isa FaceDissipation)
@@ -366,18 +474,41 @@ $(TYPEDSIGNATURES)
 Convert routed flux to the distributed flux `q` [m2/s] (clamped to `[q_min, q_max]`) according to
 `model.q_conversion`, updating the face fluxes first if any option needs them.
 """
-function update_q_from_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+function update_q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     needs_face_fluxes(model) && update_face_fluxes!(model, grid, state)
     q_from_psi_out!(model, grid, state, model.q_conversion)
     return nothing
 end
 
+
+"""
+$(TYPEDSIGNATURES)
+
+Convert the routed flux `psi_out` [m3/s] to the distributed flux `q` [m2/s] via `q = psi_out / corfac`,
+clamped to `[q_min, q_max]`. `corfac` is exactly 0 at a cell whose (smoothed) potential gradient is
+identically zero, so the bare division gave 0/0 = NaN (net-refreezing cell, `psi_out == 0`) or Inf
+(`psi_out > 0`) there, and `max`/`min` propagate NaN. Adding `eps(T)` to the denominator, the same
+guard every other division in this file uses, keeps q finite (0 for `psi_out == 0`). For `psi_out > 0`
+on such a cell q is still huge, since the flow direction is genuinely undefined -- use `q_max` if you
+need to bound it. `epsT` is a plain scalar computed outside the broadcast for the reason given in
+`update_q!`.
+"""
+function update_q_from_psi_out!(model::AbstractKazmierczakHydroModel)
+
+    epsT = eps(eltype(model.corfac))
+    @. model.q = min(max(model.psi_out / (model.corfac + epsT), model.q_min), model.q_max)
+
+    return nothing
+
+end
+
+
 # Le Brocq Eq. 9 / K24: q = psi_out / corfac, with corfac from the cell's flow direction.
-q_from_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromOutflow) =
+q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromOutflow) =
     update_q_from_psi_out!(model)
 
 # Face fluxes -> face-normal q (Fx/dy, Fy/dx) -> averaged to the cell centre per component -> |q|.
-function q_from_psi_out!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromFaceAverage)
+function q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromFaceAverage)
     t = model.routing_tape
     q_from_faces_kernel!(model.q, t.Fx, t.Fy, state.mask, grid.Nx, grid.Ny, grid.dx, grid.dy, model.q_min, model.q_max)
     return nothing
@@ -392,24 +523,6 @@ function q_from_faces_kernel!(q, Fx, Fy, mask, Nx, Ny, dx, dy, q_min, q_max)
             v = hypot(qx, qy)
         end
         q[i, j] = min(max(v, q_min), q_max)
-    end
-    return nothing
-end
-
-
-# Dissipation heat Q_diss [W/m2] and its melt Q_diss/L_w added to mdot_total, per
-# `model.dissipation_discretization`.
-function add_dissipation_term!(model::KazmierczakHydroModel, ::CellCentredDissipation)
-    @. model.Q_diss = abs(model.q * model.abs_grad_phi0)
-    @. model.mdot_total += model.Q_diss / model.L_w
-    return nothing
-end
-
-function add_dissipation_term!(model::KazmierczakHydroModel, ::FaceDissipation)
-    diss = model.routing_tape.diss      # face-assembled dissipation melt [kg/m2/s]
-    @inbounds for j in axes(diss, 2), i in axes(diss, 1)
-        model.Q_diss[i, j]      = diss[i, j] * model.L_w
-        model.mdot_total[i, j] += diss[i, j]
     end
     return nothing
 end
@@ -430,7 +543,7 @@ grounded mask.
 GDS-Warner routes with weights computed on the fly, so its routing weights are filled here first
 when face fluxes have not already done so.
 """
-function freeze_on_capacity!(C, model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
+function freeze_on_capacity!(C, model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     if model.routing_scheme isa GDSWarner && !needs_face_fluxes(model)
         compute_routing_weights!(model, grid, state)
     end

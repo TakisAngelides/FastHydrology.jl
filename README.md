@@ -186,7 +186,7 @@ new model needs to add.
 
 - `grid.jl` -- the grid abstraction and its `ArrayHydroGrid` implementation.
 - `fft_convolution.jl` -- a cached, plan-reusing FFT convolution (used by the stress-gradient
-  coupling smoothing in `models/kazmierczak2024/water_flux.jl`) that avoids `ImageFiltering.jl`'s
+  coupling smoothing in `models/kazmierczak2024/potential.jl`) that avoids `ImageFiltering.jl`'s
   per-call allocation.
 - `model.jl` -- just `abstract type AbstractHydroModel end`, the type every model subtypes.
 - `state.jl` -- `HydroState`.
@@ -204,18 +204,32 @@ new model needs to add.
 - `plotting.jl` -- `mask_field`, plus stub declarations for `visualize_field`/`visualize_grid`
   (their implementations live in `../ext/FastHydrologyMakieExt.jl`, see below).
 
-**`src/models/kazmierczak2024/`** -- the Kazmierczak et al. 2024 model:
+**`src/models/kazmierczak2024/`** -- the Kazmierczak et al. 2024 model. Each option a keyword of
+`KazmierczakHydroModel` selects lives in one file with the methods it dispatches; those files
+are included before `model.jl`, whose `KazmierczakParams` stores their types:
 
-- `model.jl` -- `KazmierczakHydroModel` and its constructors, plus the trait types its keywords
-  select between (`AbstractDissipationMelt`, `AbstractPsiOutAlgorithm`,
-  `AbstractWaterThicknessAlgorithm`, `AbstractGradientConvention`, `AbstractDrainageMode`).
-  `KazmierczakHydroModel` itself composes `KazmierczakParams` (physical constants/solver config)
-  and `KazmierczakWorkspace` (array buffers) behind a transparent `model.<field>` interface,
-  rather than one struct with both flattened together.
-- `sliding_law.jl` -- `AbstractSlidingLaw` and its subtypes, plus `calc_tau_b`/`update_tau_b!`,
-  turning a sliding law and the current effective pressure/sliding velocity into a basal shear
-  stress.
-- `water_flux.jl` -- geometric potential, flux routing, and water layer thickness.
+- `abstract_model.jl` -- `AbstractKazmierczakHydroModel`, the supertype the option files' methods
+  are written against (its only subtype is `KazmierczakHydroModel`).
+- `drainage.jl` -- `AbstractDrainageMode`: which opening terms `N_inf` includes and which
+  `Q_c` the conduit geometry uses.
+- `sliding_law.jl` -- `AbstractSlidingLaw` and its subtypes, plus
+  `calc_tau_b`/`update_tau_b!`, turning a sliding law and the current effective
+  pressure/sliding velocity into a basal shear stress.
+- `melt_sources.jl` -- the water source: `set_basal_terms!` (geothermal and conductive heat, water
+  from above), the dissipation melt (`AbstractDissipationMelt`, its cell/face
+  discretisation) and the frictional heat (cell-centred or staggered).
+- `potential.jl` -- the geometric potential: `update_phi0!`, pit filling, its gradients and the
+  stress-gradient-coupling smoothing.
+- `psi_out.jl` -- the flow-routing algorithms (`AbstractPsiOutAlgorithm`) and the routing tape.
+- `routing.jl` -- the Le Brocq et al. (2006) routing schemes, face fluxes, the `psi_out` -> `q`
+  conversion and the freeze-on capacity.
+- `water_thickness.jl` -- `AbstractWaterThicknessAlgorithm`, `AbstractGradientConvention`
+  and `update_W!`.
+- `model.jl` -- `KazmierczakHydroModel` and its constructor. It composes `KazmierczakParams`
+  (physical constants/solver config) and `KazmierczakWorkspace` (array buffers) behind a transparent
+  `model.<field>` interface, rather than one struct with both flattened together.
+- `water_flux.jl` -- `update_q!` and the Picard loops that resolve `q` with the dissipation melt and
+  an N-dependent sliding law.
 - `effective_pressure.jl` -- `update_N!`, `update_H!`, `update_S_inf!`, `update_N_inf!`,
   `update_Q!`.
 - `run.jl` -- `update_steady_state!(::KazmierczakHydroModel, ...)`.
