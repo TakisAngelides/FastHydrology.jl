@@ -24,20 +24,22 @@ $(TYPEDSIGNATURES)
 
 Holds the FFTW plans and padded/complex buffers for one (image size, kernel radius) combination,
 so `cached_fft_convolve!` can reuse them across calls instead of reallocating on every timestep.
+The buffers have the float type `T` of the fields being smoothed (so a `Float32` model transforms in
+single precision and keeps no double-precision scratch copies).
 """
-mutable struct FFTConvCache
+mutable struct FFTConvCache{T <: AbstractFloat}
     frb_x::Int                      # kernel radius in x: kernel is (2*frb_x+1, 2*frb_y+1)
     frb_y::Int                      # kernel radius in y
     full_size::Tuple{Int,Int}       # padded array size: (Nx+2*frb_x, Ny+2*frb_y) rounded up to an FFT-friendly size (see fft_size)
-    padded_src::Matrix{Float64}     # src embedded in the middle, "replicate"-padded border
-    padded_kernel::Matrix{Float64}  # kernel embedded via wrap-around indexing, for circular FFT convolution
+    padded_src::Matrix{T}           # src embedded in the middle, "replicate"-padded border
+    padded_kernel::Matrix{T}        # kernel embedded via wrap-around indexing, for circular FFT convolution
     plan::Any     # FFTW real-to-complex plan; left untyped to avoid depending on FFTW's internal plan type name
     inv_plan::Any # FFTW complex-to-real (inverse) plan
-    Fsrc::Matrix{ComplexF64}     # rfft(padded_src)
-    Fkern::Matrix{ComplexF64}    # rfft(padded_kernel)
-    Fresult::Matrix{ComplexF64}  # Fsrc .* Fkern, the frequency-domain product
-    result_full::Matrix{Float64} # irfft(Fresult); the full circular convolution, before cropping
-    kernel::Matrix{Float64}      # copy of the kernel Fkern was last computed from, so an unchanged kernel skips its FFT
+    Fsrc::Matrix{Complex{T}}     # rfft(padded_src)
+    Fkern::Matrix{Complex{T}}    # rfft(padded_kernel)
+    Fresult::Matrix{Complex{T}}  # Fsrc .* Fkern, the frequency-domain product
+    result_full::Matrix{T}       # irfft(Fresult); the full circular convolution, before cropping
+    kernel::Matrix{T}            # copy of the kernel Fkern was last computed from, so an unchanged kernel skips its FFT
 end
 
 """
@@ -54,42 +56,44 @@ fft_size(n::Int) = nextprod((2, 3, 5, 7), n)
 """
 $(TYPEDSIGNATURES)
 
-Build a new `FFTConvCache` for an `(Nx, Ny)` image convolved with a kernel of radius `(frb_x,
+Build a new `FFTConvCache{T}` for an `(Nx, Ny)` image convolved with a kernel of radius `(frb_x,
 frb_y)`, allocating the padded buffers and FFTW plans once so later calls (via
-`get_fft_conv_cache!`) only pay for the FFT/multiply/inverse-FFT work itself.
+`get_fft_conv_cache!`) only pay for the FFT/multiply/inverse-FFT work itself. `T` defaults to `Float64`.
 """
-function FFTConvCache(Nx::Int, Ny::Int, frb_x::Int, frb_y::Int)
+function FFTConvCache(::Type{T}, Nx::Int, Ny::Int, frb_x::Int, frb_y::Int) where {T <: AbstractFloat}
     full_size = (fft_size(Nx + 2 * frb_x), fft_size(Ny + 2 * frb_y)) # at least frb_x/frb_y cells of border padding on every side, per axis
-    padded_src = zeros(Float64, full_size)
-    padded_kernel = zeros(Float64, full_size)
+    padded_src = zeros(T, full_size)
+    padded_kernel = zeros(T, full_size)
     plan = FFTW.plan_rfft(padded_src)   # this measures/builds the FFTW plan, the expensive step being cached
     Fsrc = plan * padded_src            # also fixes the frequency-domain array's shape/eltype for the buffers below
     Fkern = similar(Fsrc)
     Fresult = similar(Fsrc)
     inv_plan = FFTW.plan_irfft(Fresult, full_size[1]) # original row count must be passed explicitly: rfft's compressed output shape can't tell an even-length input from an odd-length one
-    result_full = zeros(Float64, full_size)
-    kernel = fill(NaN, 2 * frb_x + 1, 2 * frb_y + 1) # NaN never compares equal, so the first call always computes Fkern
-    return FFTConvCache(frb_x, frb_y, full_size, padded_src, padded_kernel, plan, inv_plan, Fsrc, Fkern, Fresult, result_full, kernel)
+    result_full = zeros(T, full_size)
+    kernel = fill(T(NaN), 2 * frb_x + 1, 2 * frb_y + 1) # NaN never compares equal, so the first call always computes Fkern
+    return FFTConvCache{T}(frb_x, frb_y, full_size, padded_src, padded_kernel, plan, inv_plan, Fsrc, Fkern, Fresult, result_full, kernel)
 end
+FFTConvCache(Nx::Int, Ny::Int, frb_x::Int, frb_y::Int) = FFTConvCache(Float64, Nx, Ny, frb_x, frb_y)
 
 """
 $(TYPEDSIGNATURES)
 
 Return the cache stored in `cache_ref`, rebuilding it if it doesn't exist yet or if the
-(image size, kernel size) combination has changed since the last call.
+(float type, image size, kernel size) combination has changed since the last call.
 """
-function get_fft_conv_cache!(cache_ref::Base.RefValue, Nx::Int, Ny::Int, frb_x::Int, frb_y::Int)
+function get_fft_conv_cache!(cache_ref::Base.RefValue, ::Type{T}, Nx::Int, Ny::Int, frb_x::Int, frb_y::Int) where {T <: AbstractFloat}
     c = cache_ref[]
     # rebuild on first use, or if the (image size, kernel radius) combination changed since
     # the last call (e.g. a different grid or a different coupling kernel)
-    if c === nothing || !(c isa FFTConvCache) || c.frb_x != frb_x || c.frb_y != frb_y || c.full_size != (fft_size(Nx + 2 * frb_x), fft_size(Ny + 2 * frb_y))
-        c = FFTConvCache(Nx, Ny, frb_x, frb_y)
+    if c === nothing || !(c isa FFTConvCache{T}) || c.frb_x != frb_x || c.frb_y != frb_y || c.full_size != (fft_size(Nx + 2 * frb_x), fft_size(Ny + 2 * frb_y))
+        c = FFTConvCache(T, Nx, Ny, frb_x, frb_y)
         cache_ref[] = c
     end
     # cache_ref is typed as Ref{Any} (so callers can hold it without depending on this module's
     # concrete cache type), so assert the concrete type here to keep this function type-stable
-    return c::FFTConvCache
+    return c::FFTConvCache{T}
 end
+get_fft_conv_cache!(cache_ref::Base.RefValue, Nx::Int, Ny::Int, frb_x::Int, frb_y::Int) = get_fft_conv_cache!(cache_ref, Float64, Nx, Ny, frb_x, frb_y)
 
 """
 $(TYPEDSIGNATURES)
@@ -100,7 +104,7 @@ default border behavior. `padded` must be at least `(size(src,1)+2*frb_x, size(s
 anything beyond that (the `fft_size` round-up) never reaches the cropped result, so what it holds
 does not matter.
 """
-function fill_padded_src!(padded::Matrix{Float64}, src::AbstractMatrix, frb_x::Int, frb_y::Int)
+function fill_padded_src!(padded::Matrix{<:AbstractFloat}, src::AbstractMatrix, frb_x::Int, frb_y::Int)
     Nx, Ny = size(src)
     padded[frb_x+1:frb_x+Nx, frb_y+1:frb_y+Ny] .= src # interior = the real data, unchanged
 
@@ -135,8 +139,8 @@ center) into `padded` using wrap-around (circular) indexing, so that an ordinary
 convolution via FFT lines up with `fill_padded_src!`'s padding: multiplying the two FFTs and
 inverse-transforming reproduces the centered correlation/convolution at each output cell.
 """
-function fill_padded_kernel!(padded::Matrix{Float64}, kernel2d::AbstractMatrix, frb_x::Int, frb_y::Int, full_size::Tuple{Int,Int})
-    fill!(padded, 0.0) # padded is reused across calls, so clear any stale kernel from a previous call
+function fill_padded_kernel!(padded::Matrix{<:AbstractFloat}, kernel2d::AbstractMatrix, frb_x::Int, frb_y::Int, full_size::Tuple{Int,Int})
+    fill!(padded, zero(eltype(padded))) # padded is reused across calls, so clear any stale kernel from a previous call
     for dj in -frb_y:frb_y, di in -frb_x:frb_x
         v = kernel2d[di+frb_x+1, dj+frb_y+1] # kernel value at offset (di, dj) from its center
         # wrap negative/positive offsets around the padded array's edges (mod into a 1-based
@@ -169,7 +173,7 @@ function cached_fft_convolve!(cache_ref::Base.RefValue, dest::AbstractMatrix, sr
     frb_x = (size(kernel, 1) - 1) ÷ 2 # kernel is (2*frb_x+1, 2*frb_y+1); recover frb_x/frb_y from its size
     frb_y = (size(kernel, 2) - 1) ÷ 2
     Nx, Ny = size(src, 1), size(src, 2)
-    c = get_fft_conv_cache!(cache_ref, Nx, Ny, frb_x, frb_y) # (re)allocates only if size/frb changed since the last call
+    c = get_fft_conv_cache!(cache_ref, eltype(dest), Nx, Ny, frb_x, frb_y) # (re)allocates only if size/frb changed since the last call
 
     fill_padded_src!(c.padded_src, src, frb_x, frb_y)
     mul!(c.Fsrc, c.plan, c.padded_src)      # forward FFT of the padded source

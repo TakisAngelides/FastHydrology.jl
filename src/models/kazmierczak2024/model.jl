@@ -189,14 +189,25 @@ between cells `j` and `j+1` (`acy`), both [m/s], size `(Nx, Ny)`. See
 `beta` at a cell centre is `tau_b / max(|u_b|, u_floor)` (default `u_floor` 1e-3 m/yr, Yelmo's
 `ub_sq_min`). Faces on the domain edge use the one cell they have.
 """
-struct StaggeredFriction{M} <: AbstractFrictionDiscretization
-    ux         ::M
-    uy         ::M
+struct StaggeredFriction{T <: AbstractFloat} <: AbstractFrictionDiscretization
+    ux         ::Matrix{T}
+    uy         ::Matrix{T}
+    tx         ::Matrix{T}   # scratch: face tractions, overwritten every sweep (allocated once here, not per call)
+    ty         ::Matrix{T}
     quadrature ::Bool
-    u_floor    ::Float64
+    u_floor    ::T
 end
-StaggeredFriction(ux::AbstractMatrix, uy::AbstractMatrix; quadrature::Bool = false, u_floor = perYear2perSecond(1e-3)) =
-    StaggeredFriction(Matrix{Float64}(ux), Matrix{Float64}(uy), quadrature, Float64(u_floor))
+function StaggeredFriction(ux::AbstractMatrix, uy::AbstractMatrix; quadrature::Bool = false, u_floor = perYear2perSecond(1e-3))
+    T = float(promote_type(eltype(ux), eltype(uy)))
+    return StaggeredFriction{T}(Matrix{T}(ux), Matrix{T}(uy), similar(Matrix{T}(ux)), similar(Matrix{T}(uy)), quadrature, T(u_floor))
+end
+
+# The model converts the velocity arrays to its own float type `T` (a copy, with its own scratch), the way
+# `convert_sliding_law` does for the sliding law; update the velocities through `model.friction_discretization`.
+convert_friction_discretization(::Type{T}, fd::AbstractFrictionDiscretization) where {T <: AbstractFloat} = fd
+convert_friction_discretization(::Type{T}, fd::StaggeredFriction{T}) where {T <: AbstractFloat} = fd
+convert_friction_discretization(::Type{T}, fd::StaggeredFriction) where {T <: AbstractFloat} =
+    StaggeredFriction{T}(T.(fd.ux), T.(fd.uy), similar(T.(fd.ux)), similar(T.(fd.uy)), fd.quadrature, T(fd.u_floor))
 
 """
 $(TYPEDSIGNATURES)
@@ -1178,6 +1189,7 @@ function KazmierczakHydroModel(
     max_qN_iters  = Int(max_qN_iters)
     qN_rtol       = T(qN_rtol)
     sliding_law         = convert_sliding_law(T, sliding_law)
+    friction_discretization = convert_friction_discretization(T, friction_discretization)
 
     # Geometric potential
     phi0          = alloc_field(grid)

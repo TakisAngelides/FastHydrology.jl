@@ -214,9 +214,10 @@ end
 @inline function angle_split!(W, i, j, fx, fy, dx, dy)
     (fx == 0 && fy == 0) && return nothing
     a = atan(dy, dx)
-    angs = (0.0, a, pi / 2, pi - a, pi * 1.0, pi + a, 3pi / 2, 2pi - a)
+    pT = typeof(a)(pi)   # pi in the grid's float type: bare `pi`/`2pi`/`0.0` would promote a Float32 model to Float64
+    angs = (zero(pT), a, pT / 2, pT - a, pT, pT + a, 3pT / 2, 2pT - a)
     dirs = (2, 8, 4, 7, 1, 5, 3, 6)
-    theta = mod(atan(fy, fx), 2pi)
+    theta = mod(atan(fy, fx), 2pT)
     k = 8
     @inbounds for m in 1:7
         if angs[m] <= theta < angs[m + 1]
@@ -225,7 +226,7 @@ end
         end
     end
     lo = angs[k]
-    hi = k == 8 ? 2pi : angs[k + 1]
+    hi = k == 8 ? 2pT : angs[k + 1]
     frac = (theta - lo) / (hi - lo)
     @inbounds W[dirs[k], i, j] += 1 - frac
     @inbounds W[dirs[k == 8 ? 1 : k + 1], i, j] += frac

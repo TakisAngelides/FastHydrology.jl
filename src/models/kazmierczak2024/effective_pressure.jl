@@ -31,10 +31,11 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     K_fac = model.K^(-1 / model.alpha)
     grad_exp = (1 - model.beta) / model.alpha
     Q_exp = 1 / model.alpha
-    denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
-    inv_n = 1.0 / model.n
+    # Integer literals (2, 1), not 2.0/1.0: those would promote a Float32 model's scalars to Float64.
+    denom_const = 2 * model.n^(-model.n) * model.rho_i * model.L_w
+    inv_n = 1 / model.n
     sliding_coeff, melt_coeff = opening_coefficients(model.drainage_mode, typeof(denom_const))
-    sqrt_pi = sqrt(pi)
+    sqrt_pi = sqrt(typeof(denom_const)(pi))
 
     update_N_grounded_kernel!(state.N, model.Q, model.S_inf, model.H_hard, model.H_soft, model.H, model.Po, model.N_inf,
         model.q, model.abs_grad_phi0, model.kappa, model.abs_v_b, model.A_visc, model.phi0, state.h, state.mask,
@@ -124,7 +125,7 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
 
         # update_H! -- the Q_c == 0 && Q == 0 case is the 0/0 limit resolved there
         Hh = sqrt(S_ij)
-        Hs = max(0.0, H_0 + (sqrt(S_ij) / F_till - H_0) * exp(-Q_ij / Q_c))
+        Hs = max(z, H_0 + (sqrt(S_ij) / F_till - H_0) * exp(-Q_ij / Q_c))
         if Q_c == 0 && Q_ij == 0.0
             Hs = z
         end
@@ -144,7 +145,7 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
         # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment). The erf argument
         # uses the seawater density for the b term, so it vanishes at flotation (N = 0 at the GL, K24 Eq. 5c)
         phi0_N = rho_i * g * h[i, j] + rho_sw * g * b[i, j]
-        N_ij = Ninf_ij == 0.0 ? z : max(0.0, erf(sqrt_pi * phi0_N / (2 * Ninf_ij)) * Ninf_ij)
+        N_ij = Ninf_ij == 0.0 ? z : max(z, erf(sqrt_pi * phi0_N / (2 * Ninf_ij)) * Ninf_ij)
 
         Q[i, j] = Q_ij; S_inf[i, j] = S_ij; H_hard[i, j] = Hh; H_soft[i, j] = Hs; H[i, j] = H_ij
         N_inf[i, j] = Ninf_ij; N[i, j] = N_ij
@@ -174,7 +175,8 @@ function update_H!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     Q_c = effective_Q_c(model.drainage_mode, model.Q_c)
 
     @. model.H_hard = sqrt(model.S_inf)
-    @. model.H_soft = max(0.0, model.H_0 + (sqrt(model.S_inf) / model.F_till - model.H_0) * exp(-model.Q / Q_c))
+    z = zero(eltype(model.H_soft))
+    @. model.H_soft = max(z, model.H_0 + (sqrt(model.S_inf) / model.F_till - model.H_0) * exp(-model.Q / Q_c))
 
     # EfficientOnly drives Q_c to exactly 0 above so exp(-Q/Q_c) -> 0 for any Q > 0. At the same
     # degenerate Q == 0 cells update_S_inf! already special-cases (see its comment there), this
@@ -243,8 +245,8 @@ basal velocity, constrained by ice overburden pressure limits.
 function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
     # Purely-scalar sub-expressions precomputed once rather than re-evaluated per cell.
-    denom_const = 2.0 * model.n^(-model.n) * model.rho_i * model.L_w
-    inv_n = 1.0 / model.n
+    denom_const = 2 * model.n^(-model.n) * model.rho_i * model.L_w
+    inv_n = 1 / model.n
 
     # sliding_coeff/melt_coeff zero out the sliding-over-obstacles or melt-driven opening term for
     # EfficientOnly/InefficientOnly (see AbstractDrainageMode); both are 1.0 for the default

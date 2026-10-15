@@ -843,8 +843,9 @@ function coupling_kernel(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     # ratio rather than only for square cells.
     dx = grid.dx
     dy = grid.dy
+    T = typeof(dx)   # the kernel has the grid's float type (integer literals below keep it from promoting)
 
-    scale = h_avg * model.longcoupwater * 2.0
+    scale = T(h_avg) * model.longcoupwater * 2
 
     # Radius of the cone base (= 4 * h_avg * longcoupwater). The cone hits zero at this distance,
     # 2-5x the Kamb & Echelmeyer (1986) coupling length (4-10x ice thickness for ice sheets). The
@@ -860,7 +861,7 @@ function coupling_kernel(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     # for, so it is not the right quantity to compare against Kamb & Echelmeyer's ice-thickness
     # multiple.) At coarse resolution (16-32 km), the coupling length (6-15 km for 1500 m ice, from
     # Kamb & Echelmeyer's literal 4-10x range) is smaller than a grid cell, so set longcoupwater = 0.
-    width = 2.0 * scale
+    width = 2 * scale
 
     # Below Delta_min (the finer of the two spacings), `width` wouldn't resolve to even one grid
     # cell in the tighter direction, so bump scale up to guarantee the kernel spans at least
@@ -868,7 +869,7 @@ function coupling_kernel(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     Delta_min = min(dx, dy)
 
     if width <= Delta_min
-        scale = Delta_min / 2.0 + 1.0
+        scale = Delta_min / 2 + 1
     end
 
     # Kernel size, independent per axis (frb_x, frb_y): cached_fft_convolve! (fft_convolution.jl)
@@ -880,14 +881,14 @@ function coupling_kernel(model::KazmierczakHydroModel, grid::AbstractHydroGrid, 
     frb_x = Int((maxlevel_x - 1) / 2)
     frb_y = Int((maxlevel_y - 1) / 2)
 
-    kernel = zeros(maxlevel_x, maxlevel_y)
+    kernel = zeros(T, maxlevel_x, maxlevel_y)
 
     for nj in 1:maxlevel_y, ni in 1:maxlevel_x
         # True physical (Euclidean) distance from the kernel center, using dx and dy separately.
         dist = sqrt((dx * (ni - frb_x - 1))^2 +
                     (dy * (nj - frb_y - 1))^2) / scale
 
-        kernel[ni, nj] = max(0.0, 1.0 - dist / 2.0)
+        kernel[ni, nj] = max(zero(T), 1 - dist / 2)
     end
 
     kernel ./= sum(kernel)
@@ -1010,7 +1011,7 @@ function accumulate_psi_out!(model::KazmierczakHydroModel, i, j, grid::AbstractH
     end
 
     # If the mdot is very negative that all the flux refreezes then we limit the flux to zero
-    model.psi_out[i, j] = max(0.0, model.psi_out[i, j])
+    model.psi_out[i, j] = max(zero(T), model.psi_out[i, j])
 
     return model.psi_out[i, j]
 
@@ -1150,7 +1151,7 @@ function update_psi_out_iterative!(model::KazmierczakHydroModel, grid::AbstractH
 
             else
                 # If the mdot is very negative that all the flux refreezes then we limit the flux to zero
-                model.psi_out[si, sj] = max(0.0, model.psi_out[si, sj])
+                model.psi_out[si, sj] = max(zero(T), model.psi_out[si, sj])
                 pop!(stack)
             end
         end
@@ -1267,7 +1268,7 @@ function update_psi_out_topological!(model::KazmierczakHydroModel, grid::Abstrac
         # All upstream contributions are already folded in via the += below, by construction (this
         # cell only reached the queue once every upstream neighbour had already been processed) --
         # so what's left is to add this cell's own source term and clamp.
-        model.psi_out[i, j] = max(0.0, model.psi_out[i, j] + model.mdot_total[i, j] * dx * dy / model.rho_w)
+        model.psi_out[i, j] = max(zero(T), model.psi_out[i, j] + model.mdot_total[i, j] * dx * dy / model.rho_w)
 
         for (ni, nj, w) in out_targets[i, j]
             model.psi_out[ni, nj] += model.psi_out[i, j] * w

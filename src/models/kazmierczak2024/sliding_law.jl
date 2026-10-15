@@ -78,7 +78,7 @@ $(TYPEDSIGNATURES)
 `model.mdot_total`. See [`StaggeredFriction`](@ref).
 """
 function add_friction_term!(model::KazmierczakHydroModel, fd::StaggeredFriction)
-    staggered_friction_kernel!(model.Q_b, model.tau_b, model.abs_v_b, fd.ux, fd.uy, size(fd.ux)...,
+    staggered_friction_kernel!(model.Q_b, model.tau_b, model.abs_v_b, fd.ux, fd.uy, fd.tx, fd.ty, size(fd.ux)...,
                                fd.u_floor, fd.quadrature)
     @. model.mdot_total += model.Q_b / model.L_w
     return nothing
@@ -90,6 +90,8 @@ end
 # SW, SE, NE, NW corners there (Yelmo's gq2D).
 const GQ_S3 = 1 / sqrt(3)
 const GQ_PTS = ((-GQ_S3, -GQ_S3), (GQ_S3, -GQ_S3), (GQ_S3, GQ_S3), (-GQ_S3, GQ_S3))
+# the same points in the model's float type, so the quadrature does not promote a Float32 model to Float64
+@inline gq_points(::Type{T}) where {T} = (s = one(T) / sqrt(T(3)); ((-s, -s), (s, -s), (s, s), (-s, s)))
 @inline gq_interp(c, p) = ((1 - p[1]) * (1 - p[2]) * c[1] + (1 + p[1]) * (1 - p[2]) * c[2] +
                            (1 + p[1]) * (1 + p[2]) * c[3] + (1 - p[1]) * (1 + p[2]) * c[4]) / 4
 # corner (ab-node) values of an acx / acy field around cell (i, j), SW, SE, NE, NW
@@ -98,9 +100,14 @@ const GQ_PTS = ((-GQ_S3, -GQ_S3), (GQ_S3, -GQ_S3), (GQ_S3, GQ_S3), (-GQ_S3, GQ_S
 @inline acy_corners(F, i, j, im1, ip1, jm1) = ((F[im1, jm1] + F[i, jm1]) / 2, (F[i, jm1] + F[ip1, jm1]) / 2,
                                                (F[i, j] + F[ip1, j]) / 2, (F[im1, j] + F[i, j]) / 2)
 
-function staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, Nx, Ny, u_floor, quadrature)
-    # face drag coefficients and tractions: beta on the face between i and i+1 (acx) / j and j+1 (acy)
-    tx = similar(ux); ty = similar(uy)
+# Convenience method that allocates the face-traction scratch itself (the model passes its preallocated one).
+staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, Nx, Ny, u_floor, quadrature) =
+    staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, similar(ux), similar(uy), Nx, Ny, u_floor, quadrature)
+
+function staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, tx, ty, Nx, Ny, u_floor, quadrature)
+    # face drag coefficients and tractions: beta on the face between i and i+1 (acx) / j and j+1 (acy),
+    # written into the scratch arrays tx, ty
+    gq = gq_points(eltype(Q_b))
     @inbounds for j in 1:Ny, i in 1:Nx
         ip1, jp1 = min(i + 1, Nx), min(j + 1, Ny)
         bc = stagger_beta(tau_b, abs_v_b, u_floor, i, j)
@@ -114,7 +121,7 @@ function staggered_friction_kernel!(Q_b, tau_b, abs_v_b, ux, uy, Nx, Ny, u_floor
             cux, cuy = acx_corners(ux, i, j, im1, jm1, jp1), acy_corners(uy, i, j, im1, ip1, jm1)
             ctx, cty = acx_corners(tx, i, j, im1, jm1, jp1), acy_corners(ty, i, j, im1, ip1, jm1)
             acc = zero(eltype(Q_b))
-            for p in GQ_PTS
+            for p in gq
                 acc += hypot(gq_interp(cux, p), gq_interp(cuy, p)) * hypot(gq_interp(ctx, p), gq_interp(cty, p))
             end
             acc / 4
