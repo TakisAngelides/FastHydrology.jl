@@ -39,7 +39,7 @@ include("models/shakti/model.jl")
 export AbstractHydroGrid, ArrayHydroGrid
 export alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
-export minus_gradient_x!, minus_gradient_y!
+export minus_gradient_x!, minus_gradient_y!, face_gradient_magnitude!
 
 # common/model.jl, models/kazmierczak2024/model.jl, models/hab/model.jl, models/shakti/model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
@@ -50,6 +50,7 @@ export AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill
 export AbstractRoutingScheme, GDSWarner, Warner, Quinn, Tarboton, ModifiedTarboton, GDSTarboton
 export AbstractQConversion, QFromOutflow, QFromFaceAverage
 export AbstractDissipationDiscretization, CellCentredDissipation, FaceDissipation
+export AbstractGradientDiscretization, CentredGradient, FaceGradient
 export AbstractFrictionDiscretization, CellCentredFriction, StaggeredFriction
 export AbstractWaterThicknessAlgorithm, ArealConduitThickness, DarcyWeisbachThickness, LaminarThickness
 export AbstractGradientConvention, LocalGradient, MeanGradient

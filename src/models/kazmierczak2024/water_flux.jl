@@ -536,8 +536,9 @@ $(TYPEDSIGNATURES)
 clamped to `[Wmin, Wmax]`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's laminar sheet
 closure -- see `AbstractWaterThicknessAlgorithm`'s docstring in model.jl for why this closure is not
 the default (`DarcyWeisbachThickness` is). Uses a single domain-mean smoothed gradient magnitude by
-default (`gradient_convention = MeanGradient()`), faithfully matching Kori-ULB's own
-`mean(gdsmag(...))` in `SubWaterFlux.m`, and matching `DarcyWeisbachThickness`'s own default too (kept
+default (`gradient_convention = MeanGradient()`), as Kori-ULB's own `mean(gdsmag(...))` in
+`SubWaterFlux.m` -- but of the Euclidean magnitude, where `gdsmag` is the L1 `|sx| + |sy|` (so `d` is
+up to ~11% larger than Kori-ULB's for flow at 45 degrees to the grid, ~8% on a domain mean) -- and matching `DarcyWeisbachThickness`'s own default too (kept
 consistent between the package's two sheet-flow closures); pass `gradient_convention =
 LocalGradient()` for the local-per-cell-gradient variant instead, e.g. to isolate how much of a
 closure's spatial pattern comes from that domain-mean averaging versus from its own physics --
@@ -808,23 +809,41 @@ Compute the gradients of the geometric potential. `model.abs_grad_phi0` (used by
 dissipation term) is the magnitude of the gradient of the TRUE potential `model.phi0`. The components
 `model.minus_grad_phi0_x/y` (negative gradient, i.e. the flow direction) are taken from the FILLED
 potential `model.phi0_filled`, since they only feed the routing (via the smoothing and `psi_out`).
+The magnitude's stencil follows `model.gradient_discretization` (see `AbstractGradientDiscretization`).
 """
 function update_potential_gradients!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
-
-    # True potential first: its components are used only to form the magnitude, and the buffers are
-    # then reused for the filled potential's components below.
-    minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
-    minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
-
-    # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
-    @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
-
+    update_true_gradient_magnitude!(model, grid, model.gradient_discretization)
     minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0_filled)
     minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0_filled)
-
     return nothing
-
 end
+
+function update_true_gradient_magnitude!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, ::CentredGradient)
+    # The components are used only to form the magnitude; update_potential_gradients! then reuses the
+    # buffers for the filled potential's components.
+    minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
+    minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
+    # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
+    @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
+    return nothing
+end
+
+update_true_gradient_magnitude!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, ::FaceGradient) =
+    face_gradient_magnitude!(grid, model.abs_grad_phi0, model.phi0)
+
+
+"""
+$(TYPEDSIGNATURES)
+
+`model.abs_grad_phi0_s`, the (Euclidean) magnitude of the *unsmoothed* routing gradient, i.e. of
+`model.phi0_filled`, with the stencil of `model.gradient_discretization`. Expects
+`model.minus_grad_phi0_x/y` to hold that surface's centred components (`update_potential_gradients!`).
+"""
+update_unsmoothed_gradient_magnitude!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, ::CentredGradient) =
+    (@. model.abs_grad_phi0_s = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y); nothing)
+
+update_unsmoothed_gradient_magnitude!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, ::FaceGradient) =
+    face_gradient_magnitude!(grid, model.abs_grad_phi0_s, model.phi0_filled)
 
 
 """
@@ -911,7 +930,7 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     if model.longcoupwater == 0.0
         model.minus_grad_phi0_sx .= model.minus_grad_phi0_x
         model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
-        @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_x) + abs(model.minus_grad_phi0_y)
+        update_unsmoothed_gradient_magnitude!(model, grid, model.gradient_discretization)
         return nothing
     end
 
@@ -922,7 +941,9 @@ function update_smoothed_potential_gradients!(model::KazmierczakHydroModel, grid
     convolve!(grid, model.minus_grad_phi0_sy, model.minus_grad_phi0_y, kernel)
 
 
-    @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_sx) + abs(model.minus_grad_phi0_sy)
+    # Euclidean magnitude, like abs_grad_phi0 (Kori-ULB's gdsmag uses |sx| + |sy|, which depends on the
+    # flow's orientation to the grid: up to sqrt(2) too large at 45 degrees).
+    @. model.abs_grad_phi0_s = sqrt(model.minus_grad_phi0_sx * model.minus_grad_phi0_sx + model.minus_grad_phi0_sy * model.minus_grad_phi0_sy)
 
     return nothing
 

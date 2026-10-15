@@ -34,6 +34,33 @@
         @test all(isapprox.(gy_a, 2.0))
     end
 
+    @testset "face_gradient_magnitude!: linear field, checkerboard" begin
+        # A linear field has the same gradient on every face, so the face magnitude equals the centred
+        # one everywhere, edges included.
+        Nx, Ny, dx, dy = 6, 5, 200.0, 500.0
+        f = [3.0 * (i * dx) - 2.0 * (j * dy) for i in 1:Nx, j in 1:Ny]
+        grid_a = ArrayHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dy))
+        m = zeros(Nx, Ny)
+        face_gradient_magnitude!(grid_a, m, f)
+        @test all(isapprox.(m, hypot(3.0, 2.0)))
+
+        # A checkerboard is invisible to the centred stencil (f[i+1] == f[i-1]) but not to the faces:
+        # every interior face has a drop of 2, so the interior magnitude is sqrt((2/dx)^2 + (2/dy)^2).
+        c = [Float64((-1)^(i + j)) for i in 1:Nx, j in 1:Ny]
+        gx, gy = zeros(Nx, Ny), zeros(Nx, Ny)
+        minus_gradient_x!(grid_a, gx, c)
+        minus_gradient_y!(grid_a, gy, c)
+        @test all(iszero, hypot.(gx, gy)[2:end-1, 2:end-1])
+        face_gradient_magnitude!(grid_a, m, c)
+        @test all(isapprox.(m, hypot(2 / dx, 2 / dy)))
+
+        # Single-column domain: no x faces, only the y gradient remains.
+        g1 = ArrayHydroGrid(1, Ny, (0.0, dx), (0.0, Ny * dy))
+        m1 = zeros(1, Ny)
+        face_gradient_magnitude!(g1, m1, f[1:1, :])
+        @test all(isapprox.(m1, 2.0))
+    end
+
     @testset "routing_weight matches the face-flux geometry for dx != dy" begin
         # Diagonal flow (sx == sy) on dx = 4dy: 1/5 of the flux leaves through the x-face, 4/5 through
         # the y-face (face widths dy and dx). The weights sum to 1 and reduce to 1/2, 1/2 for dx == dy.

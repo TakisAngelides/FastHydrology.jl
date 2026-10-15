@@ -82,6 +82,39 @@
         @test sum(model.routing_tape.diss) > 0
     end
 
+    @testset "gradient_discretization" begin
+        # default follows the routing scheme
+        @test build(Warner(), bumpy)[1].gradient_discretization isa FaceGradient
+        @test build(GDSWarner(), bumpy)[1].gradient_discretization isa CentredGradient
+        @test build(Quinn(), bumpy)[1].gradient_discretization isa CentredGradient
+
+        # abs_grad_phi0 is the face (resp. centred) magnitude of the true potential; the components
+        # (flow direction) are the same under both
+        mf, sf = build(Warner(), bumpy)
+        mc, sc = build(Warner(), bumpy; gradient_discretization = CentredGradient())
+        update_steady_state!(mf, grid, sf)
+        update_steady_state!(mc, grid, sc)
+        ref = zeros(Nx, Ny)
+        face_gradient_magnitude!(grid, ref, mf.phi0)
+        @test mf.abs_grad_phi0 == ref
+        gx, gy = zeros(Nx, Ny), zeros(Nx, Ny)
+        minus_gradient_x!(grid, gx, mc.phi0); minus_gradient_y!(grid, gy, mc.phi0)
+        @test mc.abs_grad_phi0 ≈ hypot.(gx, gy)
+        @test mf.minus_grad_phi0_sx == mc.minus_grad_phi0_sx && mf.minus_grad_phi0_sy == mc.minus_grad_phi0_sy
+        face_gradient_magnitude!(grid, ref, mf.phi0_filled)
+        @test mf.abs_grad_phi0_s == ref
+        @test mc.abs_grad_phi0_s ≈ hypot.(mc.minus_grad_phi0_sx, mc.minus_grad_phi0_sy)
+        # averaging squares >= squaring averages
+        @test all(mf.abs_grad_phi0 .>= mc.abs_grad_phi0 .- 1e-12)
+        @test all(isfinite, mf.q) && all(isfinite, sf.N)
+
+        # also selectable for the GDS schemes (unsmoothed with coupling length 0)
+        mg, sg = build(GDSWarner(), bumpy; gradient_discretization = FaceGradient())
+        update_steady_state!(mg, grid, sg)
+        face_gradient_magnitude!(grid, ref, mg.phi0)
+        @test mg.abs_grad_phi0 == ref
+    end
+
     @testset "invalid combinations are rejected" begin
         @test_throws ArgumentError build(Warner(), bumpy; psi_out_algorithm = RecursivePsiOut())
         @test_throws ArgumentError build(Quinn(), bumpy; q_conversion = QFromFaceAverage())

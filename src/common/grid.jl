@@ -191,6 +191,49 @@ function minus_gradient_y!(grid::AbstractHydroGrid, dest, field)
     return nothing
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Write the face-based gradient magnitude of `field` into the 2D array `dest` (both `Nx × Ny`).
+
+The gradient lives on the cell faces, `gx[i+1/2] = (f[i+1] - f[i]) / dx` (likewise `gy`), and each
+component's square is averaged from the cell's two faces to its centre:
+`|grad f| = sqrt((gx[i-1/2]^2 + gx[i+1/2]^2)/2 + (gy[j-1/2]^2 + gy[j+1/2]^2)/2)`. Edge cells use the
+one face they have (so a linear field gives the same value as the centred stencil everywhere,
+edges included), and a direction with a single cell contributes 0.
+
+The face average of each component is exactly the centred difference, so only the magnitude
+differs from [`minus_gradient_x_kernel!`](@ref)/[`minus_gradient_y_kernel!`](@ref): the centred
+magnitude squares the averaged components, this one averages the squared face components. It is
+`>=` the centred magnitude and sees odd-even (checkerboard) variations the centred stencil cannot --
+the same face-to-centre construction as `FaceDissipation` and `StaggeredFriction`.
+"""
+function face_gradient_magnitude_kernel!(dest, field, Nx, Ny, dx, dy)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        f = field[i, j]
+        sx = zero(eltype(dest)); nx = 0
+        i > 1  && (g = (f - field[i - 1, j]) / dx; sx += g * g; nx += 1)
+        i < Nx && (g = (field[i + 1, j] - f) / dx; sx += g * g; nx += 1)
+        sy = zero(eltype(dest)); ny = 0
+        j > 1  && (g = (f - field[i, j - 1]) / dy; sy += g * g; ny += 1)
+        j < Ny && (g = (field[i, j + 1] - f) / dy; sy += g * g; ny += 1)
+        dest[i, j] = sqrt((nx > 0 ? sx / nx : sx) + (ny > 0 ? sy / ny : sy))
+    end
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Write the face-based gradient magnitude of `field` into `dest`, both cell-centered fields on `grid`.
+See [`face_gradient_magnitude_kernel!`](@ref); override it the same way as `minus_gradient_x!` for a
+grid backend whose fields wrap a different storage.
+"""
+function face_gradient_magnitude!(grid::AbstractHydroGrid, dest, field)
+    face_gradient_magnitude_kernel!(dest, field, grid.Nx, grid.Ny, grid.dx, grid.dy)
+    return nothing
+end
+
 
 """
 $(TYPEDSIGNATURES)

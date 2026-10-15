@@ -30,7 +30,7 @@ reaching into a specific backend's internals directly. The concrete grid provide
 [`ArrayHydroGrid`](@ref), built on plain `Array`s. A different array/mesh backend can be supported
 the same way `ArrayHydroGrid` is, by implementing the
 same interface (`alloc_field`, [`convolve!`](@ref),
-[`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`masked_mean`](@ref),
+[`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`face_gradient_magnitude!`](@ref), [`masked_mean`](@ref),
 [`masked_max_abs`](@ref), [`masked_max_abs_diff`](@ref), [`overwrite_where!`](@ref)) for a new
 `AbstractHydroGrid` subtype, without touching any physics code -- most of these already have a
 default implementation that works for any grid whose fields behave like plain arrays, so a new
@@ -43,6 +43,7 @@ alloc_field
 convolve!
 minus_gradient_x!
 minus_gradient_y!
+face_gradient_magnitude!
 masked_mean
 masked_max_abs
 masked_max_abs_diff

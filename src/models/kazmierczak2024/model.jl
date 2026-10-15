@@ -238,11 +238,12 @@ Brocq Sec. 3, Step 5), which is what creates routing cycles: on the Thwaites 2 k
 16 km test data GDSWarner loses 3% / 8% / 34% of the positive basal melt in them, Warner none. Schemes
 other than `GDSWarner` need `psi_out_algorithm = TapedPsiOut()` (the default).
 
-`fill_algorithm`, `q_conversion` and `dissipation_discretization` default to `nothing`, meaning "the
-natural partner of `routing_scheme`": `PriorityFloodFill()`, `QFromFaceAverage()` and
-`FaceDissipation()` for `Warner`; `JacobiFill()`, `QFromOutflow()` and `CellCentredDissipation()` for
-the GDS schemes (so `routing_scheme = GDSWarner()` alone reproduces the original K24 set-up exactly);
-`PriorityFloodFill()`, `QFromOutflow()` and `CellCentredDissipation()` for the other 8-neighbour
+`fill_algorithm`, `q_conversion`, `dissipation_discretization` and `gradient_discretization` default
+to `nothing`, meaning "the natural partner of `routing_scheme`": `PriorityFloodFill()`,
+`QFromFaceAverage()`, `FaceDissipation()` and `FaceGradient()` for `Warner`; `JacobiFill()`,
+`QFromOutflow()`, `CellCentredDissipation()` and `CentredGradient()` for the GDS schemes (so
+`routing_scheme = GDSWarner()` alone reproduces the original K24 set-up exactly); `PriorityFloodFill()`,
+`QFromOutflow()`, `CellCentredDissipation()` and `CentredGradient()` for the other 8-neighbour
 schemes. Pass any of them explicitly to override.
 """
 abstract type AbstractRoutingScheme end
@@ -336,6 +337,34 @@ struct CellCentredDissipation <: AbstractDissipationDiscretization end
 
 See [`AbstractDissipationDiscretization`](@ref)."""
 struct FaceDissipation <: AbstractDissipationDiscretization end
+
+"""
+$(TYPEDSIGNATURES)
+
+Which stencil the gradient *magnitudes* of the potential are taken with (see
+`KazmierczakHydroModel`'s `gradient_discretization` keyword). It sets `abs_grad_phi0` (the true
+potential: `S_inf`, the melt-opening term `Q * |grad(phi0)|`, `CellCentredDissipation` and the
+sheet-thickness closures), and `abs_grad_phi0_s` wherever that is the magnitude of an *unsmoothed*
+gradient (the potential routing schemes, or the GDS schemes with `coupling_length_kamb86 = 0`). The
+Kamb-smoothed GDS components are always centred. The gradient components (`minus_grad_phi0_x/y`,
+flow direction) are the same under both, since the average of a cell's two face gradients is the
+centred difference.
+- [`CentredGradient`](@ref) (default for all schemes except `Warner`): the magnitude of the centred
+  components, `sqrt(gx^2 + gy^2)` with `gx = (f[i+1] - f[i-1]) / 2dx`.
+- [`FaceGradient`](@ref) (default with `Warner` routing): the face gradients are squared on each
+  face and averaged to the centre (see [`face_gradient_magnitude!`](@ref)) -- the same staggered
+  construction as `FaceDissipation`, so with Warner every term of the energy budget sees the
+  potential on the faces the water actually crosses.
+"""
+abstract type AbstractGradientDiscretization end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractGradientDiscretization`](@ref)."""
+struct CentredGradient <: AbstractGradientDiscretization end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractGradientDiscretization`](@ref)."""
+struct FaceGradient <: AbstractGradientDiscretization end
 
 """
 $(TYPEDSIGNATURES)
@@ -441,8 +470,8 @@ The three closures still answer different physical questions and are not interch
   bounded the same way a single laminar/turbulent sheet-flow inversion is).
 - [`LaminarThickness`](@ref): the original closure (Eq. 8, Kazmierczak et al 2022 / Le Brocq et al
   2009 Eq. 2), `d = (12*eta_w*q / abs_grad_phi0_s)^(1/3)`, using a single domain-mean smoothed
-  gradient by default (matching Kori-ULB's own `SubWaterFlux.m`) rather than the local one -- see its
-  `gradient_convention` type parameter. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's
+  gradient by default (as Kori-ULB's own `SubWaterFlux.m`) rather than the local one -- see its
+  `gradient_convention` type parameter. The magnitude is Euclidean, unlike Kori-ULB's L1 `|sx| + |sy|`. Kept for direct comparison against Kori-ULB's `Wd`/SHAKTI's
   laminar sheet closure, but physically inconsistent with K24's own turbulent-flow assumption for
   `q` -- not the default, and not recommended as "the" reported thickness for a K24 run. Clamped to
   `[Wmin, Wmax]`.
@@ -521,7 +550,8 @@ $(TYPEDSIGNATURES)
 
 Report the original laminar Le Brocq/Weertman sheet-flow inversion `(12*eta_w*q /
 abs_grad_phi0_s)^(1/3)` as `state.W`, clamped to `[Wmin, Wmax]`, with `gradient_convention =
-MeanGradient()` by default (matching Kori-ULB's own `SubWaterFlux.m`). See
+MeanGradient()` by default (as Kori-ULB's own `SubWaterFlux.m`, but with the Euclidean gradient
+magnitude rather than its L1 `|sx| + |sy|`). See
 [`AbstractWaterThicknessAlgorithm`](@ref)'s docstring for why this closure is kept but not the
 default, and [`AbstractGradientConvention`](@ref)'s docstring for what `gradient_convention =
 LocalGradient()` does here.
@@ -853,6 +883,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     routing_scheme  ::AbstractRoutingScheme  # Warner() (default), GDSWarner() (original K24) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
     q_conversion    ::AbstractQConversion    # QFromOutflow() or QFromFaceAverage() (default follows routing_scheme) -- see AbstractQConversion
     dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() or FaceDissipation() (default follows routing_scheme) -- see AbstractDissipationDiscretization
+    gradient_discretization ::AbstractGradientDiscretization  # CentredGradient() or FaceGradient() (default follows routing_scheme): stencil of the gradient magnitudes -- see AbstractGradientDiscretization
     friction_discretization ::AbstractFrictionDiscretization  # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
@@ -888,7 +919,7 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     abs_grad_phi0          ::A  # Magnitude of the geometric potential gradient [Pa/m]
     minus_grad_phi0_sx     ::A  # Smoothed gradient x-component of the geometric potential [Pa/m]
     minus_grad_phi0_sy     ::A  # Smoothed gradient y-component of the geometric potential [Pa/m]
-    abs_grad_phi0_s        ::A  # Magnitude of the smoothed gradient of the geometric potential [Pa/m]
+    abs_grad_phi0_s        ::A  # Euclidean magnitude of the smoothed gradient of the geometric potential [Pa/m]
 
     # Water flux
     visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
@@ -1101,6 +1132,7 @@ function KazmierczakHydroModel(
     routing_scheme = Warner(),                    # Flux-routing scheme (Le Brocq et al. 2006): Warner() (default)/GDSWarner() (original K24)/Quinn()/Tarboton()/ModifiedTarboton()/GDSTarboton() -- see AbstractRoutingScheme
     q_conversion = nothing,                       # QFromOutflow()/QFromFaceAverage(); nothing = QFromFaceAverage for Warner, QFromOutflow otherwise -- see AbstractQConversion
     dissipation_discretization = nothing,         # CellCentredDissipation()/FaceDissipation(); nothing = FaceDissipation for Warner, CellCentredDissipation otherwise -- see AbstractDissipationDiscretization
+    gradient_discretization = nothing,            # CentredGradient()/FaceGradient(); nothing = FaceGradient for Warner, CentredGradient otherwise -- see AbstractGradientDiscretization
     friction_discretization = CellCentredFriction(),       # CellCentredFriction()/StaggeredFriction(ux_acx, uy_acy; quadrature): frictional heat from C-grid velocities -- see AbstractFrictionDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
@@ -1173,6 +1205,8 @@ function KazmierczakHydroModel(
         (q_conversion = routing_scheme isa Warner ? QFromFaceAverage() : QFromOutflow())
     dissipation_discretization === nothing &&
         (dissipation_discretization = routing_scheme isa Warner ? FaceDissipation() : CellCentredDissipation())
+    gradient_discretization === nothing &&
+        (gradient_discretization = routing_scheme isa Warner ? FaceGradient() : CentredGradient())
     (routing_scheme isa GDSWarner || psi_out_algorithm isa TapedPsiOut) ||
         throw(ArgumentError("routing_scheme = $(routing_scheme) requires psi_out_algorithm = TapedPsiOut() (got $(psi_out_algorithm)); the other psi_out algorithms only implement the original GDSWarner routing"))
     if friction_discretization isa StaggeredFriction
@@ -1233,7 +1267,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, friction_discretization,
+        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, Wmin, Wmax, water_thickness_algorithm, longcoupwater, sigmat, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sliding_law, max_qN_iters, qN_rtol, qN_verbose
 )

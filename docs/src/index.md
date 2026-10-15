@@ -159,7 +159,7 @@ The package is organized around four abstractions:
 
 Physics code (`water_flux.jl`, `effective_pressure.jl`) is written against the grid interface --
 `grid.Nx`, `grid.dx`, `alloc_field`, [`convolve!`](@ref),
-[`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`masked_mean`](@ref),
+[`minus_gradient_x!`](@ref), [`minus_gradient_y!`](@ref), [`face_gradient_magnitude!`](@ref), [`masked_mean`](@ref),
 [`masked_max_abs`](@ref), [`masked_max_abs_diff`](@ref), [`overwrite_where!`](@ref) -- rather than
 reaching into a specific backend's internals directly, so a different grid backend would only need
 to implement that interface. Most of these already have a default implementation that works for any

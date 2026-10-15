@@ -46,6 +46,7 @@ Build the routing potential and flow directions for `model.routing_scheme`, call
   by `ModifiedTarboton`.
 
 `abs_grad_phi0` (used by N and the dissipation melt) is always the gradient of the true potential.
+Both magnitudes (and `abs_grad_phi0_s` wherever it is unsmoothed) use `model.gradient_discretization`'s stencil.
 """
 function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, scheme::Union{GDSWarner, GDSTarboton})
     potential_filling!(model, grid, state)
@@ -68,7 +69,7 @@ function prepare_routing!(model::KazmierczakHydroModel, grid::AbstractHydroGrid,
     update_potential_gradients!(model, grid)
     model.minus_grad_phi0_sx .= model.minus_grad_phi0_x
     model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
-    @. model.abs_grad_phi0_s = abs(model.minus_grad_phi0_sx) + abs(model.minus_grad_phi0_sy)
+    update_unsmoothed_gradient_magnitude!(model, grid, model.gradient_discretization)
     compute_routing_weights!(model, grid, state)
     return nothing
 end
