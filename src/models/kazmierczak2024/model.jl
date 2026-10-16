@@ -15,7 +15,7 @@ for how the split is made transparent to callers.
 struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
-    rho_sw          ::T    # Density of sea water [kg/m3], used only for the b term of the erf argument in update_N! (so N -> 0 at flotation); defaults to rho_w (literal K24 Eq. 7)
+    rho_sw          ::T    # Density of sea water [kg/m3], used only for the b term of the erf argument in update_N! (so N -> 0 at flotation); defaults to 1028 (flotation density, so N = 0 at the grounding line); set rho_sw = rho_w for the literal K24 Eq. 7
     rho_i           ::T    # Density of ice [kg/m3]
     g               ::T    # Gravitational acceleration [m/s2]
     L_w             ::T    # Latent heat of fusion for ice [J/kg]
@@ -266,7 +266,7 @@ function KazmierczakHydroModel(
     q_T_in::AbstractArray{<:AbstractFloat};
     i_eb          = nothing,                      # Water reaching the bed from above, not melted there [kg/m2/s]; nothing = zero
     rho_w         = 1000.0,# Density of fresh water [kg/m3]
-    rho_sw        = nothing,                      # Density of sea water [kg/m3] for the erf argument of N (N = 0 at flotation); nothing = rho_w, i.e. the paper's Eq. 7 as written. Use the ice model's flotation density (e.g. 1028 for Yelmo) in coupled runs
+    rho_sw        = 1028.0,                       # Density of sea water [kg/m3] for the erf argument of N, so N = 0 at flotation (match the ice model's flotation density, 1028 for Yelmo). Pass rho_sw = rho_w to reproduce K24 Eq. 7 as written
     rho_i         = 917.0,                        # Density of ice [kg/m3]
     g             = 9.81,                         # Gravitational acceleration [m/s2]
     L_w           = KAZMIERCZAK_DEFAULT_L_W,       # Latent heat of fusion for ice [J/kg]
@@ -318,7 +318,7 @@ function KazmierczakHydroModel(
 
     # Physical constants
     rho_w         = T(rho_w)
-    rho_sw        = T(something(rho_sw, rho_w))
+    rho_sw        = T(rho_sw)
     rho_i         = T(rho_i)
     g             = T(g)
     L_w           = T(L_w)

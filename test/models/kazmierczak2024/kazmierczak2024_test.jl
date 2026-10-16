@@ -584,13 +584,12 @@
         update_steady_state!(m, grid, s)
         return m, s
     end
-    m0, s0 = run()
-    m1, s1 = run(rho_sw = 1028.0)
-    mw, sw = run(rho_sw = 1000.0)
+    m1, s1 = run()
+    m0, s0 = run(rho_sw = 1000.0)
+    @test m1.rho_sw == 1028.0                   # default is the seawater flotation density
     @test m0.rho_sw == m0.rho_w
-    @test s0.N == sw.N                          # default is literal K24 Eq. 7
-    @test s0.N[i0, 3] > 0.01 * m0.N_inf[i0, 3]  # freshwater phi0 leaves N > 0 at flotation
-    @test s1.N[i0, 3] < 1e-6 * m1.N_inf[i0, 3]  # seawater density: N -> 0 at flotation
+    @test s0.N[i0, 3] > 0.01 * m0.N_inf[i0, 3]  # rho_sw = rho_w (literal K24 Eq. 7) leaves N > 0 at flotation
+    @test s1.N[i0, 3] < 1e-6 * m1.N_inf[i0, 3]  # default seawater density: N -> 0 at flotation
     @test all(isfinite, s1.N)
     @test all(s1.N .<= s0.N .+ 1e-9)           # b < 0: rho_sw only lowers the erf argument, never raises N
 end

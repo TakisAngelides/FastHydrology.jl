@@ -18,7 +18,7 @@ order, as the standalone `update_Q!`/`update_S_inf!`/`update_H!`/`update_Po!`/`u
 broadcasts below (kept for direct use and tests), so the grounded values are bit-identical to calling
 those in sequence.
 
-The erf argument is `rho_i*g*h + rho_sw*g*b` (`model.rho_sw`, default `rho_w`), not `model.phi0`: the paper's
+The erf argument is `rho_i*g*h + rho_sw*g*b` (`model.rho_sw`, default 1028; `rho_sw = rho_w` gives the paper's Eq. 7), not `model.phi0`: the paper's
 `phi0` uses freshwater density, so at flotation (`rho_i*h = -rho_sw*b`) it equals `(rho_sw - rho_w)*g*|b|`
 instead of 0, and N would not reach 0 at the grounding line (K24 Eq. 5c). Routing, gradients and dissipation
 keep `phi0`. Fusing them also avoids 8 separate full-grid passes, which mattered because this
