@@ -49,7 +49,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-`true` unless `drainage_mode` is [`EfficientOnly`](@ref), the one mode whose `N_inf` has no sliding-over-obstacles
+`true` unless `drainage_mode` is `EfficientOnly`, the one mode whose `N_inf` has no sliding-over-obstacles
 term (see `opening_coefficients`) and so does not depend on `|u_b|`. See [`N_responds_to_ub`](@ref).
 """
 N_responds_to_ub(model::KazmierczakHydroModel) = !(model.drainage_mode isa EfficientOnly)

@@ -13,35 +13,30 @@ bib = CitationBibliography(
     style=:authoryear
 )
 
+# Literate pages: the tutorial is static (its input file is too big to ship), the Shakti example
+# runs live. The Antarctica, Greenland, Thwaites, Helheim and Drang Drung pages are plain
+# markdown with figures made by make_figures.jl.
 Literate.markdown(
-    joinpath(@__DIR__, "src", "examples", "Kazmierczak2024.jl"),
-    joinpath(@__DIR__, "src", "examples");
-    config = Dict("credit" => false)
+    joinpath(@__DIR__, "src", "tutorial.jl"),
+    joinpath(@__DIR__, "src");
+    config = Dict("credit" => false, "documenter" => false)
 )
 
-Literate.markdown(
-    joinpath(@__DIR__, "src", "examples", "HAB.jl"),
-    joinpath(@__DIR__, "src", "examples");
-    config = Dict("credit" => false)
-)
-
-Literate.markdown(
-    joinpath(@__DIR__, "src", "examples", "ShaktiCoupling.jl"),
-    joinpath(@__DIR__, "src", "examples");
-    config = Dict("credit" => false)
-)
-
-Literate.markdown(
-    joinpath(@__DIR__, "src", "examples", "Synthetic.jl"),
-    joinpath(@__DIR__, "src", "examples");
-    config = Dict("credit" => false)
-)
+for file in ("ShaktiCoupling.jl",)
+    Literate.markdown(
+        joinpath(@__DIR__, "src", "examples", file),
+        joinpath(@__DIR__, "src", "examples");
+        config = Dict("credit" => false)
+    )
+end
 
 example_pages = [
-    "examples/Kazmierczak2024.md",
-    "examples/HAB.md",
+    "examples/Antarctica.md",
+    "examples/Greenland.md",
+    "examples/Thwaites.md",
+    "examples/Helheim.md",
+    "examples/DrangDrung.md",
     "examples/ShaktiCoupling.md",
-    "examples/Synthetic.md",
 ]
 
 ref_pages = ["API_public.md", "references.md"]
@@ -49,6 +44,7 @@ ref_pages = ["API_public.md", "references.md"]
 # %% Build docs
 PAGES = [
     "index.md",
+    "tutorial.md",
     "Examples" => example_pages,
     "References" => ref_pages,
 ]

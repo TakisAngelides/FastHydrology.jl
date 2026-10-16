@@ -4,8 +4,7 @@ This page documents every exported name in FastHydrology.jl. It mirrors the "Pac
 section of the [README](https://github.com/TakisAngelides/FastHydrology.jl#package-structure):
 the package is built around four abstractions -- **grid**, **model**, **state**, and
 **simulation** -- plus the functions that operate on them. If you are looking for a narrative
-introduction instead, start with the [Quick start](@ref) example on the front page or the runnable
-[Examples](@ref).
+introduction instead, start with the [Quick start](@ref) on the front page or the [Tutorial](@ref).
 
 A typical session touches these pieces in order:
 
@@ -81,7 +80,7 @@ much faster than the ice sheet evolves.
 
 A third model, [`ShaktiHydroModel`](@ref), wraps the separate
 [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl) package and is genuinely time-evolving --
-see [Running Simulations](@ref) and [Coupling to Shakti.jl](@ref ShaktiCoupling). It's defined
+see [Running Simulations](@ref) and [Shakti](@ref Shakti-example). It's defined
 unconditionally (no hard dependency on Shakti), but only becomes runnable once `Shakti` is loaded
 alongside `FastHydrology`, since the `run!`/`step!` methods that dispatch on it live in the
 `FastHydrologyShaktiExt` package extension.
@@ -172,7 +171,7 @@ updates. For a [`TimeSimulation`](@ref), `run!` and [`step!`](@ref) are the two 
 flow model) that owns its own timestep loop and needs to update geometry between hydrology steps.
 Both are stubs with no methods in `FastHydrology`'s core -- the methods that make
 [`ShaktiHydroModel`](@ref) actually runnable are added by the `FastHydrologyShaktiExt` package
-extension once `Shakti` is loaded (see [Coupling to Shakti.jl](@ref ShaktiCoupling)).
+extension once `Shakti` is loaded (see [Shakti](@ref Shakti-example)).
 
 ```@docs
 run!
@@ -191,7 +190,7 @@ an unlimited `time` dimension, flushed to disk on every write, so a killed run k
 written before the kill. [`save_checkpoint`](@ref)/[`load_checkpoint!`](@ref) separately save/
 restore a full [`AbstractHydroState`](@ref)'s fields (generic over any subtype via `fieldnames`),
 so a restarted driver can resume its own loop at the right step/time. See
-[Checkpointing and periodic output](@ref) on the front page for a runnable pattern, and
+the [Tutorial](@ref) for a runnable pattern, and
 [`AbstractOutputWriter`](@ref)'s docstring for why [`TimeSimulation`](@ref)'s only model
 ([`ShaktiHydroModel`](@ref)) doesn't need this -- `Shakti.run!` already has its own equivalent
 machinery.
@@ -314,9 +313,9 @@ remaining functions are shared or model-specific sub-steps used to build it up.
 
 [`KazmierczakHydroModel`](@ref)'s `update_N_inf!`/`update_H!` additionally select which opening
 terms and effective `Q_c` to use via `model.drainage_mode` ([`AbstractDrainageMode`](@ref), set
-with the `drainage_mode` keyword): [`BothDrainage`](@ref) (the default) leaves the model free to
-switch between efficient and inefficient drainage automatically; [`EfficientOnly`](@ref)/
-[`InefficientOnly`](@ref) force it to one regime throughout, reproducing Sect. 3.2 of Kazmierczak
+with the `drainage_mode` keyword): `BothDrainage` (the default) leaves the model free to
+switch between efficient and inefficient drainage automatically; `EfficientOnly`/
+`InefficientOnly` force it to one regime throughout, reproducing Sect. 3.2 of Kazmierczak
 et al 2024.
 
 ```@docs
@@ -330,9 +329,6 @@ update_N_inf!
 update_Q!
 update_p_w!
 AbstractDrainageMode
-BothDrainage
-EfficientOnly
-InefficientOnly
 ```
 
 ## Data Loading
@@ -362,7 +358,7 @@ Km2m
 ## Plotting
 
 Convenience wrappers around CairoMakie.jl for visualizing fields and grid geometry, primarily
-intended for interactive exploration and for generating the figures in the [Examples](@ref).
+intended for interactive exploration and for generating the figures of the example pages.
 [`visualize_field`](@ref)/[`visualize_grid`](@ref) are defined unconditionally (no hard dependency
 on CairoMakie), but only become usable once a Makie backend is loaded alongside `FastHydrology`,
 since their implementations live in the `FastHydrologyMakieExt` package extension --

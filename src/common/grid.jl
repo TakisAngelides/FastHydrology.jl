@@ -146,7 +146,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-The `y` counterpart of [`minus_gradient_x_kernel!`](@ref): centred in the interior, one-sided
+The `y` counterpart of `minus_gradient_x_kernel!`: centred in the interior, one-sided
 (full-gradient) at `j = 1` and `j = Ny`, 0 when `Ny == 1`.
 """
 function minus_gradient_y_kernel!(dest, field, Nx, Ny, dy)
@@ -170,7 +170,7 @@ $(TYPEDSIGNATURES)
 Write `-∂field/∂x` into `dest`, both cell-centered fields on `grid`.
 
 The default here assumes `field`/`dest` already behave like plain arrays and applies
-[`minus_gradient_x_kernel!`](@ref): centred differences in the interior and one-sided differences at
+`minus_gradient_x_kernel!`: centred differences in the interior and one-sided differences at
 the domain edges, so edge cells get the full gradient rather than a halved one. A grid backend whose
 fields wrap a different storage (e.g. with halo padding) should override this only to hand the
 kernel plain-array views, so every backend shares the same edge handling.
@@ -203,7 +203,7 @@ one face they have (so a linear field gives the same value as the centred stenci
 edges included), and a direction with a single cell contributes 0.
 
 The face average of each component is exactly the centred difference, so only the magnitude
-differs from [`minus_gradient_x_kernel!`](@ref)/[`minus_gradient_y_kernel!`](@ref): the centred
+differs from `minus_gradient_x_kernel!`/`minus_gradient_y_kernel!`: the centred
 magnitude squares the averaged components, this one averages the squared face components. It is
 `>=` the centred magnitude and sees odd-even (checkerboard) variations the centred stencil cannot --
 the same face-to-centre construction as `FaceDissipation` and `StaggeredFriction`.
@@ -226,7 +226,7 @@ end
 $(TYPEDSIGNATURES)
 
 Write the face-based gradient magnitude of `field` into `dest`, both cell-centered fields on `grid`.
-See [`face_gradient_magnitude_kernel!`](@ref); override it the same way as `minus_gradient_x!` for a
+See `face_gradient_magnitude_kernel!`; override it the same way as `minus_gradient_x!` for a
 grid backend whose fields wrap a different storage.
 """
 function face_gradient_magnitude!(grid::AbstractHydroGrid, dest, field)

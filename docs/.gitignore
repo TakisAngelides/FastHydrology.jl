@@ -1,2 +1,5 @@
 build/
 site/
+src/tutorial.md
+src/examples/ShaktiCoupling.md
+figure_paths.jl
