@@ -25,7 +25,7 @@ basal sliding. It currently includes:
 
 The aim is to collect glacial hydrology models that can be coupled to an ice-flow model such as
 [Yelmo](https://github.com/palma-ice/yelmo)
-([Robinson et al. 2020](https://doi.org/10.5194/tc-14-815-2020)). The name of the repository is
+([Robinson et al. 2020](https://doi.org/10.5194/gmd-13-2805-2020)). The name of the repository is
 indicative that we strive to keep the models included here fast, even for the transient model case of Shakti,
 which is implemented in [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl).
 
