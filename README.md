@@ -9,16 +9,16 @@
 
 FastHydrology.jl is a Julia package of glacial hydrology models for ice-sheet modelling. Each model
 diagnoses the effective pressure at the ice base, the quantity that couples subglacial water to
-basal sliding. It currently provides:
+basal sliding. It currently includes:
 
 - **K24**: the steady-state hydrology model of
   [Kazmierczak et al. (2024)](https://doi.org/10.5194/tc-18-5887-2024). It is the main model of this
-  repository (see below).
+  repository.
 - **HAB**: the height-above-buoyancy parameterization, which assumes a direct
   hydraulic connection to the ocean at the grounding line
   (Sec. 2.1.1 of [Kazmierczak et al. 2022](https://doi.org/10.5194/tc-16-4537-2022)).
-- **SHAKTI**: a wrapper around [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl),
-  my Julia implementation of the transient SHAKTI model of
+- **Shakti**: a wrapper around [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl),
+  the Julia implementation of the transient Shakti model of
   [Sommers et al. (2018)](https://doi.org/10.5194/gmd-11-2955-2018).
 
 ## Aim
@@ -26,7 +26,7 @@ basal sliding. It currently provides:
 The aim is to collect glacial hydrology models that can be coupled to an ice-flow model such as
 [Yelmo](https://github.com/palma-ice/yelmo)
 ([Robinson et al. 2020](https://doi.org/10.5194/tc-14-815-2020)). The name of the repository is
-indicative that we strive to keep our models fast, even for the transient model case of SHAKTI,
+indicative that we strive to keep the models included here fast, even for the transient model case of Shakti,
 which is implemented in [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl).
 
 ## The K24 model
@@ -35,16 +35,13 @@ K24 is a steady-state model. It takes the state of a glacier or ice sheet as inp
 subglacial water flux with a routing algorithm, and diagnoses the effective pressure, defined as the
 ice overburden pressure minus the water pressure.
 
-Compared with the [original paper](https://doi.org/10.5194/tc-18-5887-2024) and code
-([Kori-ULB](https://github.com/FrankPat/Kori-ULB)), this implementation has more options for the
-routing algorithm that calculates the water flux. They are based on the options from
-[Le Brocq et al. (2006)](https://doi.org/10.1016/j.cageo.2006.05.003).
+This implementation of K24 includes all options for the routing algorithm that calculates the water flux that are discussed in [Le Brocq et al. (2006)](https://doi.org/10.1016/j.cageo.2006.05.003).
 
 Because the model is steady state, the effective pressure is recomputed from the current geometry
 and melt rate at each call, with no time stepping. This makes it cheap enough to couple to
-multi-century ice-flow simulations. The code is also optimized: one full solve on a real topography
+multi-century ice-flow simulations. The code is also optimized such that one full solve on a real topography
 takes tens of milliseconds when allowing for a feedback between melt rate and water flux, which
-requires a Picard iteration; otherwise it is even faster.
+requires a Picard iteration, otherwise it is even faster. Some examples which include a Picard iteration are shown in the table below.
 
 | Region | Grid (`nx x ny`) | Grounded cells | Time per solve |
 |---|---|---|---|
@@ -88,7 +85,7 @@ run!(SteadyStateSimulation(model, grid, state))
 state.N
 ```
 
-For runnable examples see the [online documentation](https://TakisAngelides.github.io/FastHydrology.jl/dev/).
+For more runnable examples see the [online documentation](https://TakisAngelides.github.io/FastHydrology.jl/dev/).
 
 ## License
 
