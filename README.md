@@ -88,8 +88,7 @@ run!(SteadyStateSimulation(model, grid, state))
 state.N
 ```
 
-For runnable examples see [`docs/src/examples`](docs/src/examples) and the
-[online documentation](https://TakisAngelides.github.io/FastHydrology.jl/dev/).
+For runnable examples see the [online documentation](https://TakisAngelides.github.io/FastHydrology.jl/dev/).
 
 ## License
 
