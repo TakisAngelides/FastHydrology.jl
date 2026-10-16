@@ -236,7 +236,9 @@ end
 
 function update_W_laminar!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::MeanGradient)
     abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
-    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / abs_grad_phi0_s_mean)^(1/3)))
+    # eps(T) as a plain scalar: the mean is 0 for an empty mask, and 0/0 would give a NaN W.
+    epsT = eps(eltype(model.abs_grad_phi0_s))
+    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (abs_grad_phi0_s_mean + epsT))^(1/3)))
     return nothing
 end
 

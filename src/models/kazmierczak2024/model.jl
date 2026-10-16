@@ -185,6 +185,7 @@ Keyword names for the paper's symbols (the `KazmierczakParams` fields and `model
 `bed_bump_height` (h_b, typical bed obstacle height [m]), `H0_efficient` (H_0, canal thickness for soft bed
 deformation [m]), `conduit_spacing` (l_c, distance between conduits [m]), `water_viscosity` (eta_w, dynamic
 viscosity of water [Pa s]). The (q, N) Picard loop is controlled by `max_qN_iters`, `qN_rtol` and `qN_verbose`.
+Unset, `qN_rtol` and `dissipation_rtol` are `1e-8` and `1e-12`, raised to `100 eps(T)` (about `1.2e-5`) when that is larger, i.e. for `Float32`, whose precision cannot reach the double-precision values (the loops would then run to their iteration caps every solve).
 
 The `psi_out_algorithm` keyword (`TapedPsiOut()` by default) selects which flow-routing
 implementation `resolve_q!` uses each sweep to compute psi_out -- see the `AbstractPsiOutAlgorithm`
@@ -297,12 +298,12 @@ function KazmierczakHydroModel(
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
     max_dissipation_iters = 20,                   # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
-    dissipation_rtol       = 1e-12,                # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
+    dissipation_rtol       = nothing,              # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged; nothing = max(1e-12, 100 eps(T))
     dissipation_melt        = true,                # Whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     = true,                # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
     sliding_law         = NoFrictionSlidingLaw(),          # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
     max_qN_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
-    qN_rtol       = 1e-8,                    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
+    qN_rtol       = nothing,                 # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged; nothing = max(1e-8, 100 eps(T))
     qN_verbose    = true,                    # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
 )
 
@@ -378,10 +379,10 @@ function KazmierczakHydroModel(
     end
     max_psi_out_calls = Int(max_psi_out_calls)
     max_dissipation_iters = Int(max_dissipation_iters)
-    dissipation_rtol       = T(dissipation_rtol)
+    dissipation_rtol       = T(dissipation_rtol === nothing ? max(1e-12, 100 * eps(T)) : dissipation_rtol)
     dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
     max_qN_iters  = Int(max_qN_iters)
-    qN_rtol       = T(qN_rtol)
+    qN_rtol       = T(qN_rtol === nothing ? max(1e-8, 100 * eps(T)) : qN_rtol)
     sliding_law         = convert_sliding_law(T, sliding_law)
     friction_discretization = convert_friction_discretization(T, friction_discretization)
 

@@ -153,44 +153,45 @@ Load an NCDatasets file from the yelmoxand return the processed fields needed fo
 - `κ`: bed hardness (0: hard, 1: soft).
 """
 function load_yelmox(path::String; bed_rheology = :mixed_smooth)
-    
-    ds = NCDataset(path)
+    # The file is closed once the fields are read, also if a variable is missing.
+    return NCDataset(path) do ds
 
-    Nx = length(ds["xc"])
-    Ny = length(ds["yc"])
+        Nx = length(ds["xc"])
+        Ny = length(ds["yc"])
 
-    # xc/yc carry a "units" = "km" attribute in yelmox restart files (confirmed against
-    # test/Kazmierczak et al 2024/input/yelmox/{32km,16km} restarts, where xc spacing is exactly
-    # 32.0/16.0), so they need the same km -> m conversion as load_Kazmierczak's xc/yc above.
-    xc = Km2m.(ds["xc"][:])
-    yc = Km2m.(ds["yc"][:])
-    xlims, ylims = compute_lims(xc, yc)
+        # xc/yc carry a "units" = "km" attribute in yelmox restart files (confirmed against
+        # test/Kazmierczak et al 2024/input/yelmox/{32km,16km} restarts, where xc spacing is exactly
+        # 32.0/16.0), so they need the same km -> m conversion as load_Kazmierczak's xc/yc above.
+        xc = Km2m.(ds["xc"][:])
+        yc = Km2m.(ds["yc"][:])
+        xlims, ylims = compute_lims(xc, yc)
 
-    mask = reshape(Int.(ds["f_ice"][:] .* ds["f_grnd"][:] .> 0.0), Nx, Ny)
-    h = reshape(ds["H_ice"][:], Nx, Ny)
-    b = reshape(ds["z_bed"][:], Nx, Ny)
-    ux_b = reshape(ds["ux_b"][:], Nx, Ny)
-    uy_b = reshape(ds["uy_b"][:], Nx, Ny)
-    # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against
-    # test/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
-    # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
-    abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
-    # ATT (Glen's law rate factor) is also per-year: Yelmo.jl's own rate-factor constants are
-    # explicitly documented in units of [1/yr / Pa^3] (src/mat/rate_factor.jl, e.g.
-    # `_RF_GB_A0_1 = 1.25671e-5 [1/yr / Pa^3]`), confirming ATT itself comes out per-year -- the
-    # same convention as ux_b/uy_b/bmb above, not the Pa^-n s^-1 SI this model expects.
-    A_visc = perYear2perSecond.(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1])
-    # Q_geo/Q_ice_b are instantaneous heat fluxes, so unlike ux_b/ATT they need no per-year
-    # conversion. Both are in mW m^-2 in Yelmo (Q_ice_b = Q_ice_b_now*1e3/sec_year in ice_enthalpy.f90),
-    # so both are scaled to W/m^2. (Some older restarts label Q_ice_b "W m^-2"; the values, ~10^2 over
-    # Antarctica, are mW m^-2.)
-    G = reshape(ds["Q_geo"][:], Nx, Ny) ./ 1000.0
-    q_T = reshape(ds["Q_ice_b"][:], Nx, Ny) ./ 1000.0
-    tau_b = reshape(ds["taub"][:], Nx, Ny)
+        mask = reshape(Int.(ds["f_ice"][:] .* ds["f_grnd"][:] .> 0.0), Nx, Ny)
+        h = reshape(ds["H_ice"][:], Nx, Ny)
+        b = reshape(ds["z_bed"][:], Nx, Ny)
+        ux_b = reshape(ds["ux_b"][:], Nx, Ny)
+        uy_b = reshape(ds["uy_b"][:], Nx, Ny)
+        # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against
+        # test/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
+        # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
+        abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
+        # ATT (Glen's law rate factor) is also per-year: Yelmo.jl's own rate-factor constants are
+        # explicitly documented in units of [1/yr / Pa^3] (src/mat/rate_factor.jl, e.g.
+        # `_RF_GB_A0_1 = 1.25671e-5 [1/yr / Pa^3]`), confirming ATT itself comes out per-year -- the
+        # same convention as ux_b/uy_b/bmb above, not the Pa^-n s^-1 SI this model expects.
+        A_visc = perYear2perSecond.(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1])
+        # Q_geo/Q_ice_b are instantaneous heat fluxes, so unlike ux_b/ATT they need no per-year
+        # conversion. Both are in mW m^-2 in Yelmo (Q_ice_b = Q_ice_b_now*1e3/sec_year in ice_enthalpy.f90),
+        # so both are scaled to W/m^2. (Some older restarts label Q_ice_b "W m^-2"; the values, ~10^2 over
+        # Antarctica, are mW m^-2.)
+        G = reshape(ds["Q_geo"][:], Nx, Ny) ./ 1000.0
+        q_T = reshape(ds["Q_ice_b"][:], Nx, Ny) ./ 1000.0
+        tau_b = reshape(ds["taub"][:], Nx, Ny)
 
-    κ = initialize_κ(Nx, Ny, b; bed_rheology)
+        κ = initialize_κ(Nx, Ny, b; bed_rheology)
 
-    return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ
+        return Nx, Ny, xlims, ylims, mask, h, b, abs_v_b, A_visc, G, q_T, tau_b, κ
+    end
 
 end
 

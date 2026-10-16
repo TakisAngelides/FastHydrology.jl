@@ -137,8 +137,13 @@ end
     mktempdir() do dir
         path = joinpath(dir, "out.nc")
         writer = NetCDFOutputWriter(path, grid, [:N, :W])
-        @test_throws ErrorException write_output!(writer, 1, 1.0, (N = zeros(5, 5),))
+        write_output!(writer, 1, 1.0, (N = zeros(5, 5), W = zeros(5, 5)))
+        @test_throws ErrorException write_output!(writer, 2, 2.0, (N = ones(5, 5),))
         close_output!(writer)
+        NCDataset(path) do ds   # all or nothing: the failed call added no slice
+            @test Array(ds["step"]) == [1]
+            @test Array(ds["time"]) == [1.0]
+        end
     end
 end
 

@@ -594,3 +594,21 @@
     @test all(isfinite, s1.N)
     @test all(s1.N .<= s0.N .+ 1e-9)           # b < 0: rho_sw only lowers the erf argument, never raises N
 end
+
+@testset "No grounded cell: masked_mean is 0 and the model runs through" begin
+    Nx, Ny, dx = 20, 15, 2e3
+    grid = ArrayHydroGrid(Nx, Ny, (0.0, Nx * dx), (0.0, Ny * dx))
+    b = [-2e-3 * (i - 0.5) * dx for i in 1:Nx, j in 1:Ny]
+    z = zeros(Nx, Ny)
+    G = fill(1e-6, Nx, Ny) .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W
+    @test masked_mean(grid, ones(Nx, Ny), zeros(Nx, Ny)) == 0
+    for lc in (0.0, 2.0), wt in (DarcyWeisbachThickness(), LaminarThickness(),
+                                 DarcyWeisbachThickness(gradient_convention = LocalGradient()))
+        m = KazmierczakHydroModel(grid, z, z .+ 1e-6, z .+ 1e-24, G, zero(G); coupling_length_kamb86 = lc,
+                                  water_thickness_algorithm = wt, qN_verbose = false)
+        s = HydroState(grid, zeros(Nx, Ny), fill(1000.0, Nx, Ny), b)
+        update_steady_state!(m, grid, s)
+        @test all(iszero, s.N) && all(iszero, m.q)
+        @test all(isfinite, s.W)
+    end
+end

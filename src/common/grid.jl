@@ -247,6 +247,10 @@ and the scattered (non-sequential) memory access of indexing through a `Cartesia
 lose to a single dense, branchless pass over `field`/`mask` together, even though the dense pass
 touches every cell rather than just the grounded ones.
 
+An empty mask (no cell with `mask == 1`) gives `0` rather than the `0/0 = NaN` of a plain mean, so a
+domain that has lost all its grounded ice leaves the models running (with `N = q = 0`) instead of
+failing on a NaN downstream (e.g. the mean thickness that sizes the coupling kernel).
+
 As with `convolve!`, the default here assumes `field`/`mask` already behave like plain arrays;
 override it for grid backends whose fields wrap a different
 underlying array storage.
@@ -259,7 +263,7 @@ function masked_mean(grid::AbstractHydroGrid, field, mask)
         s   += ifelse(m, field[i], zero(eltype(field)))
         cnt += ifelse(m, 1, 0)
     end
-    return s / cnt
+    return cnt == 0 ? zero(s) : s / cnt
 end
 
 

@@ -26,6 +26,10 @@ $(TYPEDSIGNATURES)
 
 The original iterative filling (`fill_iters` Jacobi passes of neighbour-mean raising). See
 [`AbstractFillAlgorithm`](@ref).
+
+Like KORI-ULB's, it ignores the mask: every strict local minimum is filled, also in non-grounded
+cells, whose filled values then enter the centred gradient of grounded neighbours. Use
+[`PriorityFloodFill`](@ref) to fill grounded cells only.
 """
 struct JacobiFill <: AbstractFillAlgorithm end
 
@@ -35,6 +39,10 @@ $(TYPEDSIGNATURES)
 Hollow filling as described by Le Brocq et al. (2006, Sec. 3.1): each strict local minimum is given
 the value of its lowest neighbour, repeated for up to `fill_iters` passes. Leaves flats where
 hollows were. See [`AbstractFillAlgorithm`](@ref).
+
+Like KORI-ULB's, it ignores the mask: every strict local minimum is filled, also in non-grounded
+cells, whose filled values then enter the centred gradient of grounded neighbours. Use
+[`PriorityFloodFill`](@ref) to fill grounded cells only.
 """
 struct LowestNeighbourFill <: AbstractFillAlgorithm end
 
@@ -398,14 +406,9 @@ function coupling_kernel(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
     # Kamb & Echelmeyer's literal 4-10x range) is smaller than a grid cell, so set longcoupwater = 0.
     width = 2 * scale
 
-    # Below Delta_min (the finer of the two spacings), `width` wouldn't resolve to even one grid
-    # cell in the tighter direction, so bump scale up to guarantee the kernel spans at least
-    # ~1 cell there rather than degenerating to a single-cell no-op.
-    Delta_min = min(dx, dy)
-
-    if width <= Delta_min
-        scale = Delta_min / 2 + 1
-    end
+    # A cone whose `width` is at most one cell (in either direction) gives a 1x1 kernel below,
+    # i.e. no smoothing at all -- deliberately not widened: at those resolutions the coupling
+    # length is not resolved, and a cone widened to span a cell would still be ~the identity.
 
     # Kernel size, independent per axis (frb_x, frb_y): cached_fft_convolve! (fft_convolution.jl)
     # supports a rectangular kernel array, so each axis is sized from its own spacing rather than
@@ -450,7 +453,9 @@ function update_smoothed_potential_gradients!(model::AbstractKazmierczakHydroMod
         return nothing
     end
 
-    # Average grounded-ice thickness
+    # Average grounded-ice thickness, of the *filled* surface (`model.h`), as in K24/KORI. The other
+    # routing schemes (prepare_routing!) smooth the potential before filling, so they cannot use it
+    # (the kernel would depend on its own output) and take `state.h` instead.
     kernel = coupling_kernel(model, grid, max(masked_mean(grid, model.h, state.mask), 10.0))
 
     convolve!(grid, model.minus_grad_phi0_sx, model.minus_grad_phi0_x, kernel)

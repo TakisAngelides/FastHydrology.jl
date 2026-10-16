@@ -14,9 +14,7 @@
         model = KazmierczakHydroModel(grid, z, hypot.(ux, uy), z .+ 1e-24, G, zero(G); coupling_length_kamb86 = 2.0,
                     dissipation_melt = true, dissipation_verbose = false, qN_verbose = false, routing_scheme = scheme,
                     fill_algorithm = PriorityFloodFill(), sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5),
-                    friction_discretization = StaggeredFriction(ux, uy),
-                    # single precision cannot reach the default 1e-8 / 1e-12 Picard tolerances
-                    qN_rtol = T === Float32 ? 1e-4 : 1e-8, dissipation_rtol = T === Float32 ? 1e-4 : 1e-12)
+                    friction_discretization = StaggeredFriction(ux, uy))
         state = HydroState(grid, ones(Nx, Ny), fill(1000.0, Nx, Ny), b)
         update_steady_state!(model, grid, state)
         return grid, model, state
@@ -25,6 +23,9 @@
     g64, m64, s64 = build_model(Float64)
     g32, m32, s32 = build_model(Float32)
 
+    # unset Picard tolerances: the double-precision values, raised to 100 eps(T) where unreachable
+    @test (m64.qN_rtol, m64.dissipation_rtol) == (1e-8, 1e-12)
+    @test m32.qN_rtol === m32.dissipation_rtol === 100 * eps(Float32)
     @test eltype(s32.N) === Float32 && eltype(m32.q) === Float32
     @test g32.conv_cache[] isa FastHydrology.FFTConvCache{Float32}
     @test g64.conv_cache[] isa FastHydrology.FFTConvCache{Float64}

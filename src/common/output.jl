@@ -134,7 +134,10 @@ function NetCDFOutputWriter(path::String, grid::AbstractHydroGrid, field_names::
         _trim_output_after!(path, field_names, Int(resume_step))
         ds = NCDataset(path, "a")
         for name in field_names
-            haskey(ds, String(name)) || error("NetCDFOutputWriter: \"$path\" has no variable \"$name\" to resume")
+            if !haskey(ds, String(name))
+                close(ds)
+                error("NetCDFOutputWriter: \"$path\" has no variable \"$name\" to resume")
+            end
         end
     else
         if isfile(path)
@@ -161,14 +164,19 @@ Appends one time-slice to `writer`'s file: `fields[name]` for each `name` in `wr
 (a `NamedTuple`, e.g. `(N = state.N, W = state.W)`), tagged with `step`/`time`. Flushes
 to disk immediately (`NCDatasets.sync`) so the write actually lands even if the process is killed
 right after this call returns -- the entire point of this writer.
+
+Every field is checked to be present before anything is written, so a missing field leaves the file
+untouched. An error during the writes themselves (e.g. a disk error) can still leave a partial slice.
 """
 function write_output!(writer::NetCDFOutputWriter, step::Integer, time::Real, fields::NamedTuple)
     ds = writer.ds
+    for name in writer.field_names
+        haskey(fields, name) || error("write_output!: field \"$name\" not provided (writer was built with field_names = $(writer.field_names))")
+    end
     idx = size(ds["step"], 1) + 1
     ds["step"][idx] = Int(step)
     ds["time"][idx] = Float64(time)
     for name in writer.field_names
-        haskey(fields, name) || error("write_output!: field \"$name\" not provided (writer was built with field_names = $(writer.field_names))")
         ds[String(name)][:, :, idx] = _output_array(fields[name])
     end
     NCDatasets.sync(ds)
