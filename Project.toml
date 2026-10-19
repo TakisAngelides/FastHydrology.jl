@@ -24,7 +24,7 @@ FastHydrologyShaktiExt = "Shakti"
 
 [compat]
 CairoMakie = "0.15.9"
-DocStringExtensions = "0.9.5"
+DocStringExtensions = "0.9.5, 0.10"
 FFTW = "1.10.0"
 ImageFiltering = "0.7.12"
 LinearAlgebra = "1"
