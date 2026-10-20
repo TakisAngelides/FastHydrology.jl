@@ -70,10 +70,13 @@ Model:
 ### Kazmierczak et al. 2024: every keyword
 Defaults shown, all are set in the call below.
 
-**Water source** (Eq. 3: `mdot = (G - q_T)/L_w + (Q_b + Q_diss)/L_w + i_eb`)
+**Water source** (Eq. 3: `mdot = (G - q_T)/L_w + (Q_b + Q_diss + Q_sens)/L_w + i_eb`)
 * `i_eb = nothing`  water reaching the bed from above [kg/m2/s] (field or `nothing` = 0)
 * `dissipation_melt = true`  include `|q grad(phi0)|/L_w` (Picard loop), or `false`
+* `sensible_heat = false`  include the sensible heat `Q_sens = ct cw rho_w q grad(p_w)`, `p_w = Po - N` (not in K24; solved in the (q, N) loop)
+  * `ct = 7.5e-8` [K/Pa], `cw = 4220` [J/kg/K]
 * `dissipation_discretization = nothing`: `CellCentredDissipation()`, `FaceDissipation()`, `nothing` = Face for Warner, else CellCentred
+  (also used for the sensible heat)
 * `sliding_law = NoFrictionSlidingLaw()`  frictional heat `Q_b = tau_b * |u_b|`:
   * `NoFrictionSlidingLaw()`  `Q_b = 0`
   * `PrescribedFieldSlidingLaw(grid, tau_b)`  fixed `tau_b` field (e.g. from the ice model)
@@ -85,7 +88,7 @@ Defaults shown, all are set in the call below.
 * `friction_discretization = CellCentredFriction()`:
   * `CellCentredFriction()`  `tau_b * |u_b|` at cell centres
   * `StaggeredFriction(ux, uy; quadrature = false, u_floor)`  C-grid velocities (Yelmo-style)
-* `max_qN_iters = 20`, `qN_rtol = nothing`, `qN_verbose = true`  (q, N) loop, only for N-dependent laws
+* `max_qN_iters = 20`, `qN_rtol = nothing`, `qN_verbose = true`  (q, N) loop, only for N-dependent laws or `sensible_heat = true`
 * `max_dissipation_iters = 20`, `dissipation_rtol = nothing`, `dissipation_verbose = true`
 
 **Routing of the water** (potential -> flow directions -> flux `q`)
@@ -139,6 +142,7 @@ model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
     ## water source
     i_eb = nothing,
     dissipation_melt = true,
+    sensible_heat = false, ct = 7.5e-8, cw = 4.22e3,
     dissipation_discretization = FaceDissipation(),
     sliding_law = PrescribedFieldSlidingLaw(grid, tau_b),          # not default (default NoFrictionSlidingLaw())
     friction_discretization = CellCentredFriction(),
@@ -204,7 +208,7 @@ run!(sim)
 * `model.psi_out` [m3/s] integrated flux
 * `model.Po` [Pa] overburden
 * `model.mdot_total` [kg/m2/s] routed source
-* `model.Q_b`, `model.Q_diss` [W/m2]
+* `model.Q_b`, `model.Q_diss`, `model.Q_sens` [W/m2]
 * `model.phi0` [Pa]
 * `freeze_on_capacity!(C, model, grid, state)` fills `C` with the freeze-on capacity [m/s ice]
 =#
