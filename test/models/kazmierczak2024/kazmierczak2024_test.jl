@@ -207,6 +207,42 @@
         @test all(>(0.0), state_c.N)
     end
 
+    @testset "KazmierczakHydroModel sensible heat" begin
+        # Q_sens = ct*cw*rho_w*(q . grad(p_w)), p_w = Po - N: off by default; on, it is solved in the
+        # (q, N) loop and enters the source like the other terms. Water flowing toward lower water
+        # pressure has to be warmed to stay at the melting point, so the term is negative here.
+        n    = 12
+        grid = ArrayHydroGrid(n, n, (0.0, 12e3), (0.0, 12e3))
+        mask = ones(n, n); mask[end, :] .= 0
+        h    = [1000.0 - 60.0 * i + 5.0 * sin(j) for i in 1:n, j in 1:n]
+        b    = [-100.0 - 3.0 * i for i in 1:n, j in 1:n]
+        args = (grid, zeros(n, n), fill(perYear2perSecond(100.0), n, n), fill(1e-24, n, n), fill(0.1, n, n), zeros(n, n))
+        kw   = (; coupling_length_kamb86 = 0.0, dissipation_verbose = false, qN_verbose = false)
+        grounded = mask .== 1
+        solve(; kws...) = (m = KazmierczakHydroModel(args...; kw..., kws...);
+                           st = HydroState(grid, mask, h, b); run!(SteadyStateSimulation(m, grid, st)); (m, st))
+
+        m_off, st_off = solve()
+        @test m_off.sensible_heat isa FastHydrology.SensibleHeatOff
+        @test all(==(0.0), m_off.Q_sens)
+
+        for disc in (FaceDissipation(), CellCentredDissipation())
+            m_on, st_on = solve(sensible_heat = true, dissipation_discretization = disc)
+            @test m_on.sensible_heat isa FastHydrology.SensibleHeatOn
+            @test sum(m_on.Q_sens[grounded]) < 0
+            @test all(==(0.0), m_on.Q_sens[.!grounded])
+            @test m_on.mdot_total ≈ m_on.mdot_fixed .+ (m_on.Q_b .+ m_on.Q_diss .+ m_on.Q_sens) ./ m_on.L_w
+            @test all(isfinite, st_on.N)
+
+            # ct = 0 removes the term: same q and N as with it off (up to the loop tolerance)
+            m_0, st_0 = solve(sensible_heat = true, dissipation_discretization = disc, ct = 0.0)
+            @test all(==(0.0), m_0.Q_sens)
+            m_ref, st_ref = solve(dissipation_discretization = disc)
+            @test m_0.q ≈ m_ref.q rtol = 1e-8
+            @test st_0.N ≈ st_ref.N rtol = 1e-8
+        end
+    end
+
     @testset "Sliding laws: calc_tau_b" begin
         N  = 1e5   # Pa
         vb = 200.0 / (60^2 * 24 * 365.25)  # m/s

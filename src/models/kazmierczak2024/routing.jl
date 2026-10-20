@@ -131,11 +131,12 @@ const TARBOTON_FACETS = ((2, 6), (2, 8), (4, 8), (4, 7), (1, 7), (1, 5), (3, 5),
 $(TYPEDSIGNATURES)
 
 Whether the solve needs face fluxes each sweep: for `QFromFaceAverage` or face-assembled
-dissipation (`FaceDissipation` with the dissipation melt on).
+dissipation or sensible heat (`FaceDissipation` with either term on).
 """
 needs_face_fluxes(model::AbstractKazmierczakHydroModel) =
     model.q_conversion isa QFromFaceAverage ||
-    (model.dissipation_melt isa DissipationMeltOn && model.dissipation_discretization isa FaceDissipation)
+    ((model.dissipation_melt isa DissipationMeltOn || model.sensible_heat isa SensibleHeatOn) &&
+     model.dissipation_discretization isa FaceDissipation)
 
 
 """

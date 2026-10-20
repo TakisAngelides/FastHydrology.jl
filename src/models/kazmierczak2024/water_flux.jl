@@ -32,6 +32,9 @@ sweep, converging jointly. `model.sliding_law`'s type determines which `resolve_
 term, computed but not iterated on), so they fall back to the original q-only dispatch on `model.dissipation_melt`; `AbstractPressureDependentSlidingLaw` always takes the joint (q, N) loop,
 using `model.max_qN_iters`/`model.qN_rtol` regardless of `model.dissipation_melt` (which only decides whether the dissipation term is added inside that loop, via `add_dissipation_term!`).
 
+The sensible heat ct*cw*rho_w*(q . grad(p_w)) (`model.sensible_heat`, off by default) depends on q and, through the water pressure p_w = Po - N, on N. With it on, `resolve_q!`
+takes the same joint (q, N) loop whatever the sliding law, adding the term every sweep via `add_sensible_term!`.
+
 The frictional-heating term is always added to `mdot_total` (via `add_friction_term!`); it is zero
 for `NoFrictionSlidingLaw`. The melt rate is only ever built from its terms, so there is no switch for
 an "already included" friction term.
@@ -65,7 +68,7 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     # The gradients (hence the routing graph) just changed, so any recorded TapedPsiOut traversal is stale.
     invalidate_routing_tape!(model)
 
-    resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law)
+    resolve_q!(model, grid, state, model.dissipation_melt, model.sliding_law, model.sensible_heat)
 
     return nothing
 
@@ -82,11 +85,13 @@ on q or N: a single pass through the routing algorithm already gives the exact a
 The frictional heat tau_b*v_b is always part of the source (zero for `NoFrictionSlidingLaw`).
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOff, sliding_law::Union{NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOff, sliding_law::Union{NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw},
+                     ::SensibleHeatOff)
 
     update_tau_b!(model, state, sliding_law)
     @. model.mdot_total = model.mdot_fixed + model.i_eb
     add_friction_term!(model)
+    model.Q_sens .= 0
 
     route_psi_out!(model, grid, state)
 
@@ -109,13 +114,15 @@ model.max_dissipation_iters sweeps. If `model.dissipation_verbose` is set, logs 
 took, whether it converged, and after how many iterations.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     ::DissipationMeltOn, sliding_law::Union{NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw})
+                     ::DissipationMeltOn, sliding_law::Union{NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw},
+                     ::SensibleHeatOff)
 
     start_time = time()
     converged  = false
     n_iters    = model.max_dissipation_iters
 
     update_tau_b!(model, state, sliding_law)
+    model.Q_sens .= 0
 
     for iter in 1:model.max_dissipation_iters
 
@@ -160,9 +167,11 @@ $(TYPEDSIGNATURES)
 
 With an N-dependent sliding law (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`), tau_b
 depends on N, which is itself downstream of q -- so q and N form a joint fixed point regardless of
-`model.dissipation_melt`. Each sweep: recompute tau_b from the current N, add its frictional heat to
-the water source (plus the dissipation term, if `model.dissipation_melt` is on), route q, then update
-N from the new q so the next sweep's tau_b uses a fresher N. Stops once both q and N stop
+`model.dissipation_melt`. The sensible heat (`model.sensible_heat` on) couples q and N the same way,
+through the water pressure p_w = Po - N, so this method also runs for it with any sliding law. Each
+sweep: recompute tau_b from the current N, add its frictional heat to the water source (plus the
+dissipation term, if `model.dissipation_melt` is on, and the sensible heat from the current q and N, if
+`model.sensible_heat` is on), route q, then update N from the new q so the next sweep uses a fresher N. Stops once both q and N stop
 changing (each relative to its own peak magnitude) to within `model.qN_rtol`, capped at
 `model.max_qN_iters` sweeps. If `model.qN_verbose` is set, logs (via @info) how long the loop
 took, whether it converged, and after how many iterations.
@@ -172,7 +181,8 @@ tau_b is zero for these laws and ramps up as the loop proceeds -- an ordinary co
 iteration, not a bug.
 """
 function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState,
-                     dissipation_melt::AbstractDissipationMelt, sliding_law::AbstractPressureDependentSlidingLaw)
+                     dissipation_melt::AbstractDissipationMelt, sliding_law::AbstractSlidingLaw,
+                     sensible_heat::AbstractSensibleHeat)
 
     start_time = time()
     converged  = false
@@ -187,6 +197,7 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         @. model.mdot_total = model.mdot_fixed + model.i_eb
         add_friction_term!(model)
         add_dissipation_term!(model, dissipation_melt)
+        add_sensible_term!(model, grid, state, sensible_heat)
 
         route_psi_out!(model, grid, state)
         update_q_from_psi_out!(model, grid, state)

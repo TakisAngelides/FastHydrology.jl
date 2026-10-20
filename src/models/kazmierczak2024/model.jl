@@ -12,7 +12,7 @@ once the model is constructed and never touched again during a solve. Split out 
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_sw          ::T    # Density of sea water [kg/m3], used only for the b term of the erf argument in update_N! (so N -> 0 at flotation); defaults to 1028 (flotation density, so N = 0 at the grounding line); set rho_sw = rho_w for the literal K24 Eq. 7
@@ -51,8 +51,11 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     dissipation_rtol       ::T    # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged
     dissipation_melt        ::D    # DissipationMeltOn() or DissipationMeltOff(): whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     ::Bool # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
+    sensible_heat           ::S    # SensibleHeatOn() or SensibleHeatOff(): whether update_q! includes the ct*cw*rho_w*(q . grad(p_w)) / L_w term
+    ct                      ::T    # Change of the pressure-melting point with pressure [K/Pa]
+    cw                      ::T    # Heat capacity of water [J/kg/K]
     sliding_law             ::L    # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
-    max_qN_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
+    max_qN_iters      ::Int  # Safety cap on the number of Picard iterations for the (q, N) loop (N-dependent sliding_law or sensible_heat on)
     qN_rtol           ::T    # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged
     qN_verbose        ::Bool # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
 
@@ -89,8 +92,9 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     i_eb         ::A  # Water reaching the bed from above, not melted there (i_eb of Sommers et al 2018: drained englacial water, surface input) [kg/m2/s]
     Q_b          ::A  # Frictional heat tau_b . u_b [W/m2], from sliding_law and friction_discretization (0 with NoFrictionSlidingLaw)
     Q_diss       ::A  # Heat dissipated by the water flow |q . grad(phi0)| [W/m2] (0 when dissipation_melt is off)
+    Q_sens       ::A  # Sensible heat ct*cw*rho_w*(q . grad(p_w)) [W/m2], signed (0 when sensible_heat is off)
     mdot_fixed   ::A  # Fixed part of the basal melt rate, (G - q_T)/L_w [kg/m2/s]; set by set_basal_terms!
-    mdot_total   ::A  # Water source routed by the flux solver, mdot_fixed + (Q_b + Q_diss)/L_w + i_eb [kg/m2/s]
+    mdot_total   ::A  # Water source routed by the flux solver, mdot_fixed + (Q_b + Q_diss + Q_sens)/L_w + i_eb [kg/m2/s]
     psi_out    ::A  # Integrated scalar water flux [m3/s]
     corfac     ::A  # Correction factor to go from psi_out to q
     q          ::A  # Distributed water flux [m2/s]
@@ -136,8 +140,8 @@ if a field is inserted out of order.
 `workspace`, so none of the physics files needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode} <: AbstractKazmierczakHydroModel
-    params    ::KazmierczakParams{T, D, L, P, WT, M}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat} <: AbstractKazmierczakHydroModel
+    params    ::KazmierczakParams{T, D, L, P, WT, M, S}
     workspace ::KazmierczakWorkspace{A, RoutingTape{T}}
 end
 
@@ -161,17 +165,18 @@ The Kazmierczak et al 2024 hydrology model. The water source is built from indiv
 Kazmierczak et al 2024), never supplied as a complete melt rate:
 
     mdot_fixed = (G - q_T) / L_w                     (set before the solve)
-    mdot_total = mdot_fixed + (Q_b + Q_diss) / L_w + i_eb   (water source routed)
+    mdot_total = mdot_fixed + (Q_b + Q_diss + Q_sens) / L_w + i_eb   (water source routed)
 
-`mdot_fixed + (Q_b + Q_diss)/L_w` is the basal melt rate; `Q_b` and `Q_diss` depend on the water flux
-(through N and q), so they are recomputed every Picard sweep.
+`mdot_fixed + (Q_b + Q_diss + Q_sens)/L_w` is the basal melt rate; `Q_b`, `Q_diss` and `Q_sens` depend
+on the water flux (through N and q), so they are recomputed every Picard sweep.
 
 `G` and `q_T` are given (positional, [W/m^2]); `Q_b = tau_b . u_b` comes from `sliding_law` and
 `friction_discretization` (zero for `NoFrictionSlidingLaw`, the default); `Q_diss = |q . grad(phi0)|`
-is added when `dissipation_melt` is on; `i_eb` [kg/m^2/s] is water reaching the bed from above that
+is added when `dissipation_melt` is on; `Q_sens = ct*cw*rho_w*(q . grad(p_w))`, with `p_w = Po - N`, is
+added when `sensible_heat` is on (off by default, as in K24; see `AbstractSensibleHeat` in melt_sources.jl); `i_eb` [kg/m^2/s] is water reaching the bed from above that
 was not melted there (drained englacial water, surface input), zero by default. As in Sommers et al
 2018, `i_eb` is a source of water but not part of the melt rate. Each term is kept as its own field
-(`model.G`, `model.q_T`, `model.Q_b`, `model.Q_diss`, `model.i_eb`; `model.mdot_fixed` holds only the fixed
+(`model.G`, `model.q_T`, `model.Q_b`, `model.Q_diss`, `model.Q_sens`, `model.i_eb`; `model.mdot_fixed` holds only the fixed
 part `(G - q_T)/L_w`), so a
 coupled model can exchange terms rather than a melt rate. Update the given terms between solves with
 [`set_basal_terms!`](@ref).
@@ -301,8 +306,11 @@ function KazmierczakHydroModel(
     dissipation_rtol       = nothing,              # Relative tolerance on q for the dissipation melt term's Picard iteration to be considered converged; nothing = max(1e-12, 100 eps(T))
     dissipation_melt        = true,                # Whether update_q! includes the |q * grad(phi0)| / L_w term
     dissipation_verbose     = true,                # Whether the dissipation melt term's Picard iteration logs its timing/convergence summary each call
+    sensible_heat = false,                        # Whether update_q! includes the sensible heat ct*cw*rho_w*(q . grad(p_w)) / L_w, p_w = Po - N (solved in the (q, N) loop)
+    ct            = 7.5e-8,                       # Change of the pressure-melting point with pressure [K/Pa]
+    cw            = 4.22e3,                       # Heat capacity of water [J/kg/K]
     sliding_law         = NoFrictionSlidingLaw(),          # AbstractSlidingLaw instance used to compute tau_b for the frictional-heating term tau_b*v_b in mdot
-    max_qN_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop when sliding_law is N-dependent
+    max_qN_iters  = 20,                      # Safety cap on the number of Picard iterations for the (q, N) loop (N-dependent sliding_law or sensible_heat)
     qN_rtol       = nothing,                 # Relative tolerance on q and N for the (q, N) Picard iteration to be considered converged; nothing = max(1e-8, 100 eps(T))
     qN_verbose    = true,                    # Whether the (q, N) coupling Picard iteration logs its timing/convergence summary each call
 )
@@ -381,6 +389,7 @@ function KazmierczakHydroModel(
     max_dissipation_iters = Int(max_dissipation_iters)
     dissipation_rtol       = T(dissipation_rtol === nothing ? max(1e-12, 100 * eps(T)) : dissipation_rtol)
     dissipation_melt_trait = dissipation_melt ? DissipationMeltOn() : DissipationMeltOff()
+    sensible_heat_trait    = sensible_heat ? SensibleHeatOn() : SensibleHeatOff()
     max_qN_iters  = Int(max_qN_iters)
     qN_rtol       = T(qN_rtol === nothing ? max(1e-8, 100 * eps(T)) : qN_rtol)
     sliding_law         = convert_sliding_law(T, sliding_law)
@@ -405,6 +414,7 @@ function KazmierczakHydroModel(
     i_eb = i_eb === nothing ? alloc_field(grid) : alloc_field(grid, i_eb)
     Q_b        = alloc_field(grid)
     Q_diss     = alloc_field(grid)
+    Q_sens     = alloc_field(grid)
     mdot_fixed = alloc_field(grid)
     @. mdot_fixed = (G - q_T) / L_w
     mdot_total = alloc_field(grid)
@@ -430,13 +440,14 @@ function KazmierczakHydroModel(
     params = KazmierczakParams(
         rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, W_min, W_max, water_thickness_algorithm, longcoupwater, N_min, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
+        sensible_heat_trait, T(ct), T(cw),
         sliding_law, max_qN_iters, qN_rtol, qN_verbose
 )
 
     workspace = KazmierczakWorkspace(
         phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
-        visited, h, G, q_T, i_eb, Q_b, Q_diss, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
+        visited, h, G, q_T, i_eb, Q_b, Q_diss, Q_sens, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 

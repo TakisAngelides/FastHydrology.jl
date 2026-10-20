@@ -3,7 +3,8 @@
 #################################
 
 # The water source mdot_total: the fixed basal terms (G, q_T, i_eb), the dissipation melt
-# |q . grad(phi0)| / L_w and the frictional heat tau_b * |u_b| / L_w, with their discretisations.
+# |q . grad(phi0)| / L_w, the sensible heat ct*cw*rho_w*(q . grad(p_w)) / L_w and the frictional
+# heat tau_b * |u_b| / L_w, with their discretisations.
 
 
 """
@@ -87,6 +88,103 @@ function add_dissipation_term!(model::AbstractKazmierczakHydroModel, ::FaceDissi
     @inbounds for j in axes(diss, 2), i in axes(diss, 1)
         model.Q_diss[i, j]      = diss[i, j] * model.L_w
         model.mdot_total[i, j] += diss[i, j]
+    end
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Trait controlling whether `update_q!` includes the sensible heat `Q_sens = ct*cw*rho_w*(q . grad(p_w))`
+in the water source (see `KazmierczakHydroModel`'s `sensible_heat` keyword): the heat that keeps the
+water at the pressure-melting point as it flows to a different water pressure `p_w = Po - N`
+(Werder et al. 2013, Eq. 8; Sommers et al. 2018). Water flowing toward lower pressure (the usual case)
+has to be warmed, so the term is negative there and reduces the melt. Same compile-time on/off
+dispatch as `AbstractDissipationMelt`: the `sensible_heat` keyword is a `Bool`, stored as
+`SensibleHeatOn()`/`SensibleHeatOff()`. As `p_w` depends on `N`, turning it on solves `q` and `N`
+together in the joint `(q, N)` Picard loop (see `resolve_q!`).
+"""
+abstract type AbstractSensibleHeat end
+struct SensibleHeatOn  <: AbstractSensibleHeat end
+struct SensibleHeatOff <: AbstractSensibleHeat end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Compute the sensible heat `model.Q_sens` [W/m^2] from the current `model.q` and `state.N` and add
+`Q_sens/L_w` to `model.mdot_total` in place (`Q_sens` is set to zero when the term is off). The water
+pressure is `p_w = rho_i*g*h - N`, and only differences between two grounded cells are used (`p_w` is
+not defined off the grounded mask). Discretised like the dissipation term, per
+`model.dissipation_discretization`:
+- `CellCentredDissipation`: `q` times the gradient of `p_w` along the routing direction
+  `(minus_grad_phi0_sx, minus_grad_phi0_sy)`, centred differences (one-sided at the grounded margin).
+- `FaceDissipation`: face flux times the `p_w` difference across each face, half of each face to each
+  of its two cells (the construction `FaceDissipation` uses for `phi0`).
+"""
+add_sensible_term!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::SensibleHeatOff) =
+    (model.Q_sens .= 0; nothing)
+
+function add_sensible_term!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::SensibleHeatOn)
+    c = model.ct * model.cw * model.rho_w
+    sensible_heat_kernel!(model.Q_sens, model, grid, state, c, model.dissipation_discretization)
+    @. model.mdot_total += model.Q_sens / model.L_w
+    return nothing
+end
+
+sensible_heat_kernel!(Q_sens, model, grid, state, c, ::CellCentredDissipation) =
+    sensible_cell_kernel!(Q_sens, model.q, model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.h, state.N, state.mask,
+                          grid.Nx, grid.Ny, grid.dx, grid.dy, model.rho_i, model.g, c)
+
+sensible_heat_kernel!(Q_sens, model, grid, state, c, ::FaceDissipation) =
+    sensible_face_kernel!(Q_sens, model.routing_tape.Fx, model.routing_tape.Fy, state.h, state.N, state.mask,
+                          grid.Nx, grid.Ny, grid.dx, grid.dy, model.rho_i, model.g, c)
+
+@inline water_pressure(h, N, rho_i, g, i, j) = rho_i * g * h[i, j] - N[i, j]
+
+# Derivative from the grounded neighbours only: centred with both, one-sided with one, 0 with none.
+@inline function grounded_derivative(pm, pc, pp, has_m, has_p, d)
+    has_m & has_p && return (pp - pm) / (2d)
+    has_p && return (pp - pc) / d
+    has_m && return (pc - pm) / d
+    return zero(pc)
+end
+
+function sensible_cell_kernel!(Q_sens, q, sx, sy, h, N, mask, Nx, Ny, dx, dy, rho_i, g, c)
+    z = zero(eltype(Q_sens))
+    @inbounds for j in 1:Ny, i in 1:Nx
+        s = hypot(sx[i, j], sy[i, j])
+        if mask[i, j] != 1.0 || s == 0
+            Q_sens[i, j] = z
+            continue
+        end
+        pc = water_pressure(h, N, rho_i, g, i, j)
+        has_w, has_e = i > 1 && mask[i - 1, j] == 1.0, i < Nx && mask[i + 1, j] == 1.0
+        has_s, has_n = j > 1 && mask[i, j - 1] == 1.0, j < Ny && mask[i, j + 1] == 1.0
+        dpdx = grounded_derivative(has_w ? water_pressure(h, N, rho_i, g, i - 1, j) : pc, pc,
+                                   has_e ? water_pressure(h, N, rho_i, g, i + 1, j) : pc, has_w, has_e, dx)
+        dpdy = grounded_derivative(has_s ? water_pressure(h, N, rho_i, g, i, j - 1) : pc, pc,
+                                   has_n ? water_pressure(h, N, rho_i, g, i, j + 1) : pc, has_s, has_n, dy)
+        Q_sens[i, j] = c * q[i, j] * (sx[i, j] * dpdx + sy[i, j] * dpdy) / s
+    end
+    return nothing
+end
+
+function sensible_face_kernel!(Q_sens, Fx, Fy, h, N, mask, Nx, Ny, dx, dy, rho_i, g, c)
+    z = zero(eltype(Q_sens))
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if mask[i, j] != 1.0
+            Q_sens[i, j] = z
+            continue
+        end
+        pc = water_pressure(h, N, rho_i, g, i, j)
+        P = z
+        (i > 1  && mask[i - 1, j] == 1.0) && (P += Fx[i, j]     * (pc - water_pressure(h, N, rho_i, g, i - 1, j)))
+        (i < Nx && mask[i + 1, j] == 1.0) && (P += Fx[i + 1, j] * (water_pressure(h, N, rho_i, g, i + 1, j) - pc))
+        (j > 1  && mask[i, j - 1] == 1.0) && (P += Fy[i, j]     * (pc - water_pressure(h, N, rho_i, g, i, j - 1)))
+        (j < Ny && mask[i, j + 1] == 1.0) && (P += Fy[i, j + 1] * (water_pressure(h, N, rho_i, g, i, j + 1) - pc))
+        Q_sens[i, j] = c * P / (2 * dx * dy)
     end
     return nothing
 end
