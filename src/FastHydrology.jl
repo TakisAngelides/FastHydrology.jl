@@ -68,6 +68,7 @@ export AbstractFrictionDiscretization, CellCentredFriction, StaggeredFriction
 export update_phi0!, potential_filling!
 export AbstractFillAlgorithm, JacobiFill, LowestNeighbourFill, PriorityFloodFill
 export AbstractGradientDiscretization, CentredGradient, FaceGradient
+export AbstractPotentialWeight, GroundedIce, GroundedMask
 export update_potential_gradients!, update_smoothed_potential_gradients!
 
 # models/kazmierczak2024/psi_out.jl

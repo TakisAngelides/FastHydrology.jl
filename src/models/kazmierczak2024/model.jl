@@ -44,6 +44,7 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     q_conversion    ::AbstractQConversion    # QFromOutflow() or QFromFaceAverage() (default follows routing_scheme) -- see AbstractQConversion
     dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() or FaceDissipation() (default follows routing_scheme) -- see AbstractDissipationDiscretization
     gradient_discretization ::AbstractGradientDiscretization  # CentredGradient() or FaceGradient() (default follows routing_scheme): stencil of the gradient magnitudes -- see AbstractGradientDiscretization
+    potential_weight ::AbstractPotentialWeight  # GroundedIce() (default) or GroundedMask(): which cells have a meaningful potential (model.phi_weight) for the smoothing, the true gradient and the face dissipation -- see AbstractPotentialWeight
     friction_discretization ::AbstractFrictionDiscretization  # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
@@ -76,14 +77,14 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     # Geometric potential
     phi0                   ::A  # True geometric potential rho_i*g*h + rho_w*g*b [Pa]; used for N and for the local gradient magnitude
     phi0_filled            ::A  # phi0 with local minima filled; used only to route water (flow direction), never for N/S_inf/dissipation [Pa]
-    phi0_tmp               ::A  # Temporary storage for potential filling of phi0 to smoothen local minima and avoid stuck water
+    phi0_tmp               ::A  # Temporary storage for potential filling of phi0 to smoothen local minima and avoid stuck water; also scratch for the weighted coupling smoothing
     minus_grad_phi0_x      ::A  # Geometric potential gradient x-component [Pa/m]
     minus_grad_phi0_y      ::A  # Geometric potential gradient y-component [Pa/m]
     abs_grad_phi0          ::A  # Magnitude of the geometric potential gradient [Pa/m]
     minus_grad_phi0_sx     ::A  # Smoothed gradient x-component of the geometric potential [Pa/m]
     minus_grad_phi0_sy     ::A  # Smoothed gradient y-component of the geometric potential [Pa/m]
     abs_grad_phi0_s        ::A  # Euclidean magnitude of the smoothed gradient of the geometric potential [Pa/m]
-    phi_weight             ::A  # 1 where phi0 is a meaningful potential (grounded ice, in or out of the mask), else 0; set by update_phi0!
+    phi_weight             ::A  # 1 where phi0 is a meaningful potential (per potential_weight), else 0; set by update_phi0!
     phi_weight_s           ::A  # phi_weight convolved with the coupling kernel (the normalisation of the smoothed potential)
 
     # Water flux
@@ -249,6 +250,13 @@ Pick a value from whichever range matches your setting, or `0.0` to disable the 
 resulting coupling length is too small for your grid to resolve at all (in which case `0.0` is the
 honest choice, not a value the grid can't represent).
 
+`potential_weight` picks the cells whose potential the coupling smoothing, the true gradient
+magnitude and the face dissipation may use: `GroundedIce()` (default) takes grounded ice inside or
+outside the mask, `GroundedMask()` the grounded mask only (e.g. for a basin cut whose outside ice is
+not evolved). Cells outside it, such as the `h = b = 0` padding around a rasterised mesh, would
+otherwise pull the smoothed potential down near the edge (spurious divides, high-N hot spots) and
+give the boundary cells a gradient of the whole overburden -- see `AbstractPotentialWeight`.
+
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
 # Arguments
@@ -301,6 +309,7 @@ function KazmierczakHydroModel(
     q_conversion = nothing,                       # QFromOutflow()/QFromFaceAverage(); nothing = QFromFaceAverage for Warner, QFromOutflow otherwise -- see AbstractQConversion
     dissipation_discretization = nothing,         # CellCentredDissipation()/FaceDissipation(); nothing = FaceDissipation for Warner, CellCentredDissipation otherwise -- see AbstractDissipationDiscretization
     gradient_discretization = nothing,            # CentredGradient()/FaceGradient(); nothing = FaceGradient for Warner, CentredGradient otherwise -- see AbstractGradientDiscretization
+    potential_weight = GroundedIce(),             # GroundedIce()/GroundedMask(): cells with a meaningful potential, kept in the smoothing, true gradient and face dissipation -- grounded ice in or out of the mask, or the grounded mask only; see AbstractPotentialWeight
     friction_discretization = CellCentredFriction(),       # CellCentredFriction()/StaggeredFriction(ux_acx, uy_acy; quadrature): frictional heat from C-grid velocities -- see AbstractFrictionDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out
@@ -442,7 +451,7 @@ function KazmierczakHydroModel(
     Po      = alloc_field(grid)
 
     params = KazmierczakParams(
-        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, W_min, W_max, water_thickness_algorithm, longcoupwater, N_min, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, friction_discretization,
+        rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, W_min, W_max, water_thickness_algorithm, longcoupwater, N_min, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, potential_weight, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
         sensible_heat_trait, T(ct), T(cw),
         sliding_law, max_qN_iters, qN_rtol, qN_verbose

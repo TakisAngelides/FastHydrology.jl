@@ -63,27 +63,61 @@ PriorityFloodFill(; epsilon = 1.0) = PriorityFloodFill(epsilon)
 """
 $(TYPEDSIGNATURES)
 
+Which cells count as having a meaningful potential for the subglacial water, i.e. `model.phi_weight`
+(see `KazmierczakHydroModel`'s `potential_weight` keyword and `update_phi0!`). Cells outside the
+weight are kept out of the stress-gradient-coupling smoothing (`prepare_routing!`), the true gradient
+magnitude (`update_potential_gradients!`) and the face dissipation (`update_face_fluxes!`). Across their
+edge phi0 can jump by the whole overburden (e.g. the `h = b = 0` padding around a rasterised mesh,
+where phi0 = 0), which otherwise creates spurious drainage divides (a high-N band about one kernel
+radius inside the boundary, collapsing to a single hot spot for large kernels) and inflates N on the
+boundary cells.
+- [`GroundedIce`](@ref) (default): the grounded mask plus ice outside it that is grounded by flotation
+  (`h > 0` and `rho_i h >= -rho_sw b`), e.g. ice beyond the edge of a drainage basin. The smoothing then
+  feels the ice across a basin cut, as the stress coupling it stands for would.
+- [`GroundedMask`](@ref): the grounded mask only. Use it when the geometry outside the mask is not
+  consistent with the inside, e.g. a transient basin run in which the outside ice is not evolved.
+
+The two are the same whenever every grounded cell is in the mask (whole ice sheets, a coupled ice
+model's grounded mask).
+"""
+abstract type AbstractPotentialWeight end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractPotentialWeight`](@ref)."""
+struct GroundedIce <: AbstractPotentialWeight end
+"""$(TYPEDSIGNATURES)
+
+See [`AbstractPotentialWeight`](@ref)."""
+struct GroundedMask <: AbstractPotentialWeight end
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Update the geometric potential phi0, and `model.phi_weight`: 1 where phi0 is a meaningful potential
-for the subglacial water, i.e. on grounded ice -- every cell of the grounded mask, plus ice outside
-the mask that would be grounded by flotation (`rho_i h >= -rho_sw b`, e.g. ice beyond the edge of a
-drainage basin) -- and 0 elsewhere (floating ice, open ocean, ice-free land, and cells padding a
-domain cut through grounded ice, such as the `h = b = 0` cells around a rasterised mesh, where
-phi0 = 0 has nothing to do with the potential under the ice). The weight keeps those cells out of
-the stress-gradient-coupling smoothing (`prepare_routing!`), the true gradient magnitude
-(`update_potential_gradients!`) and the face dissipation (`update_face_fluxes!`): across their edge
-phi0 can jump by the whole overburden, which otherwise creates spurious drainage divides (a
-high-N band about one kernel radius inside the boundary, collapsing to a single hot spot for large
-kernels) and inflates N on the boundary cells.
+for the subglacial water, 0 elsewhere, as chosen by `model.potential_weight` (see
+`AbstractPotentialWeight`).
 """
 function update_phi0!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
     @. model.phi0 = model.rho_i * model.g * state.h + model.rho_w * model.g * state.b
 
-    T = eltype(model.phi_weight)
-    @. model.phi_weight = ifelse((state.mask == 1) | ((state.h > 0) & (model.rho_i * state.h >= -model.rho_sw * state.b)), one(T), zero(T))
+    update_phi_weight!(model, state, model.potential_weight)
 
     return nothing
 
+end
+
+function update_phi_weight!(model::AbstractKazmierczakHydroModel, state::HydroState, ::GroundedIce)
+    T = eltype(model.phi_weight)
+    @. model.phi_weight = ifelse((state.mask == 1) | ((state.h > 0) & (model.rho_i * state.h >= -model.rho_sw * state.b)), one(T), zero(T))
+    return nothing
+end
+
+function update_phi_weight!(model::AbstractKazmierczakHydroModel, state::HydroState, ::GroundedMask)
+    T = eltype(model.phi_weight)
+    @. model.phi_weight = ifelse(state.mask == 1, one(T), zero(T))
+    return nothing
 end
 
 
@@ -454,6 +488,14 @@ Update the smoothed geometric potentials to incorporate the effects of the stres
 
 The water flux at a given point is influenced by variations in ice thickness some distance away. To account for this we perform a convolution of the gradient of the potential
 such that the influence of nearby points is now incorporated into the value of the gradient of the potential at that point.
+
+The convolution is normalised by the weight `model.phi_weight` (see `AbstractPotentialWeight`), as
+the potential smoothing of the other routing schemes is (`smooth_potential!`):
+`s = K * (w g) / K * w`, with the components `g` of the filled potential taken one-sided next to a cell
+outside `w`. KORI-ULB convolves the plain centred components, which on a boundary cell span the jump
+to the cell outside (the whole overburden next to `h = b = 0` padding) and spread it a kernel radius
+inward, creating the same spurious divides. Cells outside `w` within reach of the kernel get the
+weighted average; farther ones keep the unsmoothed components.
 """
 function update_smoothed_potential_gradients!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
@@ -469,9 +511,14 @@ function update_smoothed_potential_gradients!(model::AbstractKazmierczakHydroMod
     # (the kernel would depend on its own output) and take `state.h` instead.
     kernel = coupling_kernel(model, grid, max(masked_mean(grid, model.h, state.mask), 10.0))
 
-    convolve!(grid, model.minus_grad_phi0_sx, model.minus_grad_phi0_x, kernel)
-    convolve!(grid, model.minus_grad_phi0_sy, model.minus_grad_phi0_y, kernel)
-
+    w, ws = model.phi_weight, model.phi_weight_s
+    convolve!(grid, ws, w, kernel)
+    tol = sqrt(eps(eltype(ws)))
+    for (axis, dest, raw) in ((1, model.minus_grad_phi0_sx, model.minus_grad_phi0_x), (2, model.minus_grad_phi0_sy, model.minus_grad_phi0_y))
+        weighted_minus_gradient!(grid, model.phi0_tmp, model.phi0_filled, w, axis)   # phi0_tmp is free after the filling
+        convolve!(grid, dest, model.phi0_tmp, kernel)
+        @. dest = ifelse(ws > tol, dest / max(ws, tol), raw)
+    end
 
     # Euclidean magnitude, like abs_grad_phi0 (Kori-ULB's gdsmag uses |sx| + |sy|, which depends on the
     # flow's orientation to the grid: up to sqrt(2) too large at 45 degrees).

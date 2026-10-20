@@ -275,6 +275,27 @@ function masked_centred_gradient_magnitude_kernel!(dest, field, w, Nx, Ny, dx, d
     return nothing
 end
 
+"""
+$(TYPEDSIGNATURES)
+
+Write `w * (-∂field/∂x)` (`axis = 1`) or `w * (-∂field/∂y)` (`axis = 2`) into `dest`, the component
+taken with the weighted stencil of `masked_centred_gradient_magnitude_kernel!` (centred, one-sided
+next to a cell outside `w`, unweighted for an isolated cell) and 0 outside `w`. It is the numerator
+of the weight-normalised smoothing of the gradient components (`update_smoothed_potential_gradients!`).
+"""
+function weighted_minus_gradient_kernel!(dest, field, w, Nx, Ny, dx, dy, axis::Int)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        if w[i, j] != 1
+            dest[i, j] = zero(eltype(dest))
+            continue
+        end
+        gx, gy, n = centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, true)
+        n == 0 && ((gx, gy, n) = centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, false))
+        dest[i, j] = -(axis == 1 ? gx : gy)
+    end
+    return nothing
+end
+
 # Centred (one-sided where only one neighbour is usable) gradient components of `field` at (i, j) and
 # the number of usable neighbours. With `masked`, only neighbours with w == 1 are usable.
 @inline function centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, masked::Bool)
@@ -306,6 +327,17 @@ end
 
 function face_gradient_magnitude!(grid::AbstractHydroGrid, dest, field, w)
     masked_face_gradient_magnitude_kernel!(dest, field, w, grid.Nx, grid.Ny, grid.dx, grid.dy)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Write `w` times the negative gradient component of `field` along `axis` (1 = x, 2 = y) into `dest`,
+with the weighted stencil (see `weighted_minus_gradient_kernel!`).
+"""
+function weighted_minus_gradient!(grid::AbstractHydroGrid, dest, field, w, axis::Int)
+    weighted_minus_gradient_kernel!(dest, field, w, grid.Nx, grid.Ny, grid.dx, grid.dy, axis)
     return nothing
 end
 

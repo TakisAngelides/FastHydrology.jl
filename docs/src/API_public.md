@@ -274,6 +274,9 @@ PriorityFloodFill
 AbstractGradientDiscretization
 CentredGradient
 FaceGradient
+AbstractPotentialWeight
+GroundedIce
+GroundedMask
 update_potential_gradients!
 update_smoothed_potential_gradients!
 AbstractRoutingScheme

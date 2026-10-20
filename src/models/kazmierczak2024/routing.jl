@@ -146,9 +146,8 @@ Build the routing potential and flow directions for `model.routing_scheme`, call
 `update_q!` after `update_phi0!`.
 
 - GDS schemes (`GDSWarner`, `GDSTarboton`): the original K24 pipeline -- fill phi0, take its gradient,
-  smooth the gradient components with the Kamb & Echelmeyer (1986) kernel. This smoothing is kept as
-  in KORI-ULB, unweighted: it averages across the edge of the grounded ice, so on a domain cut
-  through grounded ice (e.g. a rasterised mesh padded with `h = b = 0`) use a potential scheme.
+  smooth the gradient components with the Kamb & Echelmeyer (1986) kernel, normalised by the weight
+  `model.phi_weight` (see `update_smoothed_potential_gradients!`).
 - Potential schemes (`Warner`, `Quinn`, `Tarboton`, `ModifiedTarboton`): smooth the potential itself
   with the same kernel, then fill it (so the filling acts on the surface the water actually follows).
   Smoothing commutes with differentiation, so this is the same stress-gradient coupling, but the

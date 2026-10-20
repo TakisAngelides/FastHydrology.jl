@@ -195,6 +195,9 @@
         s2 = HydroState(grid, mp, h2, b2)
         update_phi0!(m, grid, s2)
         @test m.phi_weight[1, 1] == 1 && m.phi_weight[2, 1] == 0 && m.phi_weight[3, 1] == 0
+        mm, _ = pbuild(coupling_length_kamb86 = 0.0, dissipation_melt = false, potential_weight = GroundedMask())
+        update_phi0!(mm, grid, s2)
+        @test mm.phi_weight == mp
 
         # true gradient: the plane's slope on every grounded cell, rim included, for both stencils
         for gd in (FaceGradient(), CentredGradient())
@@ -219,6 +222,19 @@
         convolve!(grid, plain, m.phi0, kernel)
         @test interior_max(plain) > 0
         @test interior_max(m.phi0_filled) == 0
+        @test all(isfinite, m.q) && all(isfinite, s.N)
+
+        # GDS: the weighted smoothing of the components of a plane is the plane's gradient on every
+        # grounded cell; the unweighted one carries the jump at the edge a kernel radius inward
+        m, s = pbuild(coupling_length_kamb86 = 10.0, dissipation_melt = false, routing_scheme = GDSWarner())
+        update_steady_state!(m, grid, s)
+        sx, sy = -1000.0 * 9.81 .* slope       # -grad(rho_w g b) of the plane
+        @test all(isapprox.(m.minus_grad_phi0_sx[inside], sx; rtol = 1e-8))
+        @test all(isapprox.(m.minus_grad_phi0_sy[inside], sy; rtol = 1e-8))
+        kernel = FastHydrology.coupling_kernel(m, grid, max(masked_mean(grid, m.h, s.mask), 10.0))
+        @test size(kernel, 1) > 1
+        convolve!(grid, plain, m.minus_grad_phi0_x, kernel)
+        @test maximum(abs.(plain[inside] .- sx)) > abs(sx)
         @test all(isfinite, m.q) && all(isfinite, s.N)
 
         # face dissipation: no energy for the drop to the padding on the exit faces
