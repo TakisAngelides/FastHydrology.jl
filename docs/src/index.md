@@ -24,7 +24,8 @@ using FastHydrology
 Nx, Ny = 50, 50
 grid = ArrayHydroGrid(Nx, Ny, (0.0, 50_000.0), (0.0, 50_000.0))
 
-mask    = ones(Nx, Ny)                                  # 1 = grounded
+mask    = fill(GROUNDED, Nx, Ny)                        # grounded ice, solved
+mask[end, :] .= OCEAN                                   # outlet: water leaves here (the other edges are closed)
 h       = [2000.0 - 15.0 * i for i in 1:Nx, j in 1:Ny]  # ice thickness [m]
 b       = [-200.0 - 2.0 * j for i in 1:Nx, j in 1:Ny]   # bed elevation [m]
 kappa   = zeros(Nx, Ny)                                 # 0 = hard bed
@@ -33,7 +34,7 @@ A_visc  = fill(1e-24, Nx, Ny)                           # ice flow rate factor
 G       = fill(1e-6 * 3.34e5, Nx, Ny)                   # geothermal flux [W/m2]
 q_T     = zeros(Nx, Ny)                                 # conductive flux into the ice [W/m2]
 
-state = HydroState(grid, mask, h, b)
+state = HydroState(grid, HydroMask(mask), h, b)
 model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86 = 10.0)
 run!(SteadyStateSimulation(model, grid, state))
 

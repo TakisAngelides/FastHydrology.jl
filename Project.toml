@@ -1,6 +1,6 @@
 name = "FastHydrology"
 uuid = "91547ff3-b885-4d35-ac59-f1ca93abc87d"
-version = "2.0.1"
+version = "3.0.0"
 authors = ["Takis Angelides"]
 
 [deps]

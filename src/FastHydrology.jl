@@ -12,6 +12,7 @@ using NCDatasets
 include("common/grid.jl")
 include("common/fft_convolution.jl")
 include("common/model.jl")
+include("common/mask.jl")
 include("common/state.jl")
 include("common/simulation.jl")
 include("common/effective_pressure.jl")
@@ -48,6 +49,9 @@ export AbstractHydroGrid, ArrayHydroGrid
 export alloc_field
 export convolve!, masked_mean, masked_max_abs, masked_max_abs_diff, overwrite_where!
 export minus_gradient_x!, minus_gradient_y!, face_gradient_magnitude!
+
+# common/mask.jl
+export GROUNDED, OCEAN, LAND, OTHER_BASIN, HydroMask, classify_mask
 
 # common/model.jl, models/kazmierczak2024/model.jl, models/hab/model.jl, models/shakti/model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel

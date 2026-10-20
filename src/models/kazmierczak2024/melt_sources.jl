@@ -155,13 +155,13 @@ function sensible_cell_kernel!(Q_sens, q, sx, sy, h, N, mask, Nx, Ny, dx, dy, rh
     z = zero(eltype(Q_sens))
     @inbounds for j in 1:Ny, i in 1:Nx
         s = hypot(sx[i, j], sy[i, j])
-        if mask[i, j] != 1.0 || s == 0
+        if mask[i, j] != GROUNDED || s == 0
             Q_sens[i, j] = z
             continue
         end
         pc = water_pressure(h, N, rho_i, g, i, j)
-        has_w, has_e = i > 1 && mask[i - 1, j] == 1.0, i < Nx && mask[i + 1, j] == 1.0
-        has_s, has_n = j > 1 && mask[i, j - 1] == 1.0, j < Ny && mask[i, j + 1] == 1.0
+        has_w, has_e = i > 1 && mask[i - 1, j] == GROUNDED, i < Nx && mask[i + 1, j] == GROUNDED
+        has_s, has_n = j > 1 && mask[i, j - 1] == GROUNDED, j < Ny && mask[i, j + 1] == GROUNDED
         dpdx = grounded_derivative(has_w ? water_pressure(h, N, rho_i, g, i - 1, j) : pc, pc,
                                    has_e ? water_pressure(h, N, rho_i, g, i + 1, j) : pc, has_w, has_e, dx)
         dpdy = grounded_derivative(has_s ? water_pressure(h, N, rho_i, g, i, j - 1) : pc, pc,
@@ -174,16 +174,16 @@ end
 function sensible_face_kernel!(Q_sens, Fx, Fy, h, N, mask, Nx, Ny, dx, dy, rho_i, g, c)
     z = zero(eltype(Q_sens))
     @inbounds for j in 1:Ny, i in 1:Nx
-        if mask[i, j] != 1.0
+        if mask[i, j] != GROUNDED
             Q_sens[i, j] = z
             continue
         end
         pc = water_pressure(h, N, rho_i, g, i, j)
         P = z
-        (i > 1  && mask[i - 1, j] == 1.0) && (P += Fx[i, j]     * (pc - water_pressure(h, N, rho_i, g, i - 1, j)))
-        (i < Nx && mask[i + 1, j] == 1.0) && (P += Fx[i + 1, j] * (water_pressure(h, N, rho_i, g, i + 1, j) - pc))
-        (j > 1  && mask[i, j - 1] == 1.0) && (P += Fy[i, j]     * (pc - water_pressure(h, N, rho_i, g, i, j - 1)))
-        (j < Ny && mask[i, j + 1] == 1.0) && (P += Fy[i, j + 1] * (water_pressure(h, N, rho_i, g, i, j + 1) - pc))
+        (i > 1  && mask[i - 1, j] == GROUNDED) && (P += Fx[i, j]     * (pc - water_pressure(h, N, rho_i, g, i - 1, j)))
+        (i < Nx && mask[i + 1, j] == GROUNDED) && (P += Fx[i + 1, j] * (water_pressure(h, N, rho_i, g, i + 1, j) - pc))
+        (j > 1  && mask[i, j - 1] == GROUNDED) && (P += Fy[i, j]     * (pc - water_pressure(h, N, rho_i, g, i, j - 1)))
+        (j < Ny && mask[i, j + 1] == GROUNDED) && (P += Fy[i, j + 1] * (water_pressure(h, N, rho_i, g, i, j + 1) - pc))
         Q_sens[i, j] = c * P / (2 * dx * dy)
     end
     return nothing

@@ -20,7 +20,7 @@ function visualize_grid end
 """
 $(TYPEDSIGNATURES)
 
-Set a field to a given input value where the mask is not 1. Does not touch plotting/Makie at all
+Set a field to a given input value where the mask is not `GROUNDED`. Does not touch plotting/Makie at all
 (just field indexing), so unlike `visualize_field`/`visualize_grid` this has a real implementation
 here rather than living behind the `FastHydrologyMakieExt` extension.
 """
@@ -30,7 +30,7 @@ function mask_field(field::AbstractMatrix, mask, value)
     res = deepcopy(field)
     for j in 1:Ny
         for i in 1:Nx
-            if mask[i, j] != 1.0
+            if mask[i, j] != GROUNDED
                 res[i, j] = value
             end
         end

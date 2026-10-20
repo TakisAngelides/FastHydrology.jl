@@ -48,7 +48,10 @@ and return the processed fields needed for the simulation.
 # Returns
 - `Nx, Ny`: grid dimensions.
 - `xlims, ylims`: grid extent in meters (cell-centered, with half-cell padding to extend to grid edge faces).
-- `mask`: grounded ice mask.
+- `mask`: the [`HydroMask`](@ref) from KORI-ULB's `MASKo`: the basin's grounded ice (1) is `GROUNDED`, the ice
+  outside the basin (-1) `OTHER_BASIN`, and its other codes (0 and 3, floating ice and ocean, including a
+  few grounding-line cells above flotation) `OCEAN`, or `LAND` where there is no ice on a bed at or above
+  sea level.
 - `h`: ice thickness (m).
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
@@ -70,9 +73,10 @@ function load_Kazmierczak(path::String; bed_rheology = :hard, k_ice = 2.1)
     
     data = matread(path)
     Nx, Ny = size(data["H"])
-    mask = data["MASKo"]
     h = data["H"]
     b = data["B"]
+    mask = HydroMask(map((m, hc, bc) -> m == 1 ? GROUNDED : m == -1 ? OTHER_BASIN : (hc <= 0 && bc >= 0) ? LAND : OCEAN,
+                         data["MASKo"], h, b))
     # `ub` is stored in per-year units, like `Bmelt` below -- the file's own `par["secperyear"]`
     # (3.1556926e7, matching FastHydrology's own SECONDS_PER_YEAR to 5 significant figures) is the
     # constant this source model uses to convert its per-year fields to SI, and raw `ub` values here
@@ -140,7 +144,9 @@ Load an NCDatasets file from the yelmoxand return the processed fields needed fo
 # Returns
 - `Nx, Ny`: grid dimensions.
 - `xlims, ylims`: grid extent in meters (cell-centered, with half-cell padding to extend to grid edge faces).
-- `mask`: grounded ice mask.
+- `mask`: the [`HydroMask`](@ref): Yelmo's grounded ice (`f_ice*f_grnd > 0`) is `GROUNDED`, every other cell an
+  outlet, `LAND` where there is no ice on a bed at or above sea level and `OCEAN` otherwise (floating ice,
+  open water).
 - `h`: ice thickness (m).
 - `b`: bed elevation (m).
 - `abs_v_b`: basal velocity magnitude (m/s).
@@ -166,9 +172,10 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
         yc = Km2m.(ds["yc"][:])
         xlims, ylims = compute_lims(xc, yc)
 
-        mask = reshape(Int.(ds["f_ice"][:] .* ds["f_grnd"][:] .> 0.0), Nx, Ny)
         h = reshape(ds["H_ice"][:], Nx, Ny)
         b = reshape(ds["z_bed"][:], Nx, Ny)
+        grounded = reshape(ds["f_ice"][:] .* ds["f_grnd"][:] .> 0.0, Nx, Ny)
+        mask = HydroMask(map((g, hc, bc) -> g ? GROUNDED : (hc <= 0 && bc >= 0) ? LAND : OCEAN, grounded, h, b))
         ux_b = reshape(ds["ux_b"][:], Nx, Ny)
         uy_b = reshape(ds["uy_b"][:], Nx, Ny)
         # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against

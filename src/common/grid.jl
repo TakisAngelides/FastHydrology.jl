@@ -356,7 +356,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Return the mean of `field` restricted to cells where `mask == 1`. Fuses the mask check into the
+Return the mean of `field` restricted to cells where `mask == GROUNDED`. Fuses the mask check into the
 reduction (branchless, via `ifelse`, so it vectorizes) instead of materializing a list of grounded
 indices first -- benchmarked faster than the earlier `findall(==(1), mask)` + index-list approach
 at every grounded-fraction tested (1%-95%), including when amortized over the several masked_*
@@ -365,7 +365,7 @@ and the scattered (non-sequential) memory access of indexing through a `Cartesia
 lose to a single dense, branchless pass over `field`/`mask` together, even though the dense pass
 touches every cell rather than just the grounded ones.
 
-An empty mask (no cell with `mask == 1`) gives `0` rather than the `0/0 = NaN` of a plain mean, so a
+An empty mask (no cell with `mask == GROUNDED`) gives `0` rather than the `0/0 = NaN` of a plain mean, so a
 domain that has lost all its grounded ice leaves the models running (with `N = q = 0`) instead of
 failing on a NaN downstream (e.g. the mean thickness that sizes the coupling kernel).
 
@@ -377,7 +377,7 @@ function masked_mean(grid::AbstractHydroGrid, field, mask)
     s = zero(eltype(field))
     cnt = 0
     @inbounds @simd for i in eachindex(field, mask)
-        m = mask[i] == 1
+        m = mask[i] == GROUNDED
         s   += ifelse(m, field[i], zero(eltype(field)))
         cnt += ifelse(m, 1, 0)
     end
@@ -388,7 +388,7 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs(a[i] - b[i])` over cells where `mask == 1`. Used to check convergence of
+Return the maximum of `abs(a[i] - b[i])` over cells where `mask == GROUNDED`. Used to check convergence of
 fixed-point iterations (e.g. the dissipation-melt Picard loop in `update_q!`). Same fused,
 branchless reduction as `masked_mean` above -- see its docstring for why this beats precomputing a
 grounded-index list.
@@ -396,7 +396,7 @@ grounded-index list.
 function masked_max_abs_diff(grid::AbstractHydroGrid, a, b, mask)
     best = zero(eltype(a))
     @inbounds @simd for i in eachindex(a, b, mask)
-        m = mask[i] == 1
+        m = mask[i] == GROUNDED
         v = ifelse(m, abs(a[i] - b[i]), zero(eltype(a)))
         best = ifelse(v > best, v, best)
     end
@@ -407,14 +407,14 @@ end
 """
 $(TYPEDSIGNATURES)
 
-Return the maximum of `abs(field[i])` over cells where `mask == 1`. Paired with
+Return the maximum of `abs(field[i])` over cells where `mask == GROUNDED`. Paired with
 `masked_max_abs_diff` to build a relative convergence tolerance. Same fused, branchless reduction
 as `masked_mean` above -- see its docstring for why this beats precomputing a grounded-index list.
 """
 function masked_max_abs(grid::AbstractHydroGrid, field, mask)
     best = zero(eltype(field))
     @inbounds @simd for i in eachindex(field, mask)
-        m = mask[i] == 1
+        m = mask[i] == GROUNDED
         v = ifelse(m, abs(field[i]), zero(eltype(field)))
         best = ifelse(v > best, v, best)
     end

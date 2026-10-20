@@ -1,12 +1,12 @@
     @testset "KazmierczakHydroModel steady state" begin
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         # A flat h/b gives a zero geometric-potential gradient everywhere, which is
         # degenerate for this flux-routing model (division by ~0 in the correction
         # factor). Use a sloped surface, as in any real ice-sheet domain.
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -29,7 +29,7 @@
 
     @testset "water_thickness_algorithm keyword selects the update_W! closure" begin
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
 
@@ -55,7 +55,7 @@
             (LaminarThickness(), true),
             (LaminarThickness(gradient_convention = LocalGradient()), true),
         )
-            state = HydroState(grid, mask, h, b)
+            state = HydroState(grid, HydroMask(mask), h, b)
             # W_min/W_max passed explicitly (KORI-ULB's own Wdmin/Wdmax) to actually exercise the
             # clamping logic below -- they default to 0.0/Inf (no clamp) otherwise.
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
@@ -80,10 +80,10 @@
         # an extreme mdot so q would blow well past perYear2perSecond(1e5) unclamped, and check it's
         # actually capped there.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -106,7 +106,7 @@
         # dissipation_melt toggles whether update_q! includes the |q * grad(phi0)| / L_w
         # source term (Eq. 3, Sec. 2.2.2 of Kazmierczak et al 2024, dropped there as negligible).
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
 
@@ -123,8 +123,8 @@
         @test model_on.dissipation_melt isa FastHydrology.DissipationMeltOn
         @test model_off.dissipation_melt isa FastHydrology.DissipationMeltOff
 
-        run!(SteadyStateSimulation(model_on, grid, HydroState(grid, mask, h, b)))
-        run!(SteadyStateSimulation(model_off, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_on, grid, HydroState(grid, HydroMask(mask), h, b)))
+        run!(SteadyStateSimulation(model_off, grid, HydroState(grid, HydroMask(mask), h, b)))
 
         # With the term off, the routing algorithm's source is exactly mdot.
         @test all(model_off.mdot_total .== model_off.mdot_fixed)
@@ -146,7 +146,7 @@
         # max_dissipation_iters is a hard cap: it must not error even when it cuts the Picard
         # iteration off before convergence.
         model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; max_dissipation_iters = 1, dissipation_verbose = false)
-        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, HydroMask(mask), h, b)))
         @test all(isfinite, model_capped.q)
     end
 
@@ -155,7 +155,7 @@
         # fixed part, and mdot_total adds the frictional heat Q_b = tau_b*|u_b| and the dissipation
         # heat Q_diss, each kept as its own field [W/m2]. There is no way to supply a whole melt rate.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
 
@@ -171,7 +171,7 @@
         model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; i_eb = ws,
                                       dissipation_melt = false, dissipation_verbose = false)
         @test model.mdot_fixed ≈ (G .- q_T) ./ L_w
-        run!(SteadyStateSimulation(model, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model, grid, HydroState(grid, HydroMask(mask), h, b)))
         @test all(==(0.0), model.Q_b)
         @test all(==(0.0), model.Q_diss)
         @test model.mdot_total ≈ model.mdot_fixed .+ ws
@@ -187,7 +187,7 @@
         model_f = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                         sliding_law = PrescribedFieldSlidingLaw(grid, tau_b),
                                         dissipation_melt = true, dissipation_verbose = false)
-        run!(SteadyStateSimulation(model_f, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_f, grid, HydroState(grid, HydroMask(mask), h, b)))
         @test model_f.Q_b ≈ tau_b .* abs_v_b
         @test all(>=(0.0), model_f.Q_diss)
         @test any(>(0.0), model_f.Q_diss)
@@ -199,12 +199,13 @@
         model_c = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                         sliding_law = reg_coulomb, dissipation_melt = false,
                                         dissipation_verbose = false, qN_verbose = false)
-        state_c = HydroState(grid, mask, h, b)
+        state_c = HydroState(grid, HydroMask(mask), h, b)
         run!(SteadyStateSimulation(model_c, grid, state_c))
-        @test all(!=(0.0), model_c.tau_b)
+        g = mask .== GROUNDED
+        @test all(!=(0.0), model_c.tau_b[g])
         @test model_c.Q_b ≈ model_c.tau_b .* abs_v_b
         @test model_c.mdot_total ≈ model_c.mdot_fixed .+ model_c.Q_b ./ L_w
-        @test all(>(0.0), state_c.N)
+        @test all(>(0.0), state_c.N[g])
     end
 
     @testset "KazmierczakHydroModel sensible heat" begin
@@ -213,14 +214,14 @@
         # pressure has to be warmed to stay at the melting point, so the term is negative here.
         n    = 12
         grid = ArrayHydroGrid(n, n, (0.0, 12e3), (0.0, 12e3))
-        mask = ones(n, n); mask[end, :] .= 0
+        mask = fill(GROUNDED, n, n); mask[end, :] .= OCEAN
         h    = [1000.0 - 60.0 * i + 5.0 * sin(j) for i in 1:n, j in 1:n]
         b    = [-100.0 - 3.0 * i for i in 1:n, j in 1:n]
         args = (grid, zeros(n, n), fill(perYear2perSecond(100.0), n, n), fill(1e-24, n, n), fill(0.1, n, n), zeros(n, n))
         kw   = (; coupling_length_kamb86 = 0.0, dissipation_verbose = false, qN_verbose = false)
-        grounded = mask .== 1
+        grounded = mask .== GROUNDED
         solve(; kws...) = (m = KazmierczakHydroModel(args...; kw..., kws...);
-                           st = HydroState(grid, mask, h, b); run!(SteadyStateSimulation(m, grid, st)); (m, st))
+                           st = HydroState(grid, HydroMask(mask), h, b); run!(SteadyStateSimulation(m, grid, st)); (m, st))
 
         m_off, st_off = solve()
         @test m_off.sensible_heat isa FastHydrology.SensibleHeatOff
@@ -267,10 +268,10 @@
     @testset "KazmierczakHydroModel with WeertmanSlidingLaw" begin
         # Weertman tau_b does not depend on N, so it needs no Picard loop: a single pass is exact.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -295,7 +296,7 @@
         # (see water_flux.jl). Exercise both laws, with and without the (independent) dissipation
         # melt term, and confirm the joint loop produces finite, physically sane results.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
 
@@ -313,7 +314,7 @@
             model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                            sliding_law = law, dissipation_melt = dissipation_melt,
                                            dissipation_verbose = false, qN_verbose = false)
-            state = HydroState(grid, mask, h, b)
+            state = HydroState(grid, HydroMask(mask), h, b)
             run!(SteadyStateSimulation(model, grid, state))
 
             @test all(isfinite, state.N)
@@ -330,7 +331,7 @@
         model_capped = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T;
                                               sliding_law = PowerPlasticSlidingLaw(c_till = 0.5, q = 1.0, u0 = perYear2perSecond(100.0)),
                                               max_qN_iters = 1, qN_verbose = false)
-        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, mask, h, b)))
+        run!(SteadyStateSimulation(model_capped, grid, HydroState(grid, HydroMask(mask), h, b)))
         @test all(isfinite, model_capped.q)
     end
 
@@ -341,10 +342,10 @@
         # (1-beta)/alpha < 0 for the default alpha, beta. Build a grid with such a flat/ungrounded
         # region and confirm N stays finite.
         grid = ArrayHydroGrid(10, 10, (0.0, 1000.0), (0.0, 1000.0))
-        mask = [i <= 5 ? 1.0 : 0.0 for i in 1:10, j in 1:10]
+        mask = [i <= 5 ? GROUNDED : OCEAN for i in 1:10, j in 1:10]
         h    = [i <= 5 ? 500.0 - 5.0 * i : 0.0 for i in 1:10, j in 1:10]
         b    = [i <= 5 ? -100.0 - 2.0 * j : 0.0 for i in 1:10, j in 1:10]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(10, 10)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 10, 10)
@@ -364,7 +365,7 @@
         # A cell with an identically-zero potential gradient has corfac == 0; q = psi_out / corfac
         # was 0/0 = NaN there when psi_out == 0 (net refreezing).
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        state = HydroState(grid, ones(5, 5), fill(500.0, 5, 5), fill(-100.0, 5, 5))
+        state = HydroState(grid, HydroMask([i < 5 ? GROUNDED : OCEAN for i in 1:5, j in 1:5]), fill(500.0, 5, 5), fill(-100.0, 5, 5))
         model = KazmierczakHydroModel(grid, zeros(5, 5), fill(1e-6, 5, 5), fill(1e-24, 5, 5), fill(1e-6 * FastHydrology.KAZMIERCZAK_DEFAULT_L_W, 5, 5), zeros(5, 5);
                                        coupling_length_kamb86 = 0.0)
         model.corfac .= 0.0
@@ -386,10 +387,10 @@
         # different number/arrangement of grounded neighbours, exercising the boundary- and
         # masked-neighbour branches that a uniform mask never reaches.
         grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
-        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? GROUNDED : OCEAN for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(12, 12)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 12, 12)
@@ -410,10 +411,10 @@
             update_psi_out_iterative!(model, grid, state)
             psi_out_iterative = model.psi_out
 
-            @test psi_out_iterative[mask .== 1] == psi_out_recursive[mask .== 1]
+            @test psi_out_iterative[mask .== GROUNDED] == psi_out_recursive[mask .== GROUNDED]
             # Net-refreezing cells cut off by the cap must not leave negative flux behind.
-            @test all(>=(0.0), psi_out_recursive[mask .== 1])
-            @test all(>=(0.0), psi_out_iterative[mask .== 1])
+            @test all(>=(0.0), psi_out_recursive[mask .== GROUNDED])
+            @test all(>=(0.0), psi_out_iterative[mask .== GROUNDED])
         end
     end
 
@@ -424,7 +425,7 @@
         # a full run! (including the dissipation-melt Picard loop, so route_psi_out! is called
         # several times) converges to the same q and N.
         grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
-        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? GROUNDED : OCEAN for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
 
@@ -440,14 +441,14 @@
         @test model_recursive.psi_out_algorithm isa RecursivePsiOut
         @test model_iterative.psi_out_algorithm isa IterativePsiOut
 
-        state_recursive = HydroState(grid, mask, h, b)
-        state_iterative = HydroState(grid, mask, h, b)
+        state_recursive = HydroState(grid, HydroMask(mask), h, b)
+        state_iterative = HydroState(grid, HydroMask(mask), h, b)
 
         run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
         run!(SteadyStateSimulation(model_iterative, grid, state_iterative))
 
-        @test model_iterative.q[mask .== 1] == model_recursive.q[mask .== 1]
-        @test state_iterative.N[mask .== 1] == state_recursive.N[mask .== 1]
+        @test model_iterative.q[mask .== GROUNDED] == model_recursive.q[mask .== GROUNDED]
+        @test state_iterative.N[mask .== GROUNDED] == state_recursive.N[mask .== GROUNDED]
     end
 
     @testset "TopologicalPsiOut matches RecursivePsiOut on acyclic (idealized) grids" begin
@@ -460,7 +461,7 @@
         # (allow_cycles = false) rather than silently degrading -- see the dedicated cycle-detection
         # testset below for that safety mechanism itself.
         grid = ArrayHydroGrid(12, 12, (0.0, 1200.0), (0.0, 1200.0))
-        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? 1.0 : 0.0 for i in 1:12, j in 1:12]
+        mask = [((i - 6)^2 + (j - 7)^2 <= 25) ? GROUNDED : OCEAN for i in 1:12, j in 1:12]
         h    = [500.0 - 5.0 * i - 3.0 * j for i in 1:12, j in 1:12]
         b    = [-100.0 - 2.0 * j + 1.5 * i for i in 1:12, j in 1:12]
 
@@ -474,14 +475,14 @@
             model_recursive   = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = RecursivePsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
             model_topological = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; psi_out_algorithm = TopologicalPsiOut(), coupling_length_kamb86, routing_scheme = GDSWarner())
 
-            state_recursive   = HydroState(grid, mask, h, b)
-            state_topological = HydroState(grid, mask, h, b)
+            state_recursive   = HydroState(grid, HydroMask(mask), h, b)
+            state_topological = HydroState(grid, HydroMask(mask), h, b)
 
             run!(SteadyStateSimulation(model_recursive, grid, state_recursive))
             run!(SteadyStateSimulation(model_topological, grid, state_topological))
 
-            @test isapprox(model_topological.q[mask .== 1], model_recursive.q[mask .== 1]; rtol = 1e-10)
-            @test isapprox(state_topological.N[mask .== 1], state_recursive.N[mask .== 1]; rtol = 1e-10)
+            @test isapprox(model_topological.q[mask .== GROUNDED], model_recursive.q[mask .== GROUNDED]; rtol = 1e-10)
+            @test isapprox(state_topological.N[mask .== GROUNDED], state_recursive.N[mask .== GROUNDED]; rtol = 1e-10)
         end
     end
 
@@ -493,10 +494,10 @@
         # fields after the normal update_q! pre-routing steps have run, then calls
         # update_psi_out_topological! on that doctored state.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
         h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
         b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         kappa   = zeros(5, 5)
         abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -565,7 +566,7 @@
 
     @testset "N_from_ub!: N for a new sliding speed with the routing held" begin
         grid = ArrayHydroGrid(7, 7, (0.0, 7000.0), (0.0, 7000.0))
-        mask = ones(7, 7)
+        mask = fill(GROUNDED, 7, 7); mask[end, :] .= OCEAN
         h    = [800.0 - 20.0 * i + 5.0 * j for i in 1:7, j in 1:7]
         b    = [-100.0 - 8.0 * j + 3.0 * i for i in 1:7, j in 1:7]
         kappa   = zeros(7, 7)
@@ -577,7 +578,7 @@
 
         build(ub) = begin
             model = KazmierczakHydroModel(grid, kappa, ub, A_visc, G, q_T; dissipation_verbose = false)
-            state = HydroState(grid, mask, h, b)
+            state = HydroState(grid, HydroMask(mask), h, b)
             run!(SteadyStateSimulation(model, grid, state))
             (model, state)
         end
@@ -616,7 +617,7 @@
     function run(; kw...)
         m = KazmierczakHydroModel(grid, z, z .+ 1, z .+ 1e-24, G, z; coupling_length_kamb86 = 0.0,
                                   dissipation_melt = false, dissipation_verbose = false, kw...)
-        s = HydroState(grid, ones(Nx, Ny), copy(h), copy(b))
+        s = HydroState(grid, HydroMask([i < Nx ? GROUNDED : OCEAN for i in 1:Nx, j in 1:Ny]), copy(h), copy(b))
         update_steady_state!(m, grid, s)
         return m, s
     end
@@ -636,12 +637,12 @@ end
     b = [-2e-3 * (i - 0.5) * dx for i in 1:Nx, j in 1:Ny]
     z = zeros(Nx, Ny)
     G = fill(1e-6, Nx, Ny) .* FastHydrology.KAZMIERCZAK_DEFAULT_L_W
-    @test masked_mean(grid, ones(Nx, Ny), zeros(Nx, Ny)) == 0
+    @test masked_mean(grid, ones(Nx, Ny), fill(OCEAN, Nx, Ny)) == 0
     for lc in (0.0, 2.0), wt in (DarcyWeisbachThickness(), LaminarThickness(),
                                  DarcyWeisbachThickness(gradient_convention = LocalGradient()))
         m = KazmierczakHydroModel(grid, z, z .+ 1e-6, z .+ 1e-24, G, zero(G); coupling_length_kamb86 = lc,
                                   water_thickness_algorithm = wt, qN_verbose = false)
-        s = HydroState(grid, zeros(Nx, Ny), fill(1000.0, Nx, Ny), b)
+        s = HydroState(grid, HydroMask(fill(OCEAN, Nx, Ny)), fill(1000.0, Nx, Ny), b)
         update_steady_state!(m, grid, s)
         @test all(iszero, s.N) && all(iszero, m.q)
         @test all(isfinite, s.W)

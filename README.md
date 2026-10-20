@@ -61,11 +61,12 @@ Pkg.add(url="https://github.com/TakisAngelides/FastHydrology.jl")
 ```julia
 using FastHydrology
 
-# A 50 km x 50 km synthetic ice sheet on a 50 x 50 grid, grounded everywhere.
+# A 50 km x 50 km synthetic ice sheet on a 50 x 50 grid, draining into the ocean along one edge.
 Nx, Ny = 50, 50
 grid = ArrayHydroGrid(Nx, Ny, (0.0, 50_000.0), (0.0, 50_000.0))
 
-mask    = ones(Nx, Ny)                                # grounded-ice mask
+mask    = fill(GROUNDED, Nx, Ny)                      # grounded ice, solved
+mask[end, :] .= OCEAN                                 # outlet: water leaves here (the other edges are closed)
 h       = [2000.0 - 15.0 * i for i in 1:Nx, j in 1:Ny] # ice thickness [m]
 b       = [-200.0 - 2.0 * j for i in 1:Nx, j in 1:Ny]  # bedrock elevation [m]
 
@@ -77,7 +78,7 @@ q_T     = zeros(Nx, Ny)                               # conductive heat into the
 
 # Build the model and the state, then run the steady-state solve.
 model = KazmierczakHydroModel(grid, kappa, abs_v_b, A_visc, G, q_T; coupling_length_kamb86 = 10.0)
-state = HydroState(grid, mask, h, b)
+state = HydroState(grid, HydroMask(mask), h, b)
 run!(SteadyStateSimulation(model, grid, state))
 
 # The effective pressure N [Pa] and water layer thickness W [m] are now in `state`,

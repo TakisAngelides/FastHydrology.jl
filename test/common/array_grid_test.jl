@@ -79,7 +79,7 @@
         b = fill(-100.0, Nx, Ny)
         h[5, 5] -= 60.0 # a pit in the potential that filling will raise
         grid = ArrayHydroGrid(Nx, Ny, (0.0, 9000.0), (0.0, 9000.0))
-        state = HydroState(grid, ones(Nx, Ny), h, b)
+        state = HydroState(grid, HydroMask([i < Nx ? GROUNDED : OCEAN for i in 1:Nx, j in 1:Ny]), h, b)
         model = KazmierczakHydroModel(grid, zeros(Nx, Ny), fill(1e-6, Nx, Ny), fill(1e-24, Nx, Ny), fill(1e-6 * FastHydrology.KAZMIERCZAK_DEFAULT_L_W, Nx, Ny), zeros(Nx, Ny);
                                        coupling_length_kamb86 = 0.0)
         FastHydrology.update_phi0!(model, grid, state)

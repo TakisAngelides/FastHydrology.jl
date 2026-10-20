@@ -11,10 +11,10 @@ internal loop of its own to hook a fixed interval into (see `AbstractOutputWrite
 
 @testset "NetCDFOutputWriter: write, close, read back" begin
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     kappa   = zeros(5, 5)
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -72,10 +72,10 @@ end
     # -- resuming from the step-3 checkpoint must not leave duplicate/orphaned slices for steps
     # 4-5 once the caller's loop replays them.
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     kappa   = zeros(5, 5)
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -149,10 +149,10 @@ end
 
 @testset "save_checkpoint/load_checkpoint!: round-trip on HydroState" begin
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     kappa   = zeros(5, 5)
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -166,7 +166,7 @@ end
         path = joinpath(dir, "ckpt.nc")
         save_checkpoint(path, state, 42, 123.5)
 
-        fresh = HydroState(grid, zeros(5, 5), zeros(5, 5), zeros(5, 5))
+        fresh = HydroState(grid, HydroMask(zeros(5, 5)), zeros(5, 5), zeros(5, 5))
         step, time = load_checkpoint!(fresh, path)
 
         @test step == 42
@@ -181,10 +181,10 @@ end
 
 @testset "save_checkpoint: atomic write leaves no partial .tmp file behind" begin
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = fill(500.0, 5, 5)
     b    = fill(-100.0, 5, 5)
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     mktempdir() do dir
         path = joinpath(dir, "ckpt.nc")
@@ -198,7 +198,7 @@ end
         save_checkpoint(path, state, 2, 2.0)
         @test !isfile(path * ".tmp")
 
-        fresh = HydroState(grid, zeros(5, 5), zeros(5, 5), zeros(5, 5))
+        fresh = HydroState(grid, HydroMask(zeros(5, 5)), zeros(5, 5), zeros(5, 5))
         step, time = load_checkpoint!(fresh, path)
         @test step == 2
         @test time == 2.0
@@ -207,10 +207,10 @@ end
 
 @testset "save_checkpoint/load_checkpoint! on ArrayHydroGrid (plain-array fields)" begin
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     kappa   = zeros(5, 5)
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)
@@ -224,7 +224,7 @@ end
         path = joinpath(dir, "ckpt.nc")
         save_checkpoint(path, state, 7, 7.0)
 
-        fresh = HydroState(grid, zeros(5, 5), zeros(5, 5), zeros(5, 5))
+        fresh = HydroState(grid, HydroMask(zeros(5, 5)), zeros(5, 5), zeros(5, 5))
         step, time = load_checkpoint!(fresh, path)
 
         @test step == 7
@@ -237,10 +237,10 @@ end
 
 @testset "NetCDFOutputWriter on ArrayHydroGrid (plain-array fields)" begin
     grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-    mask = ones(5, 5)
+    mask = fill(GROUNDED, 5, 5); mask[end, :] .= OCEAN
     h    = [500.0 - 5.0 * i for i in 1:5, j in 1:5]
     b    = [-100.0 - 2.0 * j for i in 1:5, j in 1:5]
-    state = HydroState(grid, mask, h, b)
+    state = HydroState(grid, HydroMask(mask), h, b)
 
     kappa   = zeros(5, 5)
     abs_v_b = fill(100.0 / (60^2 * 24 * 365.25), 5, 5)

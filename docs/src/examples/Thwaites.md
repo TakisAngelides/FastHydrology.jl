@@ -1,6 +1,6 @@
 # Thwaites
 
-K24 and HAB on Thwaites Glacier, 2 km grid, from the Kazmierczak et al. (2024) Kori-ULB output. Default settings, `coupling_length_kamb86 = 0`, `bed_rheology = :hard`. `q_T` is the conductive flux of the source model and the friction heat comes from its `tau_b`.
+K24 and HAB on Thwaites Glacier, 2 km grid, from the Kazmierczak et al. (2024) Kori-ULB output. Water leaves at the grounding line; the inland basin boundary is closed (`OTHER_BASIN`). Default settings, `coupling_length_kamb86 = 0`, `bed_rheology = :hard`. `q_T` is the conductive flux of the source model and the friction heat comes from its `tau_b`.
 
 ```julia
 using FastHydrology
@@ -22,7 +22,7 @@ state_hab = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(HABHydroModel(grid), grid, state_hab))
 
 # x and y are swapped in the file, hence transpose_data
-q99 = quantile(model.q[mask .== 1], 0.99)
+q99 = quantile(model.q[mask .== GROUNDED], 0.99)
 visualize_field(grid, mask_field(model.q, mask, NaN);
                 plot_title = "q [m^2/s]", colormap = :magma, colorrange = (0.0, q99), transpose_data = true)
 visualize_field(grid, mask_field(state.N ./ 1e6, mask, NaN);

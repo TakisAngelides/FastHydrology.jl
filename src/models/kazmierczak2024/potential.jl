@@ -17,7 +17,7 @@ water routed by `update_psi_out!` cannot get trapped in them (see `KazmierczakHy
   and does not guarantee a pit-free result.
 - [`PriorityFloodFill`](@ref) (default with the other routing schemes, including the default
   `Warner`): raises every grounded pit/flat to its spill level plus a tiny slope,
-  in one pass; guarantees every grounded cell drains to the grounding line/ice margin/domain edge.
+  in one pass; guarantees every grounded cell drains to an outlet (an `OCEAN` or `LAND` cell).
 """
 abstract type AbstractFillAlgorithm end
 
@@ -71,14 +71,16 @@ edge phi0 can jump by the whole overburden (e.g. the `h = b = 0` padding around 
 where phi0 = 0), which otherwise creates spurious drainage divides (a high-N band about one kernel
 radius inside the boundary, collapsing to a single hot spot for large kernels) and inflates N on the
 boundary cells.
-- [`GroundedIce`](@ref) (default): the grounded mask plus ice outside it that is grounded by flotation
-  (`h > 0` and `rho_i h >= -rho_sw b`), e.g. ice beyond the edge of a drainage basin. The smoothing then
-  feels the ice across a basin cut, as the stress coupling it stands for would.
-- [`GroundedMask`](@ref): the grounded mask only. Use it when the geometry outside the mask is not
+- [`GroundedIce`](@ref) (default): the `GROUNDED` cells, plus the `OTHER_BASIN` cells that carry
+  grounded ice (`h > 0` and `rho_i h >= -rho_sw b`), i.e. the ice beyond a basin cut. The smoothing
+  then feels the ice across the cut, as the stress coupling it stands for would. `OTHER_BASIN` cells
+  without ice (no data, such as the padding around a mesh) or with floating ice are left out. (No water
+  crosses into `OTHER_BASIN` either way: those faces are closed.)
+- [`GroundedMask`](@ref): the `GROUNDED` cells only. Use it when the geometry outside the basin is not
   consistent with the inside, e.g. a transient basin run in which the outside ice is not evolved.
 
-The two are the same whenever every grounded cell is in the mask (whole ice sheets, a coupled ice
-model's grounded mask).
+The two are the same whenever the mask has no `OTHER_BASIN` cells with grounded ice (whole ice
+sheets, a coupled ice model's grounded mask, padding without data).
 """
 abstract type AbstractPotentialWeight end
 """$(TYPEDSIGNATURES)
@@ -110,13 +112,14 @@ end
 
 function update_phi_weight!(model::AbstractKazmierczakHydroModel, state::HydroState, ::GroundedIce)
     T = eltype(model.phi_weight)
-    @. model.phi_weight = ifelse((state.mask == 1) | ((state.h > 0) & (model.rho_i * state.h >= -model.rho_sw * state.b)), one(T), zero(T))
+    @. model.phi_weight = ifelse((state.mask == GROUNDED) |
+                                 ((state.mask == OTHER_BASIN) & (state.h > 0) & (model.rho_i * state.h >= -model.rho_sw * state.b)), one(T), zero(T))
     return nothing
 end
 
 function update_phi_weight!(model::AbstractKazmierczakHydroModel, state::HydroState, ::GroundedMask)
     T = eltype(model.phi_weight)
-    @. model.phi_weight = ifelse(state.mask == 1, one(T), zero(T))
+    @. model.phi_weight = ifelse(state.mask == GROUNDED, one(T), zero(T))
     return nothing
 end
 
@@ -138,6 +141,7 @@ function potential_filling!(model::AbstractKazmierczakHydroModel, grid::Abstract
     # Start from the true potential, unless the caller has already put the surface to fill (e.g. the
     # smoothed potential of a non-GDS routing scheme, see prepare_routing!) into phi0_filled.
     from_true_potential && (phi0 .= model.phi0)
+    outlet_potential_matters(model.routing_scheme, model.fill_algorithm) && set_outlet_potential!(model, state)
     phi0_tmp .= phi0
 
     fill_potential!(model, grid, state, model.fill_algorithm)
@@ -149,6 +153,25 @@ function potential_filling!(model::AbstractKazmierczakHydroModel, grid::Abstract
 
 end
 
+
+"""
+$(TYPEDSIGNATURES)
+
+Set the routing potential `model.phi0_filled` of the outlet cells to the potential of their water:
+`rho_w g b + rho_sw g max(-b, 0)` under the ocean (its hydrostatic pressure at the bed) and
+`rho_w g b` on land (atmospheric pressure). Their geometric phi0 is not the potential of any
+subglacial water (under an ice shelf it misses the water column below the ice, on padding without
+data it is 0), but routing compares it with the grounded cells next to it, to decide whether water
+drains into the outlet. At flotation the grounded phi0 equals the ocean value, so a grounded cell at
+the grounding line drains into the ocean exactly when its ice is above flotation.
+"""
+function set_outlet_potential!(model::AbstractKazmierczakHydroModel, state::HydroState)
+    rho_w_g, rho_sw_g = model.rho_w * model.g, model.rho_sw * model.g
+    z = zero(eltype(state.b))
+    @. model.phi0_filled = ifelse(state.mask == OCEAN, rho_w_g * state.b + rho_sw_g * max(-state.b, z),
+                           ifelse(state.mask == LAND, rho_w_g * state.b, model.phi0_filled))
+    return nothing
+end
 
 """
 $(TYPEDSIGNATURES)
@@ -204,14 +227,17 @@ $(TYPEDSIGNATURES)
 `PriorityFloodFill`: Priority-Flood+epsilon depression filling (Barnes, Lehman & Mulla 2014,
 https://doi.org/10.1016/j.cageo.2013.04.024), restricted to grounded cells.
 
-Outlets (seeds) are the places water can leave the grounded hydrological system: every non-grounded
-cell next to a grounded one (grounding line, ice margin) and every grounded cell on the domain edge
-(the routing treats the edge as a sink, as `JacobiFill` does by never filling edge cells). Starting from
-the lowest outlet, cells are visited in increasing order of (filled) potential; each newly reached
-grounded neighbour that is not higher than the cell it was reached from is raised to that cell's
-value plus `epsilon`. When the queue is empty every grounded cell has a path to an outlet along which
-the filled potential strictly decreases, so no grounded pit or flat is left -- in a single pass,
-O(n log n). Non-grounded cells keep their true potential.
+Outlets (seeds) are the places water can leave the grounded hydrological system: every `OCEAN` or
+`LAND` cell next to a `GROUNDED` one (grounding line, land margin), at its outlet potential (see
+`set_outlet_potential!`). `OTHER_BASIN` cells and the edge of the grid are closed, so they are not
+outlets. Starting from the lowest outlet, cells are visited in increasing order of (filled) potential;
+each newly reached grounded neighbour that is not higher than the cell it was reached from is raised
+to that cell's value plus `epsilon`. When the queue is empty every grounded cell has a path to an
+outlet along which the filled potential strictly decreases, so no grounded pit or flat is left -- in a
+single pass, O(n log n). Non-grounded cells keep their potential.
+
+A grounded region with no outlet (enclosed by `OTHER_BASIN` cells and the grid edge) has nowhere for
+its water to go, so it is an error.
 """
 function fill_potential!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, alg::PriorityFloodFill)
 
@@ -227,14 +253,11 @@ function fill_potential!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
     heap_k = Int32[]
     sizehint!(heap_p, Nx * Ny ÷ 4); sizehint!(heap_k, Nx * Ny ÷ 4)
 
-    grounded(i, j) = mask[i, j] == 1.0
+    grounded(i, j) = mask[i, j] == GROUNDED
     @inbounds for j in 1:Ny, i in 1:Nx
-        seed = if grounded(i, j)
-            i == 1 || i == Nx || j == 1 || j == Ny
-        else
-            (i > 1 && grounded(i - 1, j)) || (i < Nx && grounded(i + 1, j)) ||
-            (j > 1 && grounded(i, j - 1)) || (j < Ny && grounded(i, j + 1))
-        end
+        seed = is_outlet(mask[i, j]) &&
+            ((i > 1 && grounded(i - 1, j)) || (i < Nx && grounded(i + 1, j)) ||
+             (j > 1 && grounded(i, j - 1)) || (j < Ny && grounded(i, j + 1)))
         if seed
             closed[i, j] = 1
             heap_push!(heap_p, heap_k, phi[i, j], Int32(i + (j - 1) * Nx))
@@ -253,6 +276,14 @@ function fill_potential!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
             end
             heap_push!(heap_p, heap_k, phi[ni, nj], Int32(ni + (nj - 1) * Nx))
         end
+    end
+
+    @inbounds for j in 1:Ny, i in 1:Nx
+        (grounded(i, j) && closed[i, j] == 0) || continue
+        n = count(I -> grounded(I[1], I[2]) && closed[I] == 0, CartesianIndices(mask))
+        error("PriorityFloodFill: $n grounded cell(s), e.g. ($i, $j), have no path to an outlet: they are enclosed by " *
+              "OTHER_BASIN cells and the edge of the grid, which are closed. Water leaves only into OCEAN or LAND cells; " *
+              "mark where it can drain in the mask.")
     end
 
     return nothing

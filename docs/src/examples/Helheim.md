@@ -1,6 +1,6 @@
 # Helheim
 
-K24 and HAB on Helheim Glacier, 500 m grid. The input is the ISSM mesh of [Sommers et al.](https://doi.org/10.5281/zenodo.7019805) (the Shakti.jl Helheim example), interpolated onto a regular grid, sliding speed from the ISSM velocity, hard bed, `q_T = 0`. The loader is `load_helheim` in `docs/make_figures.jl`. Default settings, `coupling_length_kamb86 = 0`.
+K24 and HAB on Helheim Glacier, 500 m grid. The input is the ISSM mesh of [Sommers et al.](https://doi.org/10.5281/zenodo.7019805) (the Shakti.jl Helheim example), interpolated onto a regular grid with Shakti's mask (water leaves only at the terminus, the rest of the mesh edge is closed), sliding speed from the ISSM velocity, hard bed, `q_T = 0`. The loader is `load_helheim` in `docs/make_figures.jl`. Default settings, `coupling_length_kamb86 = 0`.
 
 ```julia
 using FastHydrology

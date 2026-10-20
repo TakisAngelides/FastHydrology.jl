@@ -9,7 +9,7 @@ $(TYPEDSIGNATURES)
 Update the effective pressure N using a complementary error function transition between geometric
 potential and far-field effective pressure.
 
-N is only defined under grounded ice (`state.mask == 1`), where the hydrology lives: under floating
+N is only defined under grounded ice (`state.mask == GROUNDED`), where the hydrology lives: under floating
 ice N = 0, and over ocean or ice-free land it is undefined. So the whole chain -- Q, S_inf, H_hard,
 H_soft, H, Po, N_inf, N -- is computed only on grounded cells, in one fused pass
 (`update_N_grounded_kernel!`), and every other cell gets N = 0 and zero conduit fields (Po is still
@@ -111,7 +111,7 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
         Po_ij = rho_i * g * h[i, j]
         Po[i, j] = Po_ij
 
-        if mask[i, j] != 1.0
+        if mask[i, j] != GROUNDED
             Q[i, j] = z; S_inf[i, j] = z; H_hard[i, j] = z; H_soft[i, j] = z; H[i, j] = z
             N_inf[i, j] = z; N[i, j] = z
             continue

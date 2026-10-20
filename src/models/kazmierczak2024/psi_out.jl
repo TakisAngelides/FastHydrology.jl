@@ -256,7 +256,7 @@ function record_routing_tape_kernel!(tape::RoutingTape{T}, mask, sx, sy, Nx, Ny,
 
     @inbounds for j in 1:Ny, i in 1:Nx
 
-        (mask[i, j] == 1.0 && !visited[i, j]) || continue
+        (mask[i, j] == GROUNDED && !visited[i, j]) || continue
 
         push!(stack, (Int32(i), Int32(j), Int32(0)))
 
@@ -285,8 +285,8 @@ function record_routing_tape_kernel!(tape::RoutingTape{T}, mask, sx, sy, Nx, Ny,
 
                 (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
 
-                w = routing_weight(sx[ni, nj], sy[ni, nj], -di, -dj, dx, dy, epsT)
-                (w > 0 && mask[ni, nj] == 1.0) || continue
+                w = gds_share(sx, sy, mask, ni, nj, -di, -dj, Nx, Ny, dx, dy, epsT)
+                (w > 0 && mask[ni, nj] == GROUNDED) || continue
 
                 if visited[ni, nj]
                     push_tape_op!(tape, si, sj, Int32(ni), Int32(nj), T(w))
@@ -320,7 +320,7 @@ function replay_routing_tape!(psi_out, mdot_total, mask, tape::RoutingTape, Nx, 
 
     z = zero(eltype(psi_out))
     @inbounds for j in 1:Ny, i in 1:Nx
-        if mask[i, j] == 1.0
+        if mask[i, j] == GROUNDED
             psi_out[i, j] = mdot_total[i, j] * dx * dy / rho_w
         end
     end
@@ -354,6 +354,24 @@ neighbour. The denominator is exactly `corfac·|s|`, so these weights are consis
     return (sx * di * dy + sy * dj * dx) / (abs(sx) * dy + abs(sy) * dx + epsT)
 end
 
+# `routing_weight` of the donor cell (i, j) towards (di, dj) under the mask: nothing through a closed face
+# (see `open_face`), and all of the donor's outflow through an open one when the donor's downhill
+# direction on the other axis is closed. While both are open the weight is `routing_weight`'s, so the
+# original K24 routing is unchanged away from closed faces. A donor whose downhill faces are all
+# closed sends nothing (a sink).
+@inline function gds_share(sx, sy, mask, i, j, di, dj, Nx, Ny, dx, dy, epsT)
+    @inbounds fx, fy = sx[i, j], sy[i, j]
+    w = routing_weight(fx, fy, di, dj, dx, dy, epsT)
+    w > 0 || return w
+    open_face(mask, i + di, j + dj, Nx, Ny) || return zero(w)
+    oi, oj = di == 0 ? (Int(sign(fx)), 0) : (0, Int(sign(fy)))   # the downhill direction on the other axis
+    (oi == 0 && oj == 0) && return w
+    return open_face(mask, i + oi, j + oj, Nx, Ny) ? w : one(w)
+end
+
+# Water may cross the face into (i, j) unless the cell is off the grid or OTHER_BASIN (closed).
+@inline open_face(mask, i, j, Nx, Ny) = 1 <= i <= Nx && 1 <= j <= Ny && @inbounds(mask[i, j] != OTHER_BASIN)
+
 
 """
 $(TYPEDSIGNATURES)
@@ -373,7 +391,7 @@ finite) result rather than crashing.
 function accumulate_psi_out!(model::AbstractKazmierczakHydroModel, i, j, grid::AbstractHydroGrid, state::HydroState, call_count::Base.RefValue{Int})
 
     # If the neighbour does not have grounded ice then return 0
-    if state.mask[i, j] != 1.0
+    if state.mask[i, j] != GROUNDED
         # zero(eltype(...)), not a bare 0.0 literal: this function's other return paths
         # (model.psi_out[i, j]) already return in model's own float type, and a bare Float64
         # literal here would make the return type Union{Float32, Float64} for a Float32 model --
@@ -414,7 +432,7 @@ function accumulate_psi_out!(model::AbstractKazmierczakHydroModel, i, j, grid::A
         # in (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
         (1 <= ni <= grid.Nx && 1 <= nj <= grid.Ny) || continue
 
-        w = routing_weight(model.minus_grad_phi0_sx[ni, nj], model.minus_grad_phi0_sy[ni, nj], -di, -dj, dx, dy, eps(T))
+        w = gds_share(model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, ni, nj, -di, -dj, grid.Nx, grid.Ny, dx, dy, eps(T))
 
         if w > 0
             model.psi_out[i, j] += accumulate_psi_out!(model, ni, nj, grid, state, call_count) * w
@@ -448,7 +466,7 @@ function update_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
     call_count = Ref(0)
 
     @inbounds for j in 1:Ny, i in 1:Nx
-        if state.mask[i, j] == 1.0
+        if state.mask[i, j] == GROUNDED
             accumulate_psi_out!(model, i, j, grid, state, call_count)
         end
     end
@@ -497,7 +515,7 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
 
     @inbounds for j in 1:Ny, i in 1:Nx
 
-        (state.mask[i, j] == 1.0 && model.visited[i, j] != 1.0) || continue
+        (state.mask[i, j] == GROUNDED && model.visited[i, j] != 1.0) || continue
 
         push!(stack, (i, j, 0))
 
@@ -534,7 +552,7 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
                     continue
                 end
 
-                w = routing_weight(model.minus_grad_phi0_sx[ni, nj], model.minus_grad_phi0_sy[ni, nj], -di, -dj, dx, dy, eps(T))
+                w = gds_share(model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, ni, nj, -di, -dj, Nx, Ny, dx, dy, eps(T))
 
                 if w <= 0
                     stack[end] = (si, sj, sk + 1)
@@ -544,7 +562,7 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
                 # If the neighbour does not have grounded ice then it contributes 0, matching
                 # accumulate_psi_out!'s own mask check (which runs inside the recursive call, i.e.
                 # only once w > 0).
-                if state.mask[ni, nj] != 1.0
+                if state.mask[ni, nj] != GROUNDED
                     stack[end] = (si, sj, sk + 1)
                     continue
                 end
@@ -631,7 +649,7 @@ function update_psi_out_topological!(model::AbstractKazmierczakHydroModel, grid:
 
     @inbounds for j in 1:Ny, i in 1:Nx
 
-        state.mask[i, j] == 1.0 || continue
+        state.mask[i, j] == GROUNDED || continue
         total_masked += 1
 
         for (di, dj) in dirs
@@ -641,9 +659,9 @@ function update_psi_out_topological!(model::AbstractKazmierczakHydroModel, grid:
             # Off the edge of the domain: no neighbouring cell, so no contribution can cross out
             # (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
             (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
-            state.mask[ni, nj] == 1.0 || continue
+            state.mask[ni, nj] == GROUNDED || continue
 
-            w = routing_weight(model.minus_grad_phi0_sx[i, j], model.minus_grad_phi0_sy[i, j], di, dj, dx, dy, eps(T))
+            w = gds_share(model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, i, j, di, dj, Nx, Ny, dx, dy, eps(T))
 
             if w > 0
                 push!(out_targets[i, j], (ni, nj, w))
@@ -661,7 +679,7 @@ function update_psi_out_topological!(model::AbstractKazmierczakHydroModel, grid:
     sizehint!(queue, total_masked)
 
     @inbounds for j in 1:Ny, i in 1:Nx
-        if state.mask[i, j] == 1.0 && in_degree[i, j] == 0
+        if state.mask[i, j] == GROUNDED && in_degree[i, j] == 0
             push!(queue, (i, j))
         end
     end

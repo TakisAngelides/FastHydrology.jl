@@ -1,6 +1,6 @@
 # Drang Drung
 
-K24 and HAB on Drang Drung Glacier, at 100, 50 and 25 m. The inputs are the grids used by [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl) (thickness, bed, flow rate factor, geothermal flux), grounded where the Shakti mask is 0. The data has no velocity, so `abs_v_b = 0`, and the bed is hard with `q_T = 0`. The loader is `load_drangdrung` in `docs/make_figures.jl`. Default settings, `coupling_length_kamb86 = 0`.
+K24 and HAB on Drang Drung Glacier, at 100, 50 and 25 m. The inputs are the grids used by [Shakti.jl](https://github.com/TakisAngelides/Shakti.jl) (thickness, bed, flow rate factor, geothermal flux), with Shakti's mask (its frozen bed closed, its grounded cells without ice as land). The data has no velocity, so `abs_v_b = 0`, and the bed is hard with `q_T = 0`. The loader is `load_drangdrung` in `docs/make_figures.jl`. Default settings, `coupling_length_kamb86 = 0`.
 
 ```julia
 using FastHydrology

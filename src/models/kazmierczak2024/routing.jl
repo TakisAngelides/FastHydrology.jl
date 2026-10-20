@@ -187,6 +187,13 @@ function prepare_routing!(model::AbstractKazmierczakHydroModel, grid::AbstractHy
 end
 
 
+# The routing reads the outlets' potential wherever it compares potentials across a face: the potential
+# schemes, and every scheme through the Priority-Flood seeds. The GDS schemes with the original K24/KORI
+# fills only see it through the Jacobi averaging; they keep K24's phi0 there, as in the paper.
+outlet_potential_matters(::AbstractRoutingScheme, ::AbstractFillAlgorithm) = true
+outlet_potential_matters(::Union{GDSWarner, GDSTarboton}, ::Union{JacobiFill, LowestNeighbourFill}) = false
+
+
 """
 $(TYPEDSIGNATURES)
 
@@ -218,7 +225,9 @@ $(TYPEDSIGNATURES)
 Fill `model.routing_tape.w8[d, i, j]`, the fraction of grounded cell `(i, j)`'s outflow sent to its
 neighbour in direction `d` (`ROUTE_OFFSETS`), for `model.routing_scheme`. Fractions of a cell sum to 1,
 or to 0 for a cell with nowhere downhill to send water (a sink; see `AbstractRoutingScheme`). Water
-sent to a non-grounded neighbour, or (GDS schemes) off the domain edge, leaves the system.
+sent to an `OCEAN` or `LAND` neighbour leaves the system. Faces to `OTHER_BASIN` cells and off the grid
+are closed: the scheme's share for them goes to the cell's other receiving neighbours, in proportion
+to their shares (`close_faces!`).
 """
 function compute_routing_weights!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     routing_weights_kernel!(model.routing_tape.w8, model.routing_scheme, model.phi0_filled,
@@ -229,20 +238,47 @@ end
 function routing_weights_kernel!(W, scheme, phi, sx, sy, mask, Nx, Ny, dx, dy)
     fill!(W, zero(eltype(W)))
     @inbounds for j in 1:Ny, i in 1:Nx
-        mask[i, j] == 1.0 || continue
-        cell_weights!(W, scheme, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+        mask[i, j] == GROUNDED || continue
+        cell_weights!(W, scheme, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy)
+        close_faces!(W, scheme, i, j, mask, Nx, Ny)
     end
     return nothing
 end
 
+# Zero cell (i, j)'s shares through closed faces (`open_face`) and scale its other shares up so they
+# keep the same total. A cell whose receiving faces are all closed is left with none (a sink). The
+# Priority-Flood fill rules that out for the potential schemes: every grounded cell then has a lower
+# grounded or outlet neighbour. GDSWarner applies the same rule in `gds_share`.
+@inline function close_faces!(W, scheme, i, j, mask, Nx, Ny)
+    tot = kept = zero(eltype(W))
+    @inbounds for d in 1:n_directions(scheme)
+        w = W[d, i, j]
+        w > 0 || continue
+        di, dj = ROUTE_OFFSETS[d]
+        tot += w
+        if open_face(mask, i + di, j + dj, Nx, Ny)
+            kept += w
+        else
+            W[d, i, j] = zero(w)
+        end
+    end
+    if zero(kept) < kept < tot
+        @inbounds for d in 1:n_directions(scheme)
+            W[d, i, j] *= tot / kept
+        end
+    end
+    return nothing
+end
+close_faces!(W, ::GDSWarner, i, j, mask, Nx, Ny) = nothing
+
 # GDS-Warner (current K24/KORI scheme): the smoothed gradient's component towards each of the 4
-# neighbours, i.e. at most two neighbours receive water. Identical to `routing_weight` as used by the
+# neighbours, i.e. at most two neighbours receive water. Identical to `gds_share` as used by the
 # recursive routing.
-@inline function cell_weights!(W, ::GDSWarner, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+@inline function cell_weights!(W, ::GDSWarner, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy)
     epsT = eps(eltype(W))
     @inbounds for d in 1:4
         di, dj = ROUTE_OFFSETS[d]
-        W[d, i, j] = max(zero(eltype(W)), routing_weight(sx[i, j], sy[i, j], di, dj, dx, dy, epsT))
+        W[d, i, j] = max(zero(eltype(W)), gds_share(sx, sy, mask, i, j, di, dj, Nx, Ny, dx, dy, epsT))
     end
     return nothing
 end
@@ -250,7 +286,7 @@ end
 # Warner (Budd & Warner 1996; Le Brocq Eq. 8): outflow shared among the downhill 4-neighbours in
 # proportion to the potential drop to each. The drop is weighted by (face length / distance), i.e.
 # the face-normal gradient times the face length, which is Eq. 8 exactly on a square grid.
-@inline function cell_weights!(W, ::Warner, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+@inline function cell_weights!(W, ::Warner, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy)
     p = phi[i, j]
     tot = zero(eltype(W))
     @inbounds for d in 1:4
@@ -277,7 +313,7 @@ end
 # slope times effective contour length, tan(beta_d) * L_d = (drop / delta_d) * L_d, with L = 0.5 Delta
 # (cardinal) and sqrt(2)/4 Delta ~ 0.354 Delta (diagonal); for rectangular cells the cardinal contour
 # is half the face the flow crosses and the diagonal one uses sqrt(dx dy).
-@inline function cell_weights!(W, scheme::Quinn, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+@inline function cell_weights!(W, scheme::Quinn, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy)
     p = phi[i, j]
     tot = zero(eltype(W))
     ddiag = hypot(dx, dy)
@@ -312,7 +348,7 @@ end
 # Tarboton (1997) D-infinity: steepest downhill direction over the 8 triangular facets around the
 # cell; the outflow goes to the facet's cardinal and diagonal neighbours in proportion to how close
 # the flow angle is to each.
-@inline function cell_weights!(W, ::Tarboton, i, j, phi, sx, sy, Nx, Ny, dx, dy)
+@inline function cell_weights!(W, ::Tarboton, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy)
     e0 = phi[i, j]
     best_s = zero(eltype(W)); best = 0; best_r = zero(eltype(W)); best_amax = one(eltype(W))
     @inbounds for f in 1:8
@@ -346,7 +382,7 @@ end
 # 4-neighbour slope of the routing potential (Modified) or from the smoothed gravitational driving
 # stress components (GDS) -- split between the two of the 8 neighbours whose directions bracket it,
 # in proportion to the angles. `sx/sy` hold the corresponding (minus) gradient for each scheme.
-@inline cell_weights!(W, ::Union{ModifiedTarboton, GDSTarboton}, i, j, phi, sx, sy, Nx, Ny, dx, dy) =
+@inline cell_weights!(W, ::Union{ModifiedTarboton, GDSTarboton}, i, j, phi, sx, sy, mask, Nx, Ny, dx, dy) =
     angle_split!(W, i, j, sx[i, j], sy[i, j], dx, dy)
 
 @inline function angle_split!(W, i, j, fx, fy, dx, dy)
@@ -395,7 +431,7 @@ function record_routing_tape_weights_kernel!(tape::RoutingTape{T}, mask, W, ndir
 
     @inbounds for j in 1:Ny, i in 1:Nx
 
-        (mask[i, j] == 1.0 && !visited[i, j]) || continue
+        (mask[i, j] == GROUNDED && !visited[i, j]) || continue
 
         push!(stack, (Int32(i), Int32(j), Int32(0)))
 
@@ -424,7 +460,7 @@ function record_routing_tape_weights_kernel!(tape::RoutingTape{T}, mask, W, ndir
                 in_domain(ni, nj, Nx, Ny) || continue
 
                 w = W[ROUTE_OPPOSITE[sk], ni, nj]
-                (w > 0 && mask[ni, nj] == 1.0) || continue
+                (w > 0 && mask[ni, nj] == GROUNDED) || continue
 
                 if visited[ni, nj]
                     push_tape_op!(tape, si, sj, Int32(ni), Int32(nj), T(w))
@@ -473,19 +509,19 @@ function face_fluxes_kernel!(Fx, Fy, diss, psi, W, mask, w, phi, Nx, Ny, dx, dy,
     z = zero(eltype(Fx))
     @inbounds for j in 1:Ny, a in 1:Nx+1
         f = z
-        (a > 1 && mask[a - 1, j] == 1.0) && (f += psi[a - 1, j] * W[2, a - 1, j])
-        (a <= Nx && mask[a, j] == 1.0) && (f -= psi[a, j] * W[1, a, j])
+        (a > 1 && mask[a - 1, j] == GROUNDED) && (f += psi[a - 1, j] * W[2, a - 1, j])
+        (a <= Nx && mask[a, j] == GROUNDED) && (f -= psi[a, j] * W[1, a, j])
         Fx[a, j] = f
     end
     @inbounds for b in 1:Ny+1, i in 1:Nx
         f = z
-        (b > 1 && mask[i, b - 1] == 1.0) && (f += psi[i, b - 1] * W[4, i, b - 1])
-        (b <= Ny && mask[i, b] == 1.0) && (f -= psi[i, b] * W[3, i, b])
+        (b > 1 && mask[i, b - 1] == GROUNDED) && (f += psi[i, b - 1] * W[4, i, b - 1])
+        (b <= Ny && mask[i, b] == GROUNDED) && (f -= psi[i, b] * W[3, i, b])
         Fy[i, b] = f
     end
     do_diss || return nothing
     @inbounds for j in 1:Ny, i in 1:Nx
-        if mask[i, j] != 1.0
+        if mask[i, j] != GROUNDED
             diss[i, j] = z
             continue
         end
@@ -549,7 +585,7 @@ end
 function q_from_faces_kernel!(q, Fx, Fy, mask, Nx, Ny, dx, dy, q_min, q_max)
     @inbounds for j in 1:Ny, i in 1:Nx
         v = zero(eltype(Fx))
-        if mask[i, j] == 1.0
+        if mask[i, j] == GROUNDED
             qx = (Fx[i, j] + Fx[i + 1, j]) / (2 * dy)
             qy = (Fy[i, j] + Fy[i, j + 1]) / (2 * dx)
             v = hypot(qx, qy)
@@ -589,12 +625,12 @@ function freeze_on_capacity_kernel!(C, psi, W, i_eb, mask, Nx, Ny, dx, dy, rho_w
     @inbounds for j in 1:Ny, i in 1:Nx
         psi_in = zero(T)
         supply = zero(T)
-        if mask[i, j] == 1.0
+        if mask[i, j] == GROUNDED
             for d in 1:8
                 di, dj = ROUTE_OFFSETS[d]
                 ni, nj = i + di, j + dj
                 in_domain(ni, nj, Nx, Ny) || continue
-                mask[ni, nj] == 1.0 || continue
+                mask[ni, nj] == GROUNDED || continue
                 # the neighbour sends toward (i, j) in the direction opposite to d
                 psi_in += psi[ni, nj] * W[ROUTE_OPPOSITE[d], ni, nj]
             end

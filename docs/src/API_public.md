@@ -141,13 +141,29 @@ StaggeredFriction
 ## State
 
 [`AbstractHydroState`](@ref) holds the fields that are common to every model, independent of which
-hydrology parameterization is in use: the inputs (grounded-ice mask, ice thickness, bedrock
+hydrology parameterization is in use: the inputs (hydrology mask, ice thickness, bedrock
 elevation) and the outputs every model must produce (effective pressure `N` and water layer
 thickness `W`). [`HydroState`](@ref) is the (currently only) concrete implementation.
 
 ```@docs
 AbstractHydroState
 HydroState
+```
+
+### Mask
+
+The [`HydroMask`](@ref) gives every cell a category, with Shakti.jl's codes, and so sets the
+boundary conditions: water leaves the grounded ice only into [`OCEAN`](@ref) and [`LAND`](@ref)
+cells, while faces to [`OTHER_BASIN`](@ref) cells and the edge of the grid are closed.
+[`classify_mask`](@ref) builds one from the geometry.
+
+```@docs
+HydroMask
+classify_mask
+GROUNDED
+OCEAN
+LAND
+OTHER_BASIN
 ```
 
 ## Simulation

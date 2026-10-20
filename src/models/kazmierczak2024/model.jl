@@ -251,11 +251,15 @@ resulting coupling length is too small for your grid to resolve at all (in which
 honest choice, not a value the grid can't represent).
 
 `potential_weight` picks the cells whose potential the coupling smoothing, the true gradient
-magnitude and the face dissipation may use: `GroundedIce()` (default) takes grounded ice inside or
-outside the mask, `GroundedMask()` the grounded mask only (e.g. for a basin cut whose outside ice is
-not evolved). Cells outside it, such as the `h = b = 0` padding around a rasterised mesh, would
-otherwise pull the smoothed potential down near the edge (spurious divides, high-N hot spots) and
-give the boundary cells a gradient of the whole overburden -- see `AbstractPotentialWeight`.
+magnitude and the face dissipation may use: `GroundedIce()` (default) takes the `GROUNDED` cells and
+the `OTHER_BASIN` cells with grounded ice, `GroundedMask()` the `GROUNDED` cells only (e.g. for a basin
+cut whose outside ice is not evolved). Cells outside it, such as the `h = b = 0` padding around a rasterised
+mesh, would otherwise pull the smoothed potential down near the edge (spurious divides, high-N hot
+spots) and give the boundary cells a gradient of the whole overburden -- see `AbstractPotentialWeight`.
+
+The boundary conditions come from the state's [`HydroMask`](@ref): water leaves only into `OCEAN` and
+`LAND` cells, whose routing potential is that of the ocean or atmospheric pressure at the bed
+(`set_outlet_potential!`); faces to `OTHER_BASIN` cells and the edge of the grid are closed.
 
 Works with any concrete subtype of AbstractHydroGrid -- changing the grid does not require changing this constructor.
 
@@ -309,7 +313,7 @@ function KazmierczakHydroModel(
     q_conversion = nothing,                       # QFromOutflow()/QFromFaceAverage(); nothing = QFromFaceAverage for Warner, QFromOutflow otherwise -- see AbstractQConversion
     dissipation_discretization = nothing,         # CellCentredDissipation()/FaceDissipation(); nothing = FaceDissipation for Warner, CellCentredDissipation otherwise -- see AbstractDissipationDiscretization
     gradient_discretization = nothing,            # CentredGradient()/FaceGradient(); nothing = FaceGradient for Warner, CentredGradient otherwise -- see AbstractGradientDiscretization
-    potential_weight = GroundedIce(),             # GroundedIce()/GroundedMask(): cells with a meaningful potential, kept in the smoothing, true gradient and face dissipation -- grounded ice in or out of the mask, or the grounded mask only; see AbstractPotentialWeight
+    potential_weight = GroundedIce(),             # GroundedIce()/GroundedMask(): cells with a meaningful potential, kept in the smoothing, true gradient and face dissipation -- GROUNDED and OTHER_BASIN cells with grounded ice, or GROUNDED only; see AbstractPotentialWeight
     friction_discretization = CellCentredFriction(),       # CellCentredFriction()/StaggeredFriction(ux_acx, uy_acy; quadrature): frictional heat from C-grid velocities -- see AbstractFrictionDiscretization
     max_psi_out_calls = 100_000,                   # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap
     psi_out_algorithm = TapedPsiOut(),            # TapedPsiOut()/RecursivePsiOut()/IterativePsiOut()/TopologicalPsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out

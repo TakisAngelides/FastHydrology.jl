@@ -15,7 +15,7 @@
                     dissipation_melt = true, dissipation_verbose = false, qN_verbose = false, routing_scheme = scheme,
                     fill_algorithm = PriorityFloodFill(), sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5),
                     friction_discretization = StaggeredFriction(ux, uy))
-        state = HydroState(grid, ones(Nx, Ny), fill(1000.0, Nx, Ny), b)
+        state = HydroState(grid, HydroMask([i < Nx ? GROUNDED : OCEAN for i in 1:Nx, j in 1:Ny]), fill(1000.0, Nx, Ny), b)
         update_steady_state!(model, grid, state)
         return grid, model, state
     end

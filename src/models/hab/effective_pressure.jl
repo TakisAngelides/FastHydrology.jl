@@ -31,7 +31,7 @@ function update_p_w!(model::HABHydroModel, grid::AbstractHydroGrid, state::Hydro
     # Scalar coefficient precomputed once rather than re-evaluated per cell inside the broadcast.
     neg_coeff = -model.P_w * model.rho_sw * model.g
     @. model.p_w = neg_coeff * state.b
-    overwrite_where!(grid, model.p_w, state.mask, ==(0.0), state.h; scale = model.P_w * model.rho_i * model.g)
+    overwrite_where!(grid, model.p_w, state.mask, !=(GROUNDED), state.h; scale = model.P_w * model.rho_i * model.g)
     overwrite_where!(grid, model.p_w, state.b, >=(0.0), 0.0)
 
     return nothing

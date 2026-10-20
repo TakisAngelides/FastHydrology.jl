@@ -2,10 +2,10 @@
         # Regression test: update_N! used to call max(::Array, ::Array) instead of
         # max.(...), which threw a MethodError for any grid larger than a scalar.
         grid = ArrayHydroGrid(5, 5, (0.0, 500.0), (0.0, 500.0))
-        mask = ones(5, 5)
+        mask = fill(GROUNDED, 5, 5)
         h    = fill(500.0, 5, 5)
         b    = fill(-100.0, 5, 5)
-        state = HydroState(grid, mask, h, b)
+        state = HydroState(grid, HydroMask(mask), h, b)
 
         model = HABHydroModel(grid)
         sim = SteadyStateSimulation(model, grid, state)

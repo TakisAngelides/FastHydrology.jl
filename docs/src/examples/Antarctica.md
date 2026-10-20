@@ -27,7 +27,7 @@ run!(SteadyStateSimulation(model, grid, state))
 state_hab = HydroState(grid, mask, h, b)
 run!(SteadyStateSimulation(HABHydroModel(grid), grid, state_hab))
 
-q90 = quantile(model.q[mask .== 1], 0.9)
+q90 = quantile(model.q[mask .== GROUNDED], 0.9)
 visualize_field(grid, mask_field(model.q, mask, NaN);
                 plot_title = "q [m^2/s]", colormap = :magma, colorrange = (0.0, q90))
 visualize_field(grid, mask_field(state.N ./ 1e6, mask, NaN);
