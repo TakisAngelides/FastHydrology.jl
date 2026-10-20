@@ -169,4 +169,73 @@
         @test all(C .>= i_eb ./ model.rho_i .* (1 - 1e-14))
     end
 
+    # A sloping grounded patch padded with h = b = 0 cells (as around a rasterised mesh): phi0 drops from
+    # ~9 MPa to 0 across the patch edge. None of that jump may reach the smoothing, the true gradient
+    # or the dissipation.
+    @testset "edge of the grounded ice" begin
+        ip, jp = 6:35, 6:25
+        inside = [(i in ip) && (j in jp) for i in 1:Nx, j in 1:Ny]
+        hp = ifelse.(inside, 1000.0, 0.0)
+        slope = (-2e-3, -1e-3)
+        bp = ifelse.(inside, slope[1] .* x .+ slope[2] .* y, 0.0)
+        mp = Float64.(inside)
+        exact = 1000.0 * 9.81 * hypot(slope...)      # |grad(rho_w g b)| of the plane
+        pbuild(; kw...) = (KazmierczakHydroModel(grid, z, z, z .+ 1e-24, G, q_T; dissipation_verbose = false, kw...),
+                           HydroState(grid, mp, hp, bp))
+        rim = inside .& .![all(inside[clamp(i + di, 1, Nx), clamp(j + dj, 1, Ny)] for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1)))
+                            for i in 1:Nx, j in 1:Ny]
+
+        # the weight: the grounded mask here; ice outside the mask counts when grounded by flotation
+        m, s = pbuild(coupling_length_kamb86 = 0.0, dissipation_melt = false)
+        update_phi0!(m, grid, s)
+        @test m.phi_weight == mp
+        h2, b2 = copy(hp), copy(bp)
+        h2[1, 1], b2[1, 1] = 100.0, 0.0       # grounded ice outside the mask
+        h2[2, 1], b2[2, 1] = 100.0, -500.0    # floating: 917 * 100 < 1028 * 500
+        s2 = HydroState(grid, mp, h2, b2)
+        update_phi0!(m, grid, s2)
+        @test m.phi_weight[1, 1] == 1 && m.phi_weight[2, 1] == 0 && m.phi_weight[3, 1] == 0
+
+        # true gradient: the plane's slope on every grounded cell, rim included, for both stencils
+        for gd in (FaceGradient(), CentredGradient())
+            m, s = pbuild(coupling_length_kamb86 = 0.0, dissipation_melt = false, gradient_discretization = gd)
+            update_steady_state!(m, grid, s)
+            @test all(isapprox.(m.abs_grad_phi0[inside], exact; rtol = 1e-8))
+        end
+
+        # smoothing: an unweighted average of phi0 over the padding has an interior maximum (a
+        # spurious divide); the weighted one does not
+        m, s = pbuild(coupling_length_kamb86 = 10.0, dissipation_melt = false)
+        update_steady_state!(m, grid, s)
+        interior_max(phi) = count(CartesianIndices(phi)) do c
+            i, j = Tuple(c)
+            all(inside[i + di, j + dj] for di in -1:1, dj in -1:1 if FastHydrology.in_domain(i + di, j + dj, Nx, Ny)) &&
+                2 <= i <= Nx - 1 && 2 <= j <= Ny - 1 &&
+                phi[i, j] > maximum(phi[i + di, j + dj] for di in -1:1, dj in -1:1 if (di, dj) != (0, 0))
+        end
+        kernel = FastHydrology.coupling_kernel(m, grid, 1000.0)
+        @test size(kernel, 1) > 1
+        plain = zeros(Nx, Ny)
+        convolve!(grid, plain, m.phi0, kernel)
+        @test interior_max(plain) > 0
+        @test interior_max(m.phi0_filled) == 0
+        @test all(isfinite, m.q) && all(isfinite, s.N)
+
+        # face dissipation: no energy for the drop to the padding on the exit faces
+        m, s = pbuild(coupling_length_kamb86 = 0.0, dissipation_melt = true)
+        update_steady_state!(m, grid, s)
+        d = m.routing_tape.diss
+        @test all(>=(0), d[inside])
+        @test maximum(d[rim]) < 10 * maximum(d[inside .& .!rim])
+
+        # an isolated grounded cell (no neighbour inside the weight) keeps a finite gradient and N
+        mi = copy(mp); hi = copy(hp)
+        mi[2, 2] = 1.0; hi[2, 2] = 1000.0
+        m = KazmierczakHydroModel(grid, z, z, z .+ 1e-24, G, q_T; coupling_length_kamb86 = 0.0, dissipation_verbose = false)
+        s = HydroState(grid, mi, hi, bp)
+        update_steady_state!(m, grid, s)
+        @test m.abs_grad_phi0[2, 2] > 0
+        @test all(isfinite, s.N)
+    end
+
 end

@@ -210,13 +210,45 @@ the same face-to-centre construction as `FaceDissipation` and `StaggeredFriction
 """
 function face_gradient_magnitude_kernel!(dest, field, Nx, Ny, dx, dy)
     @inbounds for j in 1:Ny, i in 1:Nx
+        sx, nx, sy, ny = face_gradient_sums(field, field, i, j, Nx, Ny, dx, dy, false)
+        dest[i, j] = sqrt((nx > 0 ? sx / nx : sx) + (ny > 0 ? sy / ny : sy))
+    end
+    return nothing
+end
+
+# Sums of the squared face gradients of `field` at cell (i, j) and their counts, per axis. With
+# `masked`, only faces to a neighbour with w == 1 count.
+@inline function face_gradient_sums(field, w, i, j, Nx, Ny, dx, dy, masked::Bool)
+    @inbounds begin
         f = field[i, j]
-        sx = zero(eltype(dest)); nx = 0
-        i > 1  && (g = (f - field[i - 1, j]) / dx; sx += g * g; nx += 1)
-        i < Nx && (g = (field[i + 1, j] - f) / dx; sx += g * g; nx += 1)
-        sy = zero(eltype(dest)); ny = 0
-        j > 1  && (g = (f - field[i, j - 1]) / dy; sy += g * g; ny += 1)
-        j < Ny && (g = (field[i, j + 1] - f) / dy; sy += g * g; ny += 1)
+        T = typeof(f)
+        use(ii, jj) = !masked || w[ii, jj] == 1
+        sx = zero(T); nx = 0
+        (i > 1  && use(i - 1, j)) && (g = (f - field[i - 1, j]) / dx; sx += g * g; nx += 1)
+        (i < Nx && use(i + 1, j)) && (g = (field[i + 1, j] - f) / dx; sx += g * g; nx += 1)
+        sy = zero(T); ny = 0
+        (j > 1  && use(i, j - 1)) && (g = (f - field[i, j - 1]) / dy; sy += g * g; ny += 1)
+        (j < Ny && use(i, j + 1)) && (g = (field[i, j + 1] - f) / dy; sy += g * g; ny += 1)
+    end
+    return sx, nx, sy, ny
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+`face_gradient_magnitude_kernel!` restricted by the weight `w`: at a cell with `w == 1`, only the
+faces to neighbours with `w == 1` count, so the cell does not see the jump in `field` across a face to
+a cell outside `w` (e.g. the `phi0 = 0` padding outside a rasterised mesh, which would otherwise give
+the boundary cells a gradient of the whole potential over one cell). A cell with `w == 1` but no such
+neighbour (isolated), and every cell with `w == 0`, uses all its faces as in the unweighted kernel.
+"""
+function masked_face_gradient_magnitude_kernel!(dest, field, w, Nx, Ny, dx, dy)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        masked = w[i, j] == 1
+        sx, nx, sy, ny = face_gradient_sums(field, w, i, j, Nx, Ny, dx, dy, masked)
+        if masked && nx + ny == 0
+            sx, nx, sy, ny = face_gradient_sums(field, w, i, j, Nx, Ny, dx, dy, false)
+        end
         dest[i, j] = sqrt((nx > 0 ? sx / nx : sx) + (ny > 0 ? sy / ny : sy))
     end
     return nothing
@@ -225,12 +257,66 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Magnitude of the centred gradient of `field` restricted by the weight `w`, the centred counterpart of
+`masked_face_gradient_magnitude_kernel!`. Per axis, at a cell with `w == 1`: the centred difference
+if both neighbours have `w == 1`, the one-sided difference to the one that has, 0 if neither. Cells
+with `w == 0`, and isolated cells (no neighbour with `w == 1` on either axis), use the unweighted
+stencil of `minus_gradient_x_kernel!`/`minus_gradient_y_kernel!` (one-sided at the domain edges).
+"""
+function masked_centred_gradient_magnitude_kernel!(dest, field, w, Nx, Ny, dx, dy)
+    @inbounds for j in 1:Ny, i in 1:Nx
+        masked = w[i, j] == 1
+        gx, gy, n = centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, masked)
+        if masked && n == 0
+            gx, gy, n = centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, false)
+        end
+        dest[i, j] = sqrt(gx * gx + gy * gy)
+    end
+    return nothing
+end
+
+# Centred (one-sided where only one neighbour is usable) gradient components of `field` at (i, j) and
+# the number of usable neighbours. With `masked`, only neighbours with w == 1 are usable.
+@inline function centred_gradient_components(field, w, i, j, Nx, Ny, dx, dy, masked::Bool)
+    @inbounds begin
+        f = field[i, j]
+        use(ii, jj) = !masked || w[ii, jj] == 1
+        xm = i > 1 && use(i - 1, j); xp = i < Nx && use(i + 1, j)
+        ym = j > 1 && use(i, j - 1); yp = j < Ny && use(i, j + 1)
+        gx = xm && xp ? (field[i + 1, j] - field[i - 1, j]) / (2dx) :
+             xp ? (field[i + 1, j] - f) / dx : xm ? (f - field[i - 1, j]) / dx : zero(f)
+        gy = ym && yp ? (field[i, j + 1] - field[i, j - 1]) / (2dy) :
+             yp ? (field[i, j + 1] - f) / dy : ym ? (f - field[i, j - 1]) / dy : zero(f)
+    end
+    return gx, gy, xm + xp + ym + yp
+end
+
+"""
+$(TYPEDSIGNATURES)
+
 Write the face-based gradient magnitude of `field` into `dest`, both cell-centered fields on `grid`.
 See `face_gradient_magnitude_kernel!`; override it the same way as `minus_gradient_x!` for a
-grid backend whose fields wrap a different storage.
+grid backend whose fields wrap a different storage. With a weight `w`, only faces between two cells
+with `w == 1` count (see `masked_face_gradient_magnitude_kernel!`).
 """
 function face_gradient_magnitude!(grid::AbstractHydroGrid, dest, field)
     face_gradient_magnitude_kernel!(dest, field, grid.Nx, grid.Ny, grid.dx, grid.dy)
+    return nothing
+end
+
+function face_gradient_magnitude!(grid::AbstractHydroGrid, dest, field, w)
+    masked_face_gradient_magnitude_kernel!(dest, field, w, grid.Nx, grid.Ny, grid.dx, grid.dy)
+    return nothing
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+Write the magnitude of the centred gradient of `field` into `dest`, using only neighbours with
+`w == 1` (see `masked_centred_gradient_magnitude_kernel!`).
+"""
+function centred_gradient_magnitude!(grid::AbstractHydroGrid, dest, field, w)
+    masked_centred_gradient_magnitude_kernel!(dest, field, w, grid.Nx, grid.Ny, grid.dx, grid.dy)
     return nothing
 end
 

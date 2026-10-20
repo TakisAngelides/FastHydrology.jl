@@ -83,6 +83,8 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     minus_grad_phi0_sx     ::A  # Smoothed gradient x-component of the geometric potential [Pa/m]
     minus_grad_phi0_sy     ::A  # Smoothed gradient y-component of the geometric potential [Pa/m]
     abs_grad_phi0_s        ::A  # Euclidean magnitude of the smoothed gradient of the geometric potential [Pa/m]
+    phi_weight             ::A  # 1 where phi0 is a meaningful potential (grounded ice, in or out of the mask), else 0; set by update_phi0!
+    phi_weight_s           ::A  # phi_weight convolved with the coupling kernel (the normalisation of the smoothed potential)
 
     # Water flux
     visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
@@ -405,6 +407,8 @@ function KazmierczakHydroModel(
     minus_grad_phi0_sx = alloc_field(grid)
     minus_grad_phi0_sy = alloc_field(grid)
     abs_grad_phi0_s    = alloc_field(grid)
+    phi_weight         = alloc_field(grid)
+    phi_weight_s       = alloc_field(grid)
 
     # Water flux
     visited    = alloc_field(grid)
@@ -446,7 +450,7 @@ function KazmierczakHydroModel(
 
     workspace = KazmierczakWorkspace(
         phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
-        abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s,
+        abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s, phi_weight, phi_weight_s,
         visited, h, G, q_T, i_eb, Q_b, Q_diss, Q_sens, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )

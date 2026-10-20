@@ -146,13 +146,17 @@ Build the routing potential and flow directions for `model.routing_scheme`, call
 `update_q!` after `update_phi0!`.
 
 - GDS schemes (`GDSWarner`, `GDSTarboton`): the original K24 pipeline -- fill phi0, take its gradient,
-  smooth the gradient components with the Kamb & Echelmeyer (1986) kernel.
+  smooth the gradient components with the Kamb & Echelmeyer (1986) kernel. This smoothing is kept as
+  in KORI-ULB, unweighted: it averages across the edge of the grounded ice, so on a domain cut
+  through grounded ice (e.g. a rasterised mesh padded with `h = b = 0`) use a potential scheme.
 - Potential schemes (`Warner`, `Quinn`, `Tarboton`, `ModifiedTarboton`): smooth the potential itself
   with the same kernel, then fill it (so the filling acts on the surface the water actually follows).
   Smoothing commutes with differentiation, so this is the same stress-gradient coupling, but the
   result stays the gradient of one surface. `minus_grad_phi0_sx/sy` then hold the (unsmoothed)
   centred gradient of that surface, used for the psi -> q conversion direction (Le Brocq Eq. 9) and
-  by `ModifiedTarboton`.
+  by `ModifiedTarboton`. The smoothing is normalised by the weight `model.phi_weight` (see
+  `smooth_potential!`), so cells without a meaningful potential do not pull it down near the edge
+  of the ice.
 
 `abs_grad_phi0` (used by N and the dissipation melt) is always the gradient of the true potential.
 Both magnitudes (and `abs_grad_phi0_s` wherever it is unsmoothed) use `model.gradient_discretization`'s stencil.
@@ -172,7 +176,7 @@ function prepare_routing!(model::AbstractKazmierczakHydroModel, grid::AbstractHy
         model.phi0_filled .= model.phi0
     else
         kernel = coupling_kernel(model, grid, max(masked_mean(grid, state.h, state.mask), 10.0))
-        convolve!(grid, model.phi0_filled, model.phi0, kernel)
+        smooth_potential!(model, grid, kernel)
     end
     potential_filling!(model, grid, state; from_true_potential = false)
     update_potential_gradients!(model, grid)
@@ -180,6 +184,31 @@ function prepare_routing!(model::AbstractKazmierczakHydroModel, grid::AbstractHy
     model.minus_grad_phi0_sy .= model.minus_grad_phi0_y
     update_unsmoothed_gradient_magnitude!(model, grid, model.gradient_discretization)
     compute_routing_weights!(model, grid, state)
+    return nothing
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Smooth the true potential with the coupling `kernel` into `model.phi0_filled`, as the weighted
+average `K * (phi0 w) / K * w` with `w = model.phi_weight` (set by `update_phi0!`). A plain `K * phi0`
+averages in the cells outside the grounded ice, whose phi0 can be far below the potential under the
+ice (0 for the `h = b = 0` padding around a rasterised mesh, against ~10 MPa just inside): every cell
+within a kernel radius of that edge is pulled down, the more so the more of the kernel lies outside.
+That creates spurious maxima of the smoothed potential -- drainage divides with no upstream water,
+hence low `q` and high `N`: a band about one kernel radius inside the boundary for small kernels,
+contracting to a single hot spot for kernels comparable to the domain. Normalising by `K * w`
+averages real ice only. Cells outside `w` within reach of the kernel get the same weighted average
+(an extrapolation, so water reaching the edge sees no artificial cliff); farther ones keep phi0.
+"""
+function smooth_potential!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, kernel)
+    w, ws = model.phi_weight, model.phi_weight_s
+    @. model.phi0_tmp = model.phi0 * w      # scratch; potential_filling! resets phi0_tmp afterwards
+    convolve!(grid, model.phi0_filled, model.phi0_tmp, kernel)
+    convolve!(grid, ws, w, kernel)
+    tol = sqrt(eps(eltype(ws)))
+    @. model.phi0_filled = ifelse(ws > tol, model.phi0_filled / max(ws, tol), model.phi0)
     return nothing
 end
 
@@ -428,17 +457,20 @@ With `FaceDissipation` it also assembles the dissipation melt [kg/m2/s] into `ta
 each face the water releases `F * (phi_upstream - phi_downstream)` [W] of the true potential, and
 each cell gets half of the energy of each of its 4 faces (the face-to-centre average), divided by
 its area and L_w. Boundary faces towards the domain edge have no neighbour potential and are
-skipped. The result is signed: water pushed up the true potential (out of a filled hollow, or
-uphill under the smoothed GDS direction) gives a negative contribution.
+skipped, and so are faces to a cell outside `model.phi_weight` (see `update_phi0!`): the water leaves
+the grounded system there, and the drop to that cell's phi0 is not energy released under the ice
+(at the edge of a rasterised mesh it is the whole overburden). The result is signed: water pushed up
+the true potential (out of a filled hollow, or uphill under the smoothed GDS direction) gives a
+negative contribution.
 """
 function update_face_fluxes!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     t = model.routing_tape
-    face_fluxes_kernel!(t.Fx, t.Fy, t.diss, model.psi_out, t.w8, state.mask, model.phi0, grid.Nx, grid.Ny, grid.dx, grid.dy,
+    face_fluxes_kernel!(t.Fx, t.Fy, t.diss, model.psi_out, t.w8, state.mask, model.phi_weight, model.phi0, grid.Nx, grid.Ny, grid.dx, grid.dy,
                         model.L_w, model.dissipation_discretization isa FaceDissipation)
     return nothing
 end
 
-function face_fluxes_kernel!(Fx, Fy, diss, psi, W, mask, phi, Nx, Ny, dx, dy, L_w, do_diss)
+function face_fluxes_kernel!(Fx, Fy, diss, psi, W, mask, w, phi, Nx, Ny, dx, dy, L_w, do_diss)
     z = zero(eltype(Fx))
     @inbounds for j in 1:Ny, a in 1:Nx+1
         f = z
@@ -459,10 +491,10 @@ function face_fluxes_kernel!(Fx, Fy, diss, psi, W, mask, phi, Nx, Ny, dx, dy, L_
             continue
         end
         P = z
-        i > 1  && (P += Fx[i, j]     * (phi[i - 1, j] - phi[i, j]))
-        i < Nx && (P += Fx[i + 1, j] * (phi[i, j] - phi[i + 1, j]))
-        j > 1  && (P += Fy[i, j]     * (phi[i, j - 1] - phi[i, j]))
-        j < Ny && (P += Fy[i, j + 1] * (phi[i, j] - phi[i, j + 1]))
+        (i > 1  && w[i - 1, j] == 1) && (P += Fx[i, j]     * (phi[i - 1, j] - phi[i, j]))
+        (i < Nx && w[i + 1, j] == 1) && (P += Fx[i + 1, j] * (phi[i, j] - phi[i + 1, j]))
+        (j > 1  && w[i, j - 1] == 1) && (P += Fy[i, j]     * (phi[i, j - 1] - phi[i, j]))
+        (j < Ny && w[i, j + 1] == 1) && (P += Fy[i, j + 1] * (phi[i, j] - phi[i, j + 1]))
         diss[i, j] = P / 2 / (dx * dy * L_w)
     end
     return nothing

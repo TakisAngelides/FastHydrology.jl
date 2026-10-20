@@ -63,11 +63,24 @@ PriorityFloodFill(; epsilon = 1.0) = PriorityFloodFill(epsilon)
 """
 $(TYPEDSIGNATURES)
 
-Update the geometric potential phi0.
+Update the geometric potential phi0, and `model.phi_weight`: 1 where phi0 is a meaningful potential
+for the subglacial water, i.e. on grounded ice -- every cell of the grounded mask, plus ice outside
+the mask that would be grounded by flotation (`rho_i h >= -rho_sw b`, e.g. ice beyond the edge of a
+drainage basin) -- and 0 elsewhere (floating ice, open ocean, ice-free land, and cells padding a
+domain cut through grounded ice, such as the `h = b = 0` cells around a rasterised mesh, where
+phi0 = 0 has nothing to do with the potential under the ice). The weight keeps those cells out of
+the stress-gradient-coupling smoothing (`prepare_routing!`), the true gradient magnitude
+(`update_potential_gradients!`) and the face dissipation (`update_face_fluxes!`): across their edge
+phi0 can jump by the whole overburden, which otherwise creates spurious drainage divides (a
+high-N band about one kernel radius inside the boundary, collapsing to a single hot spot for large
+kernels) and inflates N on the boundary cells.
 """
 function update_phi0!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
 
     @. model.phi0 = model.rho_i * model.g * state.h + model.rho_w * model.g * state.b
+
+    T = eltype(model.phi_weight)
+    @. model.phi_weight = ifelse((state.mask == 1) | ((state.h > 0) & (model.rho_i * state.h >= -model.rho_sw * state.b)), one(T), zero(T))
 
     return nothing
 
@@ -314,6 +327,9 @@ centred difference.
   face and averaged to the centre (see [`face_gradient_magnitude!`](@ref)) -- the same staggered
   construction as `FaceDissipation`, so with Warner every term of the energy budget sees the
   potential on the faces the water actually crosses.
+
+For `abs_grad_phi0`, both stencils use only neighbours inside `model.phi_weight` (one-sided where only
+one is, see `update_phi0!`).
 """
 abstract type AbstractGradientDiscretization end
 """$(TYPEDSIGNATURES)
@@ -333,7 +349,9 @@ Compute the gradients of the geometric potential. `model.abs_grad_phi0` (used by
 dissipation term) is the magnitude of the gradient of the TRUE potential `model.phi0`. The components
 `model.minus_grad_phi0_x/y` (negative gradient, i.e. the flow direction) are taken from the FILLED
 potential `model.phi0_filled`, since they only feed the routing (via the smoothing and `psi_out`).
-The magnitude's stencil follows `model.gradient_discretization` (see `AbstractGradientDiscretization`).
+The magnitude's stencil follows `model.gradient_discretization` (see `AbstractGradientDiscretization`),
+and uses only neighbours inside `model.phi_weight` (see `update_phi0!`), so a cell next to the edge of
+the grounded ice does not see the jump in phi0 across it.
 """
 function update_potential_gradients!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid)
     update_true_gradient_magnitude!(model, grid, model.gradient_discretization)
@@ -342,18 +360,11 @@ function update_potential_gradients!(model::AbstractKazmierczakHydroModel, grid:
     return nothing
 end
 
-function update_true_gradient_magnitude!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, ::CentredGradient)
-    # The components are used only to form the magnitude; update_potential_gradients! then reuses the
-    # buffers for the filled potential's components.
-    minus_gradient_x!(grid, model.minus_grad_phi0_x, model.phi0)
-    minus_gradient_y!(grid, model.minus_grad_phi0_y, model.phi0)
-    # x*x rather than x^2.0 -- see the comment on the equivalent corfac computation in update_q!.
-    @. model.abs_grad_phi0 = sqrt(model.minus_grad_phi0_x * model.minus_grad_phi0_x + model.minus_grad_phi0_y * model.minus_grad_phi0_y)
-    return nothing
-end
+update_true_gradient_magnitude!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, ::CentredGradient) =
+    centred_gradient_magnitude!(grid, model.abs_grad_phi0, model.phi0, model.phi_weight)
 
 update_true_gradient_magnitude!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, ::FaceGradient) =
-    face_gradient_magnitude!(grid, model.abs_grad_phi0, model.phi0)
+    face_gradient_magnitude!(grid, model.abs_grad_phi0, model.phi0, model.phi_weight)
 
 
 """
