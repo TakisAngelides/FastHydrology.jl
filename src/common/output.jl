@@ -78,31 +78,34 @@ variable along an as-yet-empty unlimited dimension is a silent no-op in NCDatase
 directly against NCDatasets' own behaviour, not assumed.
 """
 function _trim_output_after!(path::String, field_names::AbstractVector{Symbol}, resume_step::Int)
-    NCDataset(path, "r") do src
+    tmp_path = path * ".trim.tmp"
+    # Rename only once `src` is closed: replacing a file that is still open fails on Windows.
+    trimmed = NCDataset(path, "r") do src
         steps = Array(src["step"])
         keep = findall(<=(resume_step), steps)
-        length(keep) == length(steps) && return nothing
+        length(keep) == length(steps) && return false
 
         first_field = src[String(first(field_names))]
         Nx, Ny = size(first_field, 1), size(first_field, 2)
         n_keep = length(keep)
+        # Steps are written in increasing order, so the kept slices are usually a prefix: read just those.
+        idx = keep == 1:n_keep ? (1:n_keep) : keep
 
-        tmp_path = path * ".trim.tmp"
         isfile(tmp_path) && rm(tmp_path)
         NCDataset(tmp_path, "c") do dst
             defDim(dst, "xc", Nx)
             defDim(dst, "yc", Ny)
             defDim(dst, "time", Inf)
             defVar(dst, "step", Int, ("time",))[1:n_keep] = steps[keep]
-            defVar(dst, "time", Float64, ("time",))[1:n_keep] = Array(src["time"])[keep]
+            defVar(dst, "time", Float64, ("time",))[1:n_keep] = src["time"][idx]
             for name in field_names
                 v = defVar(dst, String(name), Float64, ("xc", "yc", "time"))
-                v[:, :, 1:n_keep] = Array(src[String(name)])[:, :, keep]
+                v[:, :, 1:n_keep] = src[String(name)][:, :, idx]
             end
         end
-        mv(tmp_path, path; force = true)
-        return nothing
+        return true
     end
+    trimmed && mv(tmp_path, path; force = true)
     return nothing
 end
 

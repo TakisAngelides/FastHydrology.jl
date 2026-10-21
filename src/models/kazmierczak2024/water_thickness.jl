@@ -145,7 +145,7 @@ Must run after `update_N!` (specifically after its `update_S_inf!` call), not be
 `ArealConduitThickness` reads `model.S_inf`, which `update_N!` is what keeps current.
 `update_steady_state!` in run.jl calls `update_q!`, then `update_N!`, then `update_W!` in that order
 for this reason; `state.W` itself feeds back into nothing else in the model, so it is safe to compute
-last.
+last. `state.W` is 0 off the grounded mask (as `state.N` is), whatever the closure and `W_min`.
 """
 function update_W!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     update_W!(model, grid, state, model.water_thickness_algorithm)
@@ -161,7 +161,8 @@ the inter-conduit spacing -- as `state.W`, unclamped. See `AbstractWaterThicknes
 docstring above for the derivation and why `S_inf` (not `H`) is the right numerator.
 """
 function update_W!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::ArealConduitThickness)
-    @. state.W = model.S_inf / model.l_c
+    z = zero(eltype(state.W))
+    @. state.W = ifelse(state.mask == GROUNDED, model.S_inf / model.l_c, z)
     return nothing
 end
 
@@ -197,8 +198,8 @@ function update_W_darcy_weisbach!(model::AbstractKazmierczakHydroModel, grid::Ab
     # eps(T) computed once as a plain scalar before the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
     epsT = eps(T)
-    @. state.W = min(model.W_max, max(model.W_min,
-        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + epsT))^(1/3)))
+    @. state.W = ifelse(state.mask == GROUNDED, min(model.W_max, max(model.W_min,
+        (model.f * model.rho_w * model.q * model.q / (4 * model.abs_grad_phi0 + epsT))^(1/3))), zero(T))
     return nothing
 end
 
@@ -207,8 +208,8 @@ function update_W_darcy_weisbach!(model::AbstractKazmierczakHydroModel, grid::Ab
     # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0)
     epsT = eps(T)
-    @. state.W = min(model.W_max, max(model.W_min,
-        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + epsT))^(1/3)))
+    @. state.W = ifelse(state.mask == GROUNDED, min(model.W_max, max(model.W_min,
+        (model.f * model.rho_w * model.q * model.q / (4 * abs_grad_phi0_mean + epsT))^(1/3))), zero(T))
     return nothing
 end
 
@@ -238,7 +239,7 @@ function update_W_laminar!(model::AbstractKazmierczakHydroModel, grid::AbstractH
     abs_grad_phi0_s_mean = masked_mean(grid, model.abs_grad_phi0_s, state.mask)
     # eps(T) as a plain scalar: the mean is 0 for an empty mask, and 0/0 would give a NaN W.
     epsT = eps(eltype(model.abs_grad_phi0_s))
-    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (abs_grad_phi0_s_mean + epsT))^(1/3)))
+    @. state.W = ifelse(state.mask == GROUNDED, min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (abs_grad_phi0_s_mean + epsT))^(1/3))), zero(epsT))
     return nothing
 end
 
@@ -246,6 +247,6 @@ function update_W_laminar!(model::AbstractKazmierczakHydroModel, grid::AbstractH
     # eps(T) computed as a plain scalar BEFORE the `@.` broadcast -- see update_q!'s own note.
     T = eltype(model.abs_grad_phi0_s)
     epsT = eps(T)
-    @. state.W = min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + epsT))^(1/3)))
+    @. state.W = ifelse(state.mask == GROUNDED, min(model.W_max, max(model.W_min, (12 * model.eta_w * model.q / (model.abs_grad_phi0_s + epsT))^(1/3))), zero(T))
     return nothing
 end

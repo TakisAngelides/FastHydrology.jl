@@ -134,9 +134,14 @@ Whether the solve needs face fluxes each sweep: for `QFromFaceAverage` or face-a
 dissipation or sensible heat (`FaceDissipation` with either term on).
 """
 needs_face_fluxes(model::AbstractKazmierczakHydroModel) =
-    model.q_conversion isa QFromFaceAverage ||
-    ((model.dissipation_melt isa DissipationMeltOn || model.sensible_heat isa SensibleHeatOn) &&
-     model.dissipation_discretization isa FaceDissipation)
+    needs_face_fluxes(model.q_conversion, model.dissipation_melt, model.sensible_heat, model.dissipation_discretization)
+
+needs_face_fluxes(q_conversion, dissipation_melt, sensible_heat, dissipation_discretization) =
+    q_conversion isa QFromFaceAverage || needs_face_dissipation(dissipation_melt, sensible_heat, dissipation_discretization)
+
+# Whether the face assembly is read by a source term (`FaceDissipation` with either term on).
+needs_face_dissipation(dissipation_melt, sensible_heat, dissipation_discretization) =
+    (dissipation_melt isa DissipationMeltOn || sensible_heat isa SensibleHeatOn) && dissipation_discretization isa FaceDissipation
 
 
 """
@@ -230,7 +235,8 @@ are closed: the scheme's share for them goes to the cell's other receiving neigh
 to their shares (`close_faces!`).
 """
 function compute_routing_weights!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
-    routing_weights_kernel!(model.routing_tape.w8, model.routing_scheme, model.phi0_filled,
+    W = routing_weights!(model.routing_tape, n_directions(model.routing_scheme), grid.Nx, grid.Ny)
+    routing_weights_kernel!(W, model.routing_scheme, model.phi0_filled,
                             model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, grid.Nx, grid.Ny, grid.dx, grid.dy)
     return nothing
 end
@@ -423,7 +429,8 @@ function record_routing_tape_weights_kernel!(tape::RoutingTape{T}, mask, W, ndir
     end
     empty!(tape.w)
 
-    visited = zeros(Bool, Nx, Ny)
+    visited = tape.seen   # reused across recordings rather than allocated each time
+    fill!(visited, false)
     stack = NTuple{3, Int32}[]
     call_count = 0
     hit_cap = false
@@ -501,7 +508,7 @@ negative contribution.
 function update_face_fluxes!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     t = model.routing_tape
     face_fluxes_kernel!(t.Fx, t.Fy, t.diss, model.psi_out, t.w8, state.mask, model.phi_weight, model.phi0, grid.Nx, grid.Ny, grid.dx, grid.dy,
-                        model.L_w, model.dissipation_discretization isa FaceDissipation)
+                        model.L_w, needs_face_dissipation(model.dissipation_melt, model.sensible_heat, model.dissipation_discretization))
     return nothing
 end
 
@@ -571,9 +578,15 @@ function update_q_from_psi_out!(model::AbstractKazmierczakHydroModel)
 end
 
 
-# Le Brocq Eq. 9 / K24: q = psi_out / corfac, with corfac from the cell's flow direction.
-q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromOutflow) =
-    update_q_from_psi_out!(model)
+# Le Brocq Eq. 9 / K24: q = psi_out / corfac, with corfac from the cell's flow direction. As
+# `update_q_from_psi_out!(model)`, but 0 (clamped) off the grounded mask like `QFromFaceAverage`: no
+# routing writes psi_out there, so after the mask changes it still holds a value from before.
+function q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromOutflow)
+    epsT = eps(eltype(model.corfac))
+    z = zero(epsT)
+    @. model.q = min(max(ifelse(state.mask == GROUNDED, model.psi_out / (model.corfac + epsT), z), model.q_min), model.q_max)
+    return nothing
+end
 
 # Face fluxes -> face-normal q (Fx/dy, Fy/dx) -> averaged to the cell centre per component -> |q|.
 function q_from_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState, ::QFromFaceAverage)
@@ -626,7 +639,7 @@ function freeze_on_capacity_kernel!(C, psi, W, i_eb, mask, Nx, Ny, dx, dy, rho_w
         psi_in = zero(T)
         supply = zero(T)
         if mask[i, j] == GROUNDED
-            for d in 1:8
+            for d in 1:size(W, 1)   # 4 or 8 planes, per the routing scheme
                 di, dj = ROUTE_OFFSETS[d]
                 ni, nj = i + di, j + dj
                 in_domain(ni, nj, Nx, Ny) || continue

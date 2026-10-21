@@ -27,8 +27,8 @@ The dissipation term depends on q, which is itself the output of the routing alg
 once q stops changing (relative to its own peak magnitude) to within `model.dissipation_rtol`, capped at `model.max_dissipation_iters` sweeps as a safety net. The frictional-heating term
 depends on the effective pressure N instead, which is itself downstream of q (via `update_N!`, called after `update_q!` in `update_steady_state!`) -- so an N-dependent `model.sliding_law`
 (`PowerPlasticSlidingLaw`, `RegularizedCoulombSlidingLaw`) turns this into a second, coupled fixed point on (q, N). Rather than nesting a second Picard loop around the first (which would fully
-reconverge q for a stale N every outer sweep), we widen the existing loop: each sweep recomputes tau_b from the current N, routes q, and then also updates W and N in place before the next
-sweep, converging jointly. `model.sliding_law`'s type determines which `resolve_q!` method runs: `NoFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N (the latter contributes a fixed source
+reconverge q for a stale N every outer sweep), we widen the existing loop: each sweep recomputes tau_b from the current N, routes q, and then also updates N in place before the next
+sweep, converging jointly (W feeds back into nothing, so it is left to `update_W!` after the solve). `model.sliding_law`'s type determines which `resolve_q!` method runs: `NoFrictionSlidingLaw`/`WeertmanSlidingLaw` do not depend on N (the latter contributes a fixed source
 term, computed but not iterated on), so they fall back to the original q-only dispatch on `model.dissipation_melt`; `AbstractPressureDependentSlidingLaw` always takes the joint (q, N) loop,
 using `model.max_qN_iters`/`model.qN_rtol` regardless of `model.dissipation_melt` (which only decides whether the dissipation term is added inside that loop, via `add_dissipation_term!`).
 
@@ -73,6 +73,18 @@ function update_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     return nothing
 
 end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Whether `resolve_q!` takes the joint `(q, N)` Picard loop, which updates `N` every sweep: with sensible
+heat on, or with a sliding law that may depend on `N` (anything but `NoFrictionSlidingLaw`,
+`PrescribedFieldSlidingLaw` and `WeertmanSlidingLaw`). Mirrors the `resolve_q!` methods below.
+"""
+uses_qN_loop(sliding_law::AbstractSlidingLaw, sensible_heat::AbstractSensibleHeat) =
+    sensible_heat isa SensibleHeatOn || !(sliding_law isa Union{NoFrictionSlidingLaw, PrescribedFieldSlidingLaw, WeertmanSlidingLaw})
+uses_qN_loop(model::KazmierczakHydroModel) = uses_qN_loop(model.sliding_law, model.sensible_heat)
 
 
 """
@@ -129,8 +141,8 @@ function resolve_q!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state
         model.q_prev .= model.q
 
         # Total water source: the fixed part mdot_fixed, the (fixed, for these laws) frictional-heating term, plus the
-        # dissipation melt rate from the current estimate of q (zero on the first sweep, since
-        # model.q carries over from the previous call and starts at zero). Routed through
+        # dissipation melt rate from the current estimate of q (on the first sweep, the q left by the
+        # previous solve: zero on a fresh model, a warm start otherwise). Routed through
         # add_dissipation_term! (rather than reimplementing the formula inline) so this stays the
         # single source of truth for it, matching the N-dependent resolve_q! method below.
         @. model.mdot_total = model.mdot_fixed + model.i_eb

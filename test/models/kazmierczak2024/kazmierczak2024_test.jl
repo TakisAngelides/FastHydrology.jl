@@ -67,8 +67,9 @@
             @test all(isfinite, state.W)
             @test all(>=(0.0), state.W)
             if clamped
-                @test all(w -> model.W_min <= w <= model.W_max, state.W)
+                @test all(w -> model.W_min <= w <= model.W_max, state.W[mask .== GROUNDED])
             end
+            @test all(==(0.0), state.W[mask .!= GROUNDED])   # W, like N, is 0 off the grounded mask
         end
     end
 
@@ -359,6 +360,60 @@
 
         @test all(isfinite, model.S_inf)
         @test all(isfinite, state.N)
+    end
+
+    @testset "KazmierczakHydroModel with flux over a flat potential" begin
+        # A flat plateau (constant h and b) carrying water routed from upstream: Q > 0 with
+        # abs_grad_phi0 == 0 gave S_inf = H = Inf and N_inf = Inf/Inf = NaN, which max(., N_min) keeps.
+        # The S_inf -> Inf limit is N_inf -> N_min. The fused update_N! and the standalone chain agree.
+        for N_min in (0.0, 1e3), kappa_val in (0.0, 0.5, 1.0)
+            grid = ArrayHydroGrid(20, 20, (0.0, 20e3), (0.0, 20e3))
+            mask = [i < 20 ? GROUNDED : OCEAN for i in 1:20, j in 1:20]
+            state = HydroState(grid, HydroMask(mask), fill(800.0, 20, 20), fill(-50.0, 20, 20))
+            model = KazmierczakHydroModel(grid, fill(kappa_val, 20, 20), fill(1e-6, 20, 20), fill(1e-24, 20, 20),
+                                          fill(0.1, 20, 20), zeros(20, 20); coupling_length_kamb86 = 0.0, N_min = N_min,
+                                          dissipation_verbose = false)
+            run!(SteadyStateSimulation(model, grid, state))
+            flat = (mask .== GROUNDED) .& (model.abs_grad_phi0 .== 0) .& (model.Q .> 0)
+            @test any(flat)
+            @test all(isfinite, state.N)
+            @test all(isfinite, model.N_inf)
+            @test all(isinf, model.S_inf[flat]) && all(isinf, model.H[flat])
+            @test all(==(N_min), model.N_inf[flat])
+
+            N_fused = copy(state.N); Ninf_fused = copy(model.N_inf); H_fused = copy(model.H)
+            FastHydrology.update_Q!(model, grid); FastHydrology.update_S_inf!(model, grid); FastHydrology.update_H!(model, grid)
+            @. model.Po = model.rho_i * model.g * state.h
+            FastHydrology.update_N_inf!(model, grid)
+            g = mask .== GROUNDED
+            @test model.N_inf[g] == Ninf_fused[g]
+            @test model.H[g] == H_fused[g]
+        end
+    end
+
+    @testset "Off-mask outputs are cleared when the mask changes" begin
+        # After a grounding-line retreat, cells that were grounded kept their psi_out, q (QFromOutflow) and W.
+        grid = ArrayHydroGrid(20, 20, (0.0, 20e3), (0.0, 20e3))
+        h = [1000.0 - 20i for i in 1:20, j in 1:20]
+        b = [-100.0 - 2j for i in 1:20, j in 1:20]
+        mask = [i < 20 ? GROUNDED : OCEAN for i in 1:20, j in 1:20]
+        for (scheme, alg, conv) in ((Warner(), TapedPsiOut(), nothing), (GDSWarner(), TapedPsiOut(), nothing),
+                                    (Warner(), TapedPsiOut(), QFromOutflow()), (GDSWarner(), RecursivePsiOut(), nothing),
+                                    (GDSWarner(), IterativePsiOut(), nothing))
+            model = KazmierczakHydroModel(grid, zeros(20, 20), fill(1e-6, 20, 20), fill(1e-24, 20, 20), fill(0.1, 20, 20), zeros(20, 20);
+                                          coupling_length_kamb86 = 0.0, routing_scheme = scheme, psi_out_algorithm = alg,
+                                          q_conversion = conv, W_min = 1e-8, dissipation_verbose = false)
+            state = HydroState(grid, HydroMask(mask), h, b)
+            run!(SteadyStateSimulation(model, grid, state))
+            retreated = copy(mask); retreated[15:19, :] .= OCEAN
+            state.mask .= retreated
+            run!(SteadyStateSimulation(model, grid, state))
+            off = retreated .!= GROUNDED
+            @test all(==(0), model.psi_out[off])
+            @test all(==(0), model.q[off])
+            @test all(==(0), state.W[off])
+            @test all(==(0), state.N[off])
+        end
     end
 
     @testset "update_q_from_psi_out! stays finite where corfac == 0" begin

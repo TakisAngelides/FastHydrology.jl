@@ -181,12 +181,12 @@ function load_yelmox(path::String; bed_rheology = :mixed_smooth)
         # ux_b/uy_b carry a "units" = "m/yr" attribute in yelmox restart files (confirmed against
         # test/Kaz24_antarctica/data/16km/yelmo_restart.nc), so the combined speed
         # needs the same per-year -> per-second conversion applied to Bmelt in load_Kazmierczak above.
-        abs_v_b = perYear2perSecond.(reshape(sqrt.(ux_b.^2 .+ uy_b.^2), Nx, Ny))
+        abs_v_b = perYear2perSecond.(reshape(hypot.(ux_b, uy_b), Nx, Ny))
         # ATT (Glen's law rate factor) is also per-year: Yelmo.jl's own rate-factor constants are
         # explicitly documented in units of [1/yr / Pa^3] (src/mat/rate_factor.jl, e.g.
         # `_RF_GB_A0_1 = 1.25671e-5 [1/yr / Pa^3]`), confirming ATT itself comes out per-year -- the
         # same convention as ux_b/uy_b/bmb above, not the Pa^-n s^-1 SI this model expects.
-        A_visc = perYear2perSecond.(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3)[:, :, 1])
+        A_visc = perYear2perSecond.(dropdims(mean(reshape(ds["ATT"][:], Nx, Ny, :), dims = 3), dims = 3))
         # Q_geo/Q_ice_b are instantaneous heat fluxes, so unlike ux_b/ATT they need no per-year
         # conversion. Both are in mW m^-2 in Yelmo (Q_ice_b = Q_ice_b_now*1e3/sec_year in ice_enthalpy.f90),
         # so both are scaled to W/m^2. (Some older restarts label Q_ice_b "W m^-2"; the values, ~10^2 over

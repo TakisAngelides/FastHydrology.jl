@@ -12,7 +12,9 @@ once the model is constructed and never touched again during a solve. Split out 
 independently instead of interleaved as 40 flat fields on one struct; see `KazmierczakHydroModel`
 for how the split is made transparent to callers.
 """
-struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat}
+struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat,
+                         FA <: AbstractFillAlgorithm, RS <: AbstractRoutingScheme, QC <: AbstractQConversion, DD <: AbstractDissipationDiscretization,
+                         GD <: AbstractGradientDiscretization, PW <: AbstractPotentialWeight, FD <: AbstractFrictionDiscretization}
 
     rho_w           ::T    # Density of fresh water [kg/m3]
     rho_sw          ::T    # Density of sea water [kg/m3], used only for the b term of the erf argument in update_N! (so N -> 0 at flotation); defaults to 1028 (flotation density, so N = 0 at the grounding line); set rho_sw = rho_w for the literal K24 Eq. 7
@@ -35,17 +37,17 @@ struct KazmierczakParams{T <: AbstractFloat, D <: AbstractDissipationMelt, L <: 
     W_max            ::T    # Maximum subglacial water layer thickness [m]; only applied by the sheet-flow water_thickness_algorithm closures (DarcyWeisbachThickness, LaminarThickness). Defaults to Inf (no ceiling) -- pass 0.015 for KORI-ULB's own Wdmax if you want that bound back
     water_thickness_algorithm ::WT # ArealConduitThickness()/DarcyWeisbachThickness()/LaminarThickness(): which closure update_W! uses to compute state.W
     longcoupwater   ::T    # Longitudinal coupling factor for the stress-gradient coupling smoothing of the geometric potential gradients -- KORI-ULB's own internal parameter, unchanged in meaning. Set via the constructor's `coupling_length_kamb86` keyword (longcoupwater = coupling_length_kamb86 / 2), not directly -- see that keyword's docstring for why
-    N_min           ::T    # Minimum allowed effective pressure N_inf [Pa]. Defaults to 0.0 (no floor) -- pass a small positive value [Pa] if you hit the flat-cell NaN edge case
+    N_min           ::T    # Minimum allowed effective pressure N_inf [Pa]. Defaults to 0.0 (no floor); also the N_inf of a cell with flux but a flat potential (S_inf = Inf)
     q_min           ::T    # Minimum allowed value for the distributed water flux
     q_max           ::T    # Maximum allowed value for the distributed water flux. Defaults to Inf (no ceiling) -- pass perYear2perSecond(1e5) for KORI-ULB's own SubWaterFlux.m numerical-stability cap if you want that bound back
     fill_iters      ::Int  # How many iterations to perform for the filling of local minima of the geometric potential phi0 (JacobiFill only)
-    fill_algorithm  ::AbstractFillAlgorithm  # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits (dispatched once per update_q! call)
-    routing_scheme  ::AbstractRoutingScheme  # Warner() (default), GDSWarner() (original K24) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
-    q_conversion    ::AbstractQConversion    # QFromOutflow() or QFromFaceAverage() (default follows routing_scheme) -- see AbstractQConversion
-    dissipation_discretization ::AbstractDissipationDiscretization  # CellCentredDissipation() or FaceDissipation() (default follows routing_scheme) -- see AbstractDissipationDiscretization
-    gradient_discretization ::AbstractGradientDiscretization  # CentredGradient() or FaceGradient() (default follows routing_scheme): stencil of the gradient magnitudes -- see AbstractGradientDiscretization
-    potential_weight ::AbstractPotentialWeight  # GroundedIce() (default) or GroundedMask(): which cells have a meaningful potential (model.phi_weight) for the smoothing, the true gradient and the face dissipation -- see AbstractPotentialWeight
-    friction_discretization ::AbstractFrictionDiscretization  # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
+    fill_algorithm  ::FA                     # JacobiFill()/LowestNeighbourFill()/PriorityFloodFill(): how potential_filling! removes pits (dispatched once per update_q! call)
+    routing_scheme  ::RS                     # Warner() (default), GDSWarner() (original K24) or another Le Brocq et al. (2006) scheme -- see AbstractRoutingScheme
+    q_conversion    ::QC                     # QFromOutflow() or QFromFaceAverage() (default follows routing_scheme) -- see AbstractQConversion
+    dissipation_discretization ::DD                                 # CellCentredDissipation() or FaceDissipation() (default follows routing_scheme) -- see AbstractDissipationDiscretization
+    gradient_discretization ::GD                              # CentredGradient() or FaceGradient() (default follows routing_scheme): stencil of the gradient magnitudes -- see AbstractGradientDiscretization
+    potential_weight ::PW                       # GroundedIce() (default) or GroundedMask(): which cells have a meaningful potential (model.phi_weight) for the smoothing, the true gradient and the face dissipation -- see AbstractPotentialWeight
+    friction_discretization ::FD                              # CellCentredFriction() (default) or StaggeredFriction(ux, uy) -- see AbstractFrictionDiscretization
     max_psi_out_calls ::Int  # Safety cap on the number of accumulate_psi_out! calls in one update_psi_out! sweep, mirroring KORI-ULB's funcnt <= 5e4 cap in DpareaWarGds.m
     psi_out_algorithm ::P  # RecursivePsiOut() or IterativePsiOut(): which flow-routing implementation resolve_q! uses to compute psi_out each sweep
     max_dissipation_iters ::Int  # Safety cap on the number of Picard iterations for the dissipation melt term in update_q!
@@ -71,8 +73,14 @@ and updated in place by `update_q!`/`update_W!`/`update_N!` and their helpers. S
 `KazmierczakParams` (the immutable physical constants/config); see `KazmierczakHydroModel` for how
 the split is made transparent to callers. Not `mutable` itself: nothing ever reassigns a field of
 this struct, only the contents of the arrays it holds (`model.q .= ...`, never `model.q = ...`).
+
+Buffers that only some configurations read are allocated empty (`0 x 0`) for the others, so the
+model's memory follows what it actually solves: `q_prev` (only the Picard loops: dissipation melt, an `N`-dependent sliding law or sensible heat) and
+`N_prev` (only the `(q, N)` loop); likewise the face-flux and routing-weight arrays of the
+`routing_tape` (see `RoutingTape`). The reported terms (`Q_b`, `Q_diss`, `Q_sens`, `H_hard`, `H_soft`,
+...) are always full size, since a host may read them.
 """
-struct KazmierczakWorkspace{A, R <: RoutingTape}
+struct KazmierczakWorkspace{T, A, R <: RoutingTape{T}}
 
     # Geometric potential
     phi0                   ::A  # True geometric potential rho_i*g*h + rho_w*g*b [Pa]; used for N and for the local gradient magnitude
@@ -88,7 +96,6 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     phi_weight_s           ::A  # phi_weight convolved with the coupling kernel (the normalisation of the smoothed potential)
 
     # Water flux
-    visited    ::A  # visited cells during the recursive algorithm to calculate psi_out
     h          ::A  # ice thickness after geometric potential filling serves as a temporary storage [m]
     G            ::A  # Geothermal heat flux into the bed [W/m2]
     q_T          ::A  # Conductive heat flux from the bed into the ice [W/m2]
@@ -108,6 +115,9 @@ struct KazmierczakWorkspace{A, R <: RoutingTape}
     filled_cells ::Vector{Tuple{Int32, Int32}}  # Scratch list of the cells potential_filling! filled in its current pass
     fill_candidates ::Vector{Int32}  # Scratch list (linear indices) of the cells potential_filling! re-checks in its next pass
     fill_stamp      ::Matrix{Int32}  # Per-cell pass stamp used to dedupe fill_candidates
+    fill_heap_p     ::Vector{T}      # PriorityFloodFill's min-heap (priorities), reused across calls
+    fill_heap_k     ::Vector{Int32}  # PriorityFloodFill's min-heap (linear cell indices)
+    coupling_kernel_cache ::Base.RefValue{Tuple{T, Matrix{T}}}  # (h_avg, kernel) of the last coupling_kernel call
 
     # Effective pressure and Bed state
     Q       ::A  # Volumetric water flux within a conduit [m3/s]
@@ -143,9 +153,10 @@ if a field is inserted out of order.
 `workspace`, so none of the physics files needed to
 change. Use `model.params`/`model.workspace` to get the sub-structs themselves.
 """
-struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat} <: AbstractKazmierczakHydroModel
-    params    ::KazmierczakParams{T, D, L, P, WT, M, S}
-    workspace ::KazmierczakWorkspace{A, RoutingTape{T}}
+struct KazmierczakHydroModel{T <: AbstractFloat, A, D <: AbstractDissipationMelt, L <: AbstractSlidingLaw, P <: AbstractPsiOutAlgorithm, WT <: AbstractWaterThicknessAlgorithm, M <: AbstractDrainageMode, S <: AbstractSensibleHeat,
+                             PR <: KazmierczakParams{T, D, L, P, WT, M, S}} <: AbstractKazmierczakHydroModel
+    params    ::PR   # concrete, so the remaining options (routing scheme, fill algorithm, ...) are type parameters too
+    workspace ::KazmierczakWorkspace{T, A, RoutingTape{T}}
 end
 
 function Base.getproperty(model::KazmierczakHydroModel, name::Symbol)
@@ -213,10 +224,10 @@ default is a real tradeoff, not a free one:
 - `q_max = Inf` removes the cap Kori-ULB's own `SubWaterFlux.m` applies "for numerical stability"
   (per its own comment) -- without it, a sufficiently pathological cell (steep local gradient, small
   drainage area, high local melt) can drive `q` arbitrarily large, propagating into `S_inf`/`H`/`N_inf`.
-- `N_min = 0.0` removes any floor on `N_inf`; at a genuinely flat, zero-potential-gradient
-  cell (`phi0 = 0` as well as `N_inf = 0`), `update_N!`'s `erf(sqrt(pi)*phi0/(2*N_inf))*N_inf` term
-  hits a `0/0` inside the `erf` argument (`NaN`), whereas a positive `N_min` floor keeps `N_inf` away
-  from exactly zero.
+- `N_min = 0.0` removes any floor on `N_inf`. A cell with flux but no potential gradient (a flat
+  potential, e.g. an idealised flat bed) has an infinitely open conduit (`S_inf = H = Inf`), and its
+  `N_inf` takes that limit, `N_min`, so with the default it gets `N = 0`. `N_inf == 0` is resolved to
+  `N = 0` in `update_N!` (the `erf` argument would be `0/0` there), so neither case gives a `NaN`.
 
 `W_min`/`W_max` are lower risk to leave unclamped: `state.W` is a terminal diagnostic field (see
 `update_W!`'s docstring in water_thickness.jl) that feeds back into nothing else in the model, so an
@@ -423,8 +434,12 @@ function KazmierczakHydroModel(
     phi_weight         = alloc_field(grid)
     phi_weight_s       = alloc_field(grid)
 
+    # Buffers only some configurations read (see KazmierczakWorkspace) are empty for the others.
+    empty_field = similar(phi0, 0, 0)
+    qN_loop = uses_qN_loop(sliding_law, sensible_heat_trait)
+    picard = dissipation_melt || qN_loop
+
     # Water flux
-    visited    = alloc_field(grid)
     h          = alloc_field(grid)
     G          = alloc_field(grid, G_in)
     q_T        = alloc_field(grid, q_T_in)
@@ -438,9 +453,9 @@ function KazmierczakHydroModel(
     psi_out    = alloc_field(grid)
     corfac     = alloc_field(grid)
     q          = alloc_field(grid)
-    q_prev     = alloc_field(grid)
+    q_prev     = picard ? alloc_field(grid) : empty_field
     tau_b      = alloc_field(grid)
-    N_prev     = alloc_field(grid)
+    N_prev     = qN_loop ? alloc_field(grid) : similar(empty_field)
 
     # Effective pressure
     Q       = alloc_field(grid)
@@ -454,6 +469,18 @@ function KazmierczakHydroModel(
     N_inf   = alloc_field(grid)
     Po      = alloc_field(grid)
 
+    # Routing scratch for this configuration (see RoutingTape): routing weights for every scheme but
+    # GDSWarner (which allocates them on demand), face arrays only if a term reads them.
+    face_fluxes = needs_face_fluxes(q_conversion, dissipation_melt_trait, sensible_heat_trait, dissipation_discretization)
+    routing_tape = RoutingTape{T}(grid.Nx, grid.Ny;
+        ndirs = routing_scheme isa GDSWarner && !face_fluxes ? 0 : n_directions(routing_scheme),
+        face_fluxes = face_fluxes,
+        face_dissipation = needs_face_dissipation(dissipation_melt_trait, sensible_heat_trait, dissipation_discretization),
+        topological = psi_out_algorithm isa TopologicalPsiOut)
+    # PriorityFloodFill's heap: sized once here, it keeps its capacity between solves.
+    fill_heap_p, fill_heap_k = T[], Int32[]
+    fill_algorithm isa PriorityFloodFill && (sizehint!(fill_heap_p, grid.Nx * grid.Ny ÷ 4); sizehint!(fill_heap_k, grid.Nx * grid.Ny ÷ 4))
+
     params = KazmierczakParams(
         rho_w, rho_sw, rho_i, g, L_w, n, h_b, alpha, beta, f, F_till, Q_c, drainage_mode, H_0, l_c, K, eta_w, W_min, W_max, water_thickness_algorithm, longcoupwater, N_min, q_min, q_max, fill_iters, fill_algorithm, routing_scheme, q_conversion, dissipation_discretization, gradient_discretization, potential_weight, friction_discretization,
         max_psi_out_calls, psi_out_algorithm, max_dissipation_iters, dissipation_rtol, dissipation_melt_trait, dissipation_verbose,
@@ -464,7 +491,8 @@ function KazmierczakHydroModel(
     workspace = KazmierczakWorkspace(
         phi0, phi0_filled, phi0_tmp, minus_grad_phi0_x, minus_grad_phi0_y,
         abs_grad_phi0, minus_grad_phi0_sx, minus_grad_phi0_sy, abs_grad_phi0_s, phi_weight, phi_weight_s,
-        visited, h, G, q_T, i_eb, Q_b, Q_diss, Q_sens, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, RoutingTape{T}(grid.Nx, grid.Ny), Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny),
+        h, G, q_T, i_eb, Q_b, Q_diss, Q_sens, mdot_fixed, mdot_total, psi_out, corfac, q, q_prev, tau_b, N_prev, routing_tape,
+        Tuple{Int32, Int32}[], Int32[], zeros(Int32, grid.Nx, grid.Ny), fill_heap_p, fill_heap_k, Ref((T(NaN), zeros(T, 0, 0))),
         Q, kappa, abs_v_b, A_visc, S_inf, H_hard, H_soft, H, N_inf, Po
     )
 

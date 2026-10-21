@@ -27,7 +27,7 @@ here rather than living behind the `FastHydrologyMakieExt` extension.
 function mask_field(field::AbstractMatrix, mask, value)
 
     Nx, Ny = size(mask)
-    res = deepcopy(field)
+    res = copy(field)
     for j in 1:Ny
         for i in 1:Nx
             if mask[i, j] != GROUNDED

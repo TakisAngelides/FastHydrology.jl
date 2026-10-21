@@ -37,10 +37,14 @@ function update_N!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state:
     sliding_coeff, melt_coeff = opening_coefficients(model.drainage_mode, typeof(denom_const))
     sqrt_pi = sqrt(typeof(denom_const)(pi))
 
-    update_N_grounded_kernel!(state.N, model.Q, model.S_inf, model.H_hard, model.H_soft, model.H, model.Po, model.N_inf,
-        model.q, model.abs_grad_phi0, model.kappa, model.abs_v_b, model.A_visc, model.phi0, state.h, state.mask,
-        grid.Nx, grid.Ny, model.l_c, K_fac, grad_exp, Q_exp, model.H_0, model.F_till, Q_c, model.rho_i, model.g,
-        model.L_w, model.h_b, sliding_coeff, melt_coeff, denom_const, inv_n, model.N_min, sqrt_pi, state.b, model.rho_sw)
+    update_N_grounded_kernel!(
+        (N = state.N, Q = model.Q, S_inf = model.S_inf, H_hard = model.H_hard, H_soft = model.H_soft, H = model.H,
+         Po = model.Po, N_inf = model.N_inf, q = model.q, abs_grad_phi0 = model.abs_grad_phi0, kappa = model.kappa,
+         abs_v_b = model.abs_v_b, A_visc = model.A_visc, h = state.h, b = state.b, mask = state.mask),
+        (Nx = grid.Nx, Ny = grid.Ny, l_c = model.l_c, K_fac = K_fac, grad_exp = grad_exp, Q_exp = Q_exp, H_0 = model.H_0,
+         F_till = model.F_till, Q_c = Q_c, rho_i = model.rho_i, g = model.g, L_w = model.L_w, h_b = model.h_b,
+         sliding_coeff = sliding_coeff, melt_coeff = melt_coeff, denom_const = denom_const, inv_n = inv_n,
+         N_min = model.N_min, sqrt_pi = sqrt_pi, rho_sw = model.rho_sw))
 
     return nothing
 
@@ -86,25 +90,25 @@ end
 # per-cell arithmetic is the same either way, so results are bit-identical for any thread count, and
 # with one thread (`julia` without `-t`) it is a plain loop with no threading overhead at all.
 # `Threads.@threads` uses the default (dynamic) scheduler, so it composes if the caller is itself
-# running inside threaded code.
-function update_N_grounded_kernel!(args...)
-    Ny = args[18]
+# running inside threaded code. The fields and scalars come as two NamedTuples, read by name, so the
+# call in `update_N!` cannot silently pass them in the wrong order, and nothing is splatted per column.
+function update_N_grounded_kernel!(fields::NamedTuple, p::NamedTuple)
     if Threads.nthreads() == 1
-        for j in 1:Ny
-            update_N_grounded_column!(j, args...)
+        for j in 1:p.Ny
+            update_N_grounded_column!(j, fields, p)
         end
     else
-        Threads.@threads for j in 1:Ny
-            update_N_grounded_column!(j, args...)
+        Threads.@threads for j in 1:p.Ny
+            update_N_grounded_column!(j, fields, p)
         end
     end
     return nothing
 end
 
-function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
-                                   q, abs_grad_phi0, kappa, abs_v_b, A_visc, phi0, h, mask,
-                                   Nx, Ny, l_c, K_fac, grad_exp, Q_exp, H_0, F_till, Q_c, rho_i, g,
-                                   L_w, h_b, sliding_coeff, melt_coeff, denom_const, inv_n, N_min, sqrt_pi, b, rho_sw)
+function update_N_grounded_column!(j, fields::NamedTuple, p::NamedTuple)
+    (; N, Q, S_inf, H_hard, H_soft, H, Po, N_inf, q, abs_grad_phi0, kappa, abs_v_b, A_visc, h, b, mask) = fields
+    (; Nx, l_c, K_fac, grad_exp, Q_exp, H_0, F_till, Q_c, rho_i, g, L_w, h_b,
+       sliding_coeff, melt_coeff, denom_const, inv_n, N_min, sqrt_pi, rho_sw) = p
     z = zero(eltype(N))
     @inbounds for i in 1:Nx
 
@@ -120,26 +124,33 @@ function update_N_grounded_column!(j, N, Q, S_inf, H_hard, H_soft, H, Po, N_inf,
         # update_Q!
         Q_ij = q[i, j] * l_c
 
-        # update_S_inf! -- zero flux means zero conduit cross-section (resolves the 0^neg * 0^pos NaN)
+        # update_S_inf! -- zero flux means zero conduit cross-section (resolves the 0^neg * 0^pos NaN).
+        # Flux with no potential gradient gives S_inf = Inf (0^neg): nothing closes the conduit.
         S_ij = Q_ij == 0.0 ? z : K_fac * abs_grad_phi0[i, j]^grad_exp * Q_ij^Q_exp
 
-        # update_H! -- the Q_c == 0 && Q == 0 case is the 0/0 limit resolved there
-        Hh = sqrt(S_ij)
-        Hs = max(z, H_0 + (sqrt(S_ij) / F_till - H_0) * exp(-Q_ij / Q_c))
-        if Q_c == 0 && Q_ij == 0.0
-            Hs = z
-        end
-        k = kappa[i, j]
-        H_ij = (1 - k) * Hh + k * Hs
-
-        # update_N_inf!
-        Ninf_ij = if S_ij == 0.0
-            Po_ij
+        if isinf(S_ij)
+            # The S_inf -> Inf limit (see update_N_inf!): H^2/S_inf^2 -> 0, so N_inf -> N_min.
+            Hh = Hs = H_ij = S_ij
+            Ninf_ij = min(max(z, N_min), Po_ij)
         else
-            min(max(
-                ((H_ij * H_ij) / (S_ij * S_ij) * (sliding_coeff * rho_i * L_w * abs_v_b[i, j] * h_b + melt_coeff * Q_ij * abs_grad_phi0[i, j])
-                / (denom_const * A_visc[i, j]))^inv_n,
-                N_min), Po_ij)
+            # update_H! -- the Q_c == 0 && Q == 0 case is the 0/0 limit resolved there
+            Hh = sqrt(S_ij)
+            Hs = max(z, H_0 + (sqrt(S_ij) / F_till - H_0) * exp(-Q_ij / Q_c))
+            if Q_c == 0 && Q_ij == 0.0
+                Hs = z
+            end
+            k = kappa[i, j]
+            H_ij = (1 - k) * Hh + k * Hs
+
+            # update_N_inf!
+            Ninf_ij = if S_ij == 0.0
+                Po_ij
+            else
+                min(max(
+                    ((H_ij * H_ij) / (S_ij * S_ij) * (sliding_coeff * rho_i * L_w * abs_v_b[i, j] * h_b + melt_coeff * Q_ij * abs_grad_phi0[i, j])
+                    / (denom_const * A_visc[i, j]))^inv_n,
+                    N_min), Po_ij)
+            end
         end
 
         # N, with N_inf == 0 resolved to N = 0 (see the standalone version's comment). The erf argument
@@ -180,6 +191,13 @@ function update_H!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
 
     @. model.H = (1 - model.kappa) * model.H_hard + model.kappa * model.H_soft
 
+    # S_inf = Inf (flux with no potential gradient, see update_S_inf!): every thickness is Inf too,
+    # where the expressions above would give Inf * 0 = NaN (kappa of 0 or 1, or exp(-Q/Q_c) == 0).
+    T = eltype(model.H)
+    for H in (model.H_hard, model.H_soft, model.H)
+        overwrite_where!(grid, H, model.S_inf, isinf, T(Inf))
+    end
+
     return nothing
 
 end
@@ -207,6 +225,9 @@ function update_S_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
     # resolve this indeterminate form in favor of that limit.
     overwrite_where!(grid, model.S_inf, model.Q, ==(0.0), 0.0)
 
+    # With Q > 0 and abs_grad_phi0 == 0 (a flat potential, e.g. an idealised flat bed) it gives
+    # 0^(negative) = Inf: no potential gradient closes the conduit. That limit is kept; update_H!
+    # and update_N_inf! resolve it (H = Inf, N_inf -> N_min).
 
     return nothing
 
@@ -240,6 +261,11 @@ function update_N_inf!(model::KazmierczakHydroModel, grid::AbstractHydroGrid)
         model.N_min), model.Po) # min and max values of N_inf
 
     overwrite_where!(grid, model.N_inf, model.S_inf, ==(0.0), model.Po)
+
+    # S_inf = Inf (see update_S_inf!) gives Inf/Inf = NaN above. H^2/S_inf^2 -> 0 as S_inf -> Inf
+    # (H ~ sqrt(S_inf), or H_0 for a soft bed), so the opening term vanishes and N_inf -> N_min.
+    z = zero(eltype(model.N_inf))
+    @. model.N_inf = ifelse(isinf(model.S_inf), min(max(z, model.N_min), model.Po), model.N_inf)
 
     return nothing
 

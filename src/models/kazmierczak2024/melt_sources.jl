@@ -231,6 +231,9 @@ between cells `j` and `j+1` (`acy`), both [m/s], size `(Nx, Ny)`. See
 
 `beta` at a cell centre is `tau_b / max(|u_b|, u_floor)` (default `u_floor` 1e-3 m/yr, Yelmo's
 `ub_sq_min`). Faces on the domain edge use the one cell they have.
+
+The constructor copies `ux` and `uy`, so later changes to the arrays passed in do not reach the model.
+A host that updates its velocities writes them into `model.friction_discretization.ux`/`.uy` instead.
 """
 struct StaggeredFriction{T <: AbstractFloat} <: AbstractFrictionDiscretization
     ux         ::Matrix{T}
@@ -242,7 +245,7 @@ struct StaggeredFriction{T <: AbstractFloat} <: AbstractFrictionDiscretization
 end
 function StaggeredFriction(ux::AbstractMatrix, uy::AbstractMatrix; quadrature::Bool = false, u_floor = perYear2perSecond(1e-3))
     T = float(promote_type(eltype(ux), eltype(uy)))
-    return StaggeredFriction{T}(Matrix{T}(ux), Matrix{T}(uy), similar(Matrix{T}(ux)), similar(Matrix{T}(uy)), quadrature, T(u_floor))
+    return StaggeredFriction{T}(Matrix{T}(ux), Matrix{T}(uy), Matrix{T}(undef, size(ux)), Matrix{T}(undef, size(uy)), quadrature, T(u_floor))
 end
 
 # The model converts the velocity arrays to its own float type `T` (a copy, with its own scratch), the way
@@ -250,7 +253,7 @@ end
 convert_friction_discretization(::Type{T}, fd::AbstractFrictionDiscretization) where {T <: AbstractFloat} = fd
 convert_friction_discretization(::Type{T}, fd::StaggeredFriction{T}) where {T <: AbstractFloat} = fd
 convert_friction_discretization(::Type{T}, fd::StaggeredFriction) where {T <: AbstractFloat} =
-    StaggeredFriction{T}(T.(fd.ux), T.(fd.uy), similar(T.(fd.ux)), similar(T.(fd.uy)), fd.quadrature, T(fd.u_floor))
+    StaggeredFriction{T}(T.(fd.ux), T.(fd.uy), similar(fd.ux, T), similar(fd.uy, T), fd.quadrature, T(fd.u_floor))
 
 
 """

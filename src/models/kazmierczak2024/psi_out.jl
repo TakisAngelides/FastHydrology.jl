@@ -144,6 +144,11 @@ $(TYPEDSIGNATURES)
 Recorded traversal used by [`TapedPsiOut`](@ref): operation `k` is `psi_out[dst_i[k], dst_j[k]] +=
 psi_out[src_i[k], src_j[k]] * w[k]`, or, when `src_i[k] == 0`, the clamp `psi_out[dst] = max(0,
 psi_out[dst])`. `valid` is cleared whenever the routing graph may have changed.
+
+Also holds the routing scratch the solve reuses instead of allocating per call. `w8` has one plane per
+direction the routing scheme sends water in (4 or 8, see `n_directions`) and is allocated on first use
+(`routing_weights!`), since the default `GDSWarner` path does not need it. `Fx`/`Fy`/`diss` are
+`(0, 0)` unless the model needs face fluxes (see `needs_face_fluxes`).
 """
 mutable struct RoutingTape{T}
     dst_i ::Vector{Int32}
@@ -156,9 +161,28 @@ mutable struct RoutingTape{T}
     Fx    ::Matrix{T}     # (Nx+1, Ny) net x-face volume fluxes [m3/s], for QFromFaceAverage/FaceDissipation
     Fy    ::Matrix{T}     # (Nx, Ny+1) net y-face volume fluxes [m3/s]
     diss  ::Matrix{T}     # face-assembled dissipation melt [kg/m2/s] (FaceDissipation)
+    seen  ::Matrix{Bool}  # visited flags of the traversals (tape recorders, RecursivePsiOut, IterativePsiOut)
+    in_degree ::Matrix{Int32}  # TopologicalPsiOut's remaining in-degree per cell ((0, 0) for the other algorithms)
+    queue ::Vector{Int32}      # TopologicalPsiOut's queue of ready cells (linear indices)
 end
-RoutingTape{T}(Nx::Int, Ny::Int) where {T} = RoutingTape{T}(Int32[], Int32[], Int32[], Int32[], T[], false,
-    zeros(T, 8, Nx, Ny), zeros(T, Nx + 1, Ny), zeros(T, Nx, Ny + 1), zeros(T, Nx, Ny))
+function RoutingTape{T}(Nx::Int, Ny::Int; ndirs::Int = 8, face_fluxes::Bool = true, face_dissipation::Bool = face_fluxes,
+                        topological::Bool = false) where {T}
+    sized(flag, dims...) = flag ? dims : map(zero, dims)
+    return RoutingTape{T}(Int32[], Int32[], Int32[], Int32[], T[], false,
+        zeros(T, sized(ndirs > 0, ndirs, Nx, Ny)), zeros(T, sized(face_fluxes, Nx + 1, Ny)), zeros(T, sized(face_fluxes, Nx, Ny + 1)),
+        zeros(T, sized(face_dissipation, Nx, Ny)), zeros(Bool, Nx, Ny), zeros(Int32, sized(topological, Nx, Ny)), Int32[])
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+`tape.w8`, allocated with `ndirs` planes on first use (or if it was allocated for another number of
+directions).
+"""
+function routing_weights!(tape::RoutingTape{T}, ndirs::Int, Nx::Int, Ny::Int) where {T}
+    size(tape.w8) == (ndirs, Nx, Ny) || (tape.w8 = zeros(T, ndirs, Nx, Ny))
+    return tape.w8
+end
 
 
 """
@@ -249,7 +273,8 @@ function record_routing_tape_kernel!(tape::RoutingTape{T}, mask, sx, sy, Nx, Ny,
     end
     empty!(tape.w)
 
-    visited = zeros(Bool, Nx, Ny)
+    visited = tape.seen   # reused across recordings rather than allocated each time
+    fill!(visited, false)
     stack = NTuple{3, Int32}[]
     call_count = 0
     hit_cap = false
@@ -312,17 +337,15 @@ end
 $(TYPEDSIGNATURES)
 
 Replay a recorded routing tape: set every grounded cell's psi_out to its own source term
-`mdot_total * dx * dy / rho_w` (same expression and evaluation order as `accumulate_psi_out!`), then apply the recorded operations in
-order. Kept as a separate function with the fields as arguments so the loop specializes on their
-concrete types.
+`mdot_total * dx * dy / rho_w` (same expression and evaluation order as `accumulate_psi_out!`), and
+every other cell's to 0, then apply the recorded operations in order. Kept as a separate function
+with the fields as arguments so the loop specializes on their concrete types.
 """
 function replay_routing_tape!(psi_out, mdot_total, mask, tape::RoutingTape, Nx, Ny, dx, dy, rho_w)
 
     z = zero(eltype(psi_out))
     @inbounds for j in 1:Ny, i in 1:Nx
-        if mask[i, j] == GROUNDED
-            psi_out[i, j] = mdot_total[i, j] * dx * dy / rho_w
-        end
+        psi_out[i, j] = mask[i, j] == GROUNDED ? mdot_total[i, j] * dx * dy / rho_w : z
     end
 
     dst_i, dst_j, src_i, src_j, ws = tape.dst_i, tape.dst_j, tape.src_i, tape.src_j, tape.w
@@ -402,12 +425,13 @@ function accumulate_psi_out!(model::AbstractKazmierczakHydroModel, i, j, grid::A
     end
 
     # If the neighbour has been visited then the psi_out has already been calculated for that cell
-    if model.visited[i, j] == 1.0
+    visited = model.routing_tape.seen
+    if visited[i, j]
         return model.psi_out[i, j]
     end
 
     # Passing the above if statements means we are now visiting cell i, j
-    model.visited[i, j] = 1.0
+    visited[i, j] = true
 
     dx = grid.dx
     dy = grid.dy
@@ -459,8 +483,8 @@ function update_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
     Nx = grid.Nx
     Ny = grid.Ny
 
-    # Refresh visited cells field
-    model.visited .= 0.0
+    # Refresh visited cells field (the tape's Bool scratch, shared with the tape recorders)
+    fill!(model.routing_tape.seen, false)
 
     # Shared by reference across the whole sweep -- see accumulate_psi_out!'s docstring.
     call_count = Ref(0)
@@ -468,6 +492,8 @@ function update_psi_out!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
     @inbounds for j in 1:Ny, i in 1:Nx
         if state.mask[i, j] == GROUNDED
             accumulate_psi_out!(model, i, j, grid, state, call_count)
+        else
+            model.psi_out[i, j] = zero(eltype(model.psi_out))   # never read by the routing; cleared so it cannot go stale when the mask changes
         end
     end
 
@@ -503,8 +529,8 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
     dy = grid.dy
     T = eltype(model.abs_grad_phi0_s)
 
-    # Refresh visited cells field
-    model.visited .= 0.0
+    # Refresh visited cells field (the tape's Bool scratch, shared with the tape recorders)
+    fill!(model.routing_tape.seen, false)
 
     # Local counter, playing the same role as the `Ref`-shared `call_count` in the recursive
     # version -- shared across the whole sweep since it lives outside the `stack` loop below.
@@ -512,10 +538,15 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
 
     dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
     stack = Tuple{Int, Int, Int}[]
+    visited = model.routing_tape.seen
 
     @inbounds for j in 1:Ny, i in 1:Nx
 
-        (state.mask[i, j] == GROUNDED && model.visited[i, j] != 1.0) || continue
+        if state.mask[i, j] != GROUNDED
+            model.psi_out[i, j] = zero(T)   # never read by the routing; cleared so it cannot go stale when the mask changes
+            continue
+        end
+        visited[i, j] && continue
 
         push!(stack, (i, j, 0))
 
@@ -525,7 +556,7 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
 
             if sk == 0
 
-                model.visited[si, sj] = 1.0
+                visited[si, sj] = true
                 model.psi_out[si, sj] = model.mdot_total[si, sj] * dx * dy / model.rho_w
 
                 call_count += 1
@@ -567,7 +598,7 @@ function update_psi_out_iterative!(model::AbstractKazmierczakHydroModel, grid::A
                     continue
                 end
 
-                if model.visited[ni, nj] == 1.0
+                if visited[ni, nj]
                     # Neighbour already resolved (either earlier in this sweep, or as the child we
                     # just popped back from): fold its value in and move to the next neighbour.
                     model.psi_out[si, sj] += model.psi_out[ni, nj] * w
@@ -610,7 +641,7 @@ B->A direction, since dotting with the negated direction just flips the sign twi
 so each cell's outgoing edges can be built from its own data in one pass, without needing to iterate
 every cell from every neighbour's perspective twice.
 
-A cycle leaves `remaining_in_degree` unable to reach zero for the cells inside it, so they never get
+A cycle leaves the in-degree unable to reach zero for the cells inside it, so they never get
 enqueued. `processed < total_masked` detects this: with `allow_cycles = false` (the default) it
 throws an error rather than proceeding with a wrong field -- confirmed on the real Thwaites-2km
 dataset that a cycle-affected run's `q` can correlate at ~0 against `RecursivePsiOut`'s, i.e. this is
@@ -631,79 +662,73 @@ function update_psi_out_topological!(model::AbstractKazmierczakHydroModel, grid:
     dx = grid.dx
     dy = grid.dy
     T = eltype(model.phi0)
+    mask = state.mask
+    psi_out = model.psi_out
 
-    model.psi_out .= 0.0 # accumulated via += below as upstream neighbours are processed, so must start clean
+    psi_out .= 0.0 # accumulated via += below as upstream neighbours are processed, so must start clean
 
-    dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    # A cell's outgoing edges: its GDSWarner share toward each grounded 4-neighbour, where > 0. Evaluated
+    # where needed (twice per edge) rather than stored: the scratch below is all this sweep allocates.
+    tape = model.routing_tape
+    sx, sy, epsT = model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, eps(T)
 
-    # Build this cell's outgoing edges (up to 4: which of its masked neighbours it flows into, and
-    # with what weight) and every masked cell's in-degree (how many masked neighbours flow into it),
-    # in one O(N) pass.
-    out_targets = Matrix{Vector{Tuple{Int, Int, T}}}(undef, Nx, Ny)
-    in_degree = zeros(Int, Nx, Ny)
+    # Every grounded cell's in-degree: how many grounded neighbours flow into it.
+    in_degree = tape.in_degree
+    size(in_degree) == (Nx, Ny) || (in_degree = tape.in_degree = zeros(Int32, Nx, Ny))
+    fill!(in_degree, Int32(0))
     total_masked = 0
-
     @inbounds for j in 1:Ny, i in 1:Nx
-        out_targets[i, j] = Tuple{Int, Int, T}[]
-    end
-
-    @inbounds for j in 1:Ny, i in 1:Nx
-
-        state.mask[i, j] == GROUNDED || continue
+        mask[i, j] == GROUNDED || continue
         total_masked += 1
-
-        for (di, dj) in dirs
-
+        for d in 1:4
+            di, dj = ROUTE_OFFSETS[d]
             ni, nj = i + di, j + dj
-
             # Off the edge of the domain: no neighbouring cell, so no contribution can cross out
             # (the no-flux divide condition, Eq. 2b of Kazmierczak et al. 2024's Γ_d boundary).
-            (1 <= ni <= Nx && 1 <= nj <= Ny) || continue
-            state.mask[ni, nj] == GROUNDED || continue
-
-            w = gds_share(model.minus_grad_phi0_sx, model.minus_grad_phi0_sy, state.mask, i, j, di, dj, Nx, Ny, dx, dy, eps(T))
-
-            if w > 0
-                push!(out_targets[i, j], (ni, nj, w))
-                in_degree[ni, nj] += 1
-            end
-
+            (in_domain(ni, nj, Nx, Ny) && mask[ni, nj] == GROUNDED) || continue
+            gds_share(sx, sy, mask, i, j, di, dj, Nx, Ny, dx, dy, epsT) > 0 || continue
+            in_degree[ni, nj] += Int32(1)
         end
-
     end
 
     # Kahn's algorithm: a plain Vector used as an array-backed queue (push at the end, read via an
     # advancing `head` index) rather than `popfirst!`, which is O(N) per call on a Vector and would
-    # make the whole sweep O(N^2).
-    queue = Tuple{Int, Int}[]
+    # make the whole sweep O(N^2). Cells are queued as linear indices.
+    queue = tape.queue
+    empty!(queue)
     sizehint!(queue, total_masked)
 
     @inbounds for j in 1:Ny, i in 1:Nx
-        if state.mask[i, j] == GROUNDED && in_degree[i, j] == 0
-            push!(queue, (i, j))
+        if mask[i, j] == GROUNDED && in_degree[i, j] == 0
+            push!(queue, Int32(i + (j - 1) * Nx))
         end
     end
 
-    remaining_in_degree = in_degree # no cells are re-enqueued, so it's safe to decrement in place
     processed = 0
 
     head = 1
     @inbounds while head <= length(queue)
 
-        i, j = queue[head]
+        k = queue[head]
+        i, j = mod1(k, Nx), cld(k, Nx)
         head += 1
         processed += 1
 
         # All upstream contributions are already folded in via the += below, by construction (this
         # cell only reached the queue once every upstream neighbour had already been processed) --
         # so what's left is to add this cell's own source term and clamp.
-        model.psi_out[i, j] = max(zero(T), model.psi_out[i, j] + model.mdot_total[i, j] * dx * dy / model.rho_w)
+        psi_out[i, j] = max(zero(T), psi_out[i, j] + model.mdot_total[i, j] * dx * dy / model.rho_w)
 
-        for (ni, nj, w) in out_targets[i, j]
-            model.psi_out[ni, nj] += model.psi_out[i, j] * w
-            remaining_in_degree[ni, nj] -= 1
-            if remaining_in_degree[ni, nj] == 0
-                push!(queue, (ni, nj))
+        for d in 1:4
+            di, dj = ROUTE_OFFSETS[d]
+            ni, nj = i + di, j + dj
+            (in_domain(ni, nj, Nx, Ny) && mask[ni, nj] == GROUNDED) || continue
+            w = gds_share(sx, sy, mask, i, j, di, dj, Nx, Ny, dx, dy, epsT)
+            w > 0 || continue
+            psi_out[ni, nj] += psi_out[i, j] * w
+            in_degree[ni, nj] -= Int32(1)
+            if in_degree[ni, nj] == 0
+                push!(queue, Int32(ni + (nj - 1) * Nx))
             end
         end
 

@@ -249,9 +249,9 @@ function fill_potential!(model::AbstractKazmierczakHydroModel, grid::AbstractHyd
 
     closed = model.fill_stamp          # reused as the "already queued" flag (0/1)
     fill!(closed, Int32(0))
-    heap_p = T[]
-    heap_k = Int32[]
-    sizehint!(heap_p, Nx * Ny ÷ 4); sizehint!(heap_k, Nx * Ny ÷ 4)
+    # The heap lives in the workspace and keeps its capacity between calls, so a solve allocates nothing here.
+    heap_p, heap_k = model.fill_heap_p, model.fill_heap_k
+    empty!(heap_p); empty!(heap_k)
 
     grounded(i, j) = mask[i, j] == GROUNDED
     @inbounds for j in 1:Ny, i in 1:Nx
@@ -341,7 +341,7 @@ If cell `(i, j)` of `phi0` is a strict local minimum, write the mean of its 4 ne
         p1, p2 = phi0[ip1, j], phi0[im1, j]
         p3, p4 = phi0[i, jp1], phi0[i, jm1]
         if p < p1 && p < p2 && p < p3 && p < p4
-            phi0_tmp[i, j] = lowest ? min(p1, p2, p3, p4) : (p1 + p2 + p3 + p4) / 4.0
+            phi0_tmp[i, j] = lowest ? min(p1, p2, p3, p4) : (p1 + p2 + p3 + p4) / 4   # integer literal: 4.0 would promote a Float32 model to Float64
             push!(filled, (Int32(i), Int32(j)))
         end
     end
@@ -452,8 +452,20 @@ $(TYPEDSIGNATURES)
 The normalised Kamb & Echelmeyer (1986) stress-gradient-coupling kernel (a cone) for mean grounded
 ice thickness `h_avg`, used by `update_smoothed_potential_gradients!` (smoothing the gradient
 components) and by `prepare_routing!` for the non-GDS routing schemes (smoothing the potential).
+
+The last kernel is kept in `model.coupling_kernel_cache` with its `h_avg` and returned as is while
+`h_avg` is unchanged (every solve on the same geometry). Treat it as read-only.
 """
 function coupling_kernel(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, h_avg)
+    cache = model.coupling_kernel_cache
+    h = typeof(grid.dx)(h_avg)
+    cache[][1] == h && return cache[][2]
+    kernel = build_coupling_kernel(model, grid, h)
+    cache[] = (h, kernel)
+    return kernel
+end
+
+function build_coupling_kernel(model::AbstractKazmierczakHydroModel, grid::AbstractHydroGrid, h_avg)
 
     # Grid spacing in each direction. The kernel below computes each cell's distance from the
     # center using dx and dy separately, rather than collapsing both to a single isotropic

@@ -27,7 +27,7 @@
             grounded[i, j] || continue
             tot = sum(@view W[:, i, j])
             tot == 0 && (e += model.psi_out[i, j]; continue)
-            for d in 1:8
+            for d in 1:size(W, 1)
                 di, dj = FastHydrology.ROUTE_OFFSETS[d]
                 FastHydrology.in_domain(i + di, j + dj, Nx, Ny) || (@test W[d, i, j] == 0; continue)
                 codes[i + di, j + dj] == OCEAN && (e += model.psi_out[i, j] * W[d, i, j])
@@ -196,7 +196,7 @@
             closed, out = 0.0, 0.0
             for j in 1:Ny, i in 1:Nx
                 gb[i, j] || continue
-                for d in 1:8
+                for d in 1:size(W, 1)
                     di, dj = FastHydrology.ROUTE_OFFSETS[d]
                     ni, nj = i + di, j + dj
                     if !FastHydrology.in_domain(ni, nj, Nx, Ny) || cb[ni, nj] == OTHER_BASIN

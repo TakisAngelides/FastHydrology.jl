@@ -13,14 +13,12 @@ water layer thickness W -- W must come after N because its `ArealConduitThicknes
 `update_S_inf!` call) is what keeps current. `state.W` itself feeds back into nothing else in the
 model, so computing it last is safe.
 
-When `model.sliding_law` is N-dependent (see water_flux.jl's `resolve_q!`), `update_q!` already
-converges q and N together internally, so the explicit `update_N!`/`update_W!` calls below just
-recompute the same converged values from the same final q -- redundant but harmless (both are pure
-functions of q and the unchanged geometry/state), kept for a uniform call sequence across all
-sliding-law choices.
+When `update_q!` solves q and N together (an N-dependent `model.sliding_law` or sensible heat, see
+`uses_qN_loop` and water_flux.jl's `resolve_q!`), its last sweep already ran `update_N!` on the final
+q, so the `update_N!` here is skipped: it would recompute the same values (~40% of a solve).
 """
 function update_steady_state!(model::KazmierczakHydroModel, grid::AbstractHydroGrid, state::HydroState)
     update_q!(model, grid, state)
-    update_N!(model, grid, state)
+    (uses_qN_loop(model) && model.max_qN_iters > 0) || update_N!(model, grid, state)
     update_W!(model, grid, state)
 end
