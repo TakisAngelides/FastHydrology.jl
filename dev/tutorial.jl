@@ -33,7 +33,7 @@ Loader:
 * `:mixed`  soft where `b < -1000` m
 * `:mixed_smooth`  linear ramp from hard (`b > -500` m) to soft (`b < -1500` m)
 
-Returned, all SI: `mask` (1 = grounded), `h` [m], `b` [m], `abs_v_b` [m/s], `A_visc` [Pa^-3 s^-1],
+Returned, all SI: `mask` (a `HydroMask`, see step 3), `h` [m], `b` [m], `abs_v_b` [m/s], `A_visc` [Pa^-3 s^-1],
 `G` [W/m2] geothermal flux, `q_T` [W/m2] conductive flux into the ice, `tau_b` [Pa], `kappa`.
 Unit helpers for your own data: `perYear2perSecond`, `perSecond2perYear`, `Km2m`.
 =#
@@ -55,8 +55,16 @@ grid = ArrayHydroGrid(Nx, Ny, xlims, ylims; T = Float64)
 ## 3. State
 Inputs `mask`/`h`/`b`, outputs `N` and `W` start at zero.
 
-`mask`: 1 = grounded ice, anything else is not solved (`N = 0` there).
-Update `state.h` / `state.b` / `state.mask` in place between runs for a coupled ice model.
+`mask`: a `HydroMask` of Shakti.jl's codes, which set the boundary conditions:
+* `GROUNDED` (0)  grounded ice, solved
+* `OCEAN` (1)  ocean or floating ice: an outlet, water leaves into it (never the reverse)
+* `LAND` (2)  ice-free land: an outlet, as `OCEAN`
+* `OTHER_BASIN` (3)  ice outside the basin, or no data: closed, no water crosses into it
+
+The edge of the grid is closed too, so every grounded region needs an outlet. `HydroMask(codes)`
+checks the codes; `classify_mask(h, b; grounded, closed)` builds them from the geometry. A plain
+array is refused (before version 3, 1 meant grounded). `N = 0` off the `GROUNDED` cells.
+Update `state.h` / `state.b` / `state.mask` (the codes) in place between runs for a coupled ice model.
 =#
 state = HydroState(grid, mask, h, b)
 
@@ -212,7 +220,7 @@ run!(sim)
 * `model.phi0` [Pa]
 * `freeze_on_capacity!(C, model, grid, state)` fills `C` with the freeze-on capacity [m/s ice]
 =#
-grounded = mask .== 1
+grounded = mask .== GROUNDED
 thick = grounded .& (model.Po .> 0)   # grounded cells with h = 0 have Po = 0 and N = 0
 println("grounded cells: ", count(grounded))
 println("median N/Po:    ", round(median(state.N[thick] ./ model.Po[thick]); digits = 3))
@@ -241,7 +249,7 @@ Needs CairoMakie or another Makie backend.
 * `visualize_grid(grid)`  cell layout
 * `visualize_field(grid, field; plot_title, transpose_data = false, colorrange = nothing, display_flag = true, colormap = Reverse(:RdBu), colorscale = identity, savefig_path = nothing)`
 * `visualize_field(x, y, data; ...)`  same, on explicit coordinates
-* `mask_field(field, mask, value)`  set non-grounded cells to `value` (e.g. `NaN`) before plotting
+* `mask_field(field, mask, value)`  set the cells that are not `GROUNDED` to `value` (e.g. `NaN`) before plotting
 =#
 visualize_field(grid, mask_field(perSecond2perYear.(model.q) ./ 10^4, mask, NaN)';
                 plot_title = "Water flux [10^4 m^2/a]", colormap = :viridis, display_flag = false, colorrange = (0, 10),
