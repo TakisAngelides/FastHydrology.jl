@@ -59,6 +59,7 @@ makedocs(
             asset("https://fonts.googleapis.com/css?family=Montserrat|Source+Code+Pro&display=swap", class=:css),
         ],
         collapselevel = 2,
+        size_threshold = 1_000_000,
     ),
     sitename = "FastHydrology.jl",
     authors = "Takis Angelides",
