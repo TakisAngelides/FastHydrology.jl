@@ -30,7 +30,7 @@ Figures: K24 `q`, K24 `N`, HAB `N`. Colour bars are linear, from 0 to the 99th p
 
 | Run | Grid | Grounded cells | K24 solve |
 |---|---|---|---|
-| 500 m | 134 x 104 | 8 207 | 3.9 ms |
+| 500 m | 134 x 104 | 8 199 | 3.9 ms |
 
 ## 500 m
 
