@@ -48,7 +48,8 @@ using Test
 
     tsteps = 3
     dt = 3600.0
-    shakti_sim = Shakti.Simulation(grid, state, tsteps, dt, p, "implicit", String[], mi, sl; ps = ps)
+    shakti_sim = Shakti.Simulation(grid, state, tsteps, dt, p, "implicit", String[], mi, sl; ps = ps,
+                                  cavity_filling = Shakti.FilledCavities(), uplift = Shakti.NoUplift())
 
     model = ShaktiHydroModel(shakti_sim)
     @test model isa FastHydrology.AbstractHydroModel
@@ -100,7 +101,8 @@ end
     ps = Shakti.PicardSolver(500, 1e-6, ls, grid)
 
     dt = 3600.0
-    shakti_sim = Shakti.Simulation(grid, state, 1, dt, p, "implicit", String[], mi, sl; ps = ps)
+    shakti_sim = Shakti.Simulation(grid, state, 1, dt, p, "implicit", String[], mi, sl; ps = ps,
+                                  cavity_filling = Shakti.FilledCavities(), uplift = Shakti.NoUplift())
 
     time_sim = TimeSimulation(ShaktiHydroModel(shakti_sim))
 
