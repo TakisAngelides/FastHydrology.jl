@@ -71,7 +71,7 @@ keep the fields at a few days: `N` [Pa], the gap height `b` [m] and the Reynolds
 nsteps, dt = 30, 86400.0
 ls = Shakti.LUDirectSolver(grid)
 ps = Shakti.PicardSolver(200, 1e-6, ls, grid)
-shakti_sim = Shakti.Simulation(grid, state, nsteps, dt, p, String[], mi, sl; ps = ps)
+shakti_sim = Shakti.Simulation(grid, state, nsteps, dt, p, mi, sl; ps = ps)
 time_sim   = TimeSimulation(ShaktiHydroModel(shakti_sim))
 
 frames = [1, 3, 10, 30]
