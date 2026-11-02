@@ -9,7 +9,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Shakti = {url = "https://github.com/TakisAngelides/Shakti.jl"}
 
 [compat]
-MAT = "0.12.1"
+MAT = "0.12.1, 0.13"
 NCDatasets = "0.14.15"
 ParallelStencil = "=0.16.0"
 Shakti = "0.2"
