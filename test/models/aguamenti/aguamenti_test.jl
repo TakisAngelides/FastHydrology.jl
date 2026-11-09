@@ -316,16 +316,39 @@ aguamenti_model(grid; kappa = 0.0, u_b = 100.0, G = 0.1, kwargs...) =
         mg = aguamenti_model(grid)
         update_steady_state!(mg, grid, state)
         @test all(isfinite, Nh)
-        # with a regularized Coulomb law the frictional heat depends on N: solved in the same loop
-        ms = aguamenti_model(grid; sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5), max_iters = 100)
+        # with a regularized Coulomb law the frictional heat depends on N: solved in the same loop (joint),
+        ms = aguamenti_model(grid; sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5), max_iters = 100,
+                             lagged_friction = false)
         @test FastHydrology.solve_aguamenti!(ms, grid, state, FastHydrology.SteadyMode())
         @test any(ms.Q_b .> 0)
+        N_joint = copy(state.N)
+        # or (default) from the N the solve starts from, held during the solve: repeated calls reach the same state
+        ml = aguamenti_model(grid; sliding_law = RegularizedCoulombSlidingLaw(c_till = 0.5))
+        @test ml.lagged_friction
+        state.N .= 0
+        update_steady_state!(ml, grid, state)
+        @test all(ml.tau_b[state.mask .== GROUNDED] .== 0)        # N = 0 going in: no friction this call
+        for _ in 1:30
+            update_steady_state!(ml, grid, state)
+        end
+        @test maximum(abs, state.N .- N_joint) <= 1e-4 * maximum(N_joint)
+        tau_held = copy(ml.tau_b)
+        update_steady_state!(ml, grid, state)
+        @test ml.info.converged
+        @test ml.tau_b == tau_held || maximum(abs, ml.tau_b .- tau_held) <= 1e-4 * maximum(tau_held)
         @test N_responds_to_ub(ms)
         N0 = copy(state.N)
         N_from_ub!(ms, grid, state, fill(200 / YR, grid.Nx, grid.Ny))
         pr = findall(==(AGUAMENTI_PRESSURIZED), ms.regime)
         @test !isempty(pr)
         @test all(state.N[pr] .>= N0[pr])    # faster sliding opens cavities: the same flux at higher N
+        # a host that refreshes the thickness in place between solves: the overburden follows it
+        h0 = copy(state.h)
+        state.h .*= 0.9
+        N_from_ub!(ms, grid, state, fill(200 / YR, grid.Nx, grid.Ny))
+        @test ms.p_i ≈ ms.params.rho_i * ms.params.g .* state.h
+        @test all(state.N[state.mask .== GROUNDED] .<= ms.p_i[state.mask .== GROUNDED] .* (1 + 1e-12))
+        state.h .= h0
         @test_throws ArgumentError aguamenti_model(grid; kappa = 1.5)
         @test_throws ArgumentError aguamenti_model(grid; routing_options = (psi_out_algorithm = RecursivePsiOut(),))
     end
@@ -394,6 +417,43 @@ aguamenti_model(grid; kappa = 0.0, u_b = 100.0, G = 0.1, kwargs...) =
         # Keywords of K24 that Aguamenti does not use are rejected
         @test_throws ArgumentError aguamenti_model(grid; routing_options = (sensible_heat = true,))
         @test aguamenti_model(grid; routing_options = (q_max = 1.0,)) isa AguamentiHydroModel
+    end
+
+    @testset "root finders" begin
+        FH = FastHydrology
+        # Brent: smooth root, to the tolerance; a jump across zero (no root): the g >= 0 side of the jump
+        g = x -> x^3 - 2
+        @test FH.brent_root(g, 0.0, 2.0, g(0.0), g(2.0), 1e-13, 100) ≈ cbrt(2) atol = 1e-12
+        step_g = x -> x < 0.3 ? 1.0 : -1.0
+        for (a, b) in ((0.0, 1.0), (0.29, 0.31), (-5.0, 0.9))
+            x = FH.brent_root(step_g, a, b, step_g(a), step_g(b), 1e-12, 200; nonnegative = true)
+            @test step_g(x) >= 0
+            @test 0.3 - x < 1e-10
+        end
+        # log-log root of the element laws, against the bisection it replaced
+        f = N -> total_flux(p, N, 0.0, 0.3, 100.0, 30 / YR, 2.4e-24, 2e-3)
+        for q in (1e-6, 1e-4, 1e-2)
+            f(p.N_lo) > q > f(1e8) || continue
+            Nb = FH.log_bisect(N -> f(N) - q, p.N_lo, 1e8, 200)
+            Nr = FH.log_flux_root(f, q, p.N_lo, 1e8, 60)
+            @test Nr ≈ Nb rtol = 1e-10
+        end
+        # Brent minimiser: the saddle node of the golden section it replaced
+        fc = N -> total_flux(p, N, 1.0, 0.0, 100.0, 30 / YR, 2.4e-24, 2e-3)
+        Ng, qg = FH.log_golden_min(fc, p.N_lo, p.N_hi, 200)
+        Nm, qm = FH.log_brent_min(fc, p.N_lo, p.N_hi, 120)
+        @test qm ≈ qg rtol = 1e-10
+        @test Nm ≈ Ng rtol = 1e-4
+        # the cached saddle node used by the flux balance is the one saddle_node_flux finds
+        grid, state = aguamenti_margin()
+        m = aguamenti_model(grid)
+        update_steady_state!(m, grid, state)
+        gr = findall((state.mask .== GROUNDED) .& (m.kappa .< 1))
+        for c in gr[1:min(end, 20)]
+            q_sn, N_sn = saddle_node_flux(m.params, m.kappa[c], m.Psi[c], m.abs_v_b[c], m.A_visc[c], m.D_s[c])
+            @test m.q_sn[c] == q_sn
+            @test m.N_sn[c] == N_sn
+        end
     end
 
     @testset "Float32" begin

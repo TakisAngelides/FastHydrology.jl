@@ -114,8 +114,10 @@ towards the `N` of the water that remains in the cell after its uptake, so the u
 cell), `N(q)` is the flux balance with its regimes and grounding-line correction (Eqs. 21-24) and
 `demand(N)` the exchange of the till relaxation over the step ([`till_relax`](@ref), Eq. 20). The
 right-hand side decreases with `u` (less water, higher `N`, a smaller demand), so the root is unique
-and found by bisection on `[-release_max, W/(dx dy)]`; at `u = W/(dx dy)` the till takes all the water
-and the cell is dry (Eq. 9a). Solving the cell in the routing order makes the uptake consistent with
+and found by Brent's method on `[-release_max, W/(dx dy)]`, to ~1e-12 of that bracket within
+`root_iters` evaluations; at `u = W/(dx dy)` the till takes all the water and the cell is dry (Eq. 9a).
+Where `N(q)` jumps (a switch of the active branch) and there is no root, the uptake is the largest `u`
+with `u <= demand(u)`. Solving the cell in the routing order makes the uptake consistent with
 the inflow from upstream within one replay -- a till demand lagged by a sweep instead makes whole flow
 lines flip between wet and dry.
 """
@@ -140,23 +142,56 @@ function (tu::TillUptake)(i, j, W)
         dH = tu.dH_dt === nothing ? z : tu.dH_dt[i, j]
     end
     N0 = strength_bound(p, kappa, ws.c_0[i, j])
-    q_on = kappa < 1 ? onset_flux(p, Psi, u_b) : oftype(z, Inf)
-    q_sn = kappa < 1 ? first(saddle_node_flux(p, kappa, Psi, u_b, A, D_s)) : z
+    q_on, q_sn, N_sn = ws.q_on[i, j], ws.q_sn[i, j], ws.N_sn[i, j]      # per solve, update_channel_thresholds!
     function N_of(u)
         q = max(W - u * tu.area, z) / corfac
-        N_star, _ = flux_balance_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing = q >= q_on)
+        N_star, _ = flux_balance_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing = q >= q_on, N_sn)
         N_inf, _ = regime_pressure(p, N_star, p_i, N0)
         return grounding_line_correction(p, N_inf, h, b)
     end
-    demand(u) = till_relax(p, N_t, N_of(u), tu.dt, h_t, k_t, p_i, dH)[2]
+    coeffs = till_relax_coefficients(p, N_t, tu.dt, h_t, k_t, p_i, dH)
+    demand(u) = till_relax_to(p, coeffs, N_of(u))[2]
     lo, hi = -ws.release_max[i, j], W / tu.area
-    demand(hi) >= hi && return hi                   # the till absorbs all the water: dry (Eq. 9a)
-    demand(lo) <= lo && return lo
-    for _ in 1:p.root_iters
-        mid = (lo + hi) / 2
-        demand(mid) > mid ? (lo = mid) : (hi = mid)
+    g_hi = demand(hi) - hi
+    g_hi >= 0 && return hi                          # the till absorbs all the water: dry (Eq. 9a)
+    g_lo = demand(lo) - lo
+    g_lo <= 0 && return lo
+    # demand(u) - u decreases strictly in u: Brent's method, to ~1e-12 of the bracket. Where N(q) jumps
+    # (a switch of the active branch) there may be no root but a jump of demand(u) - u across zero: then
+    # the largest uptake the demand still covers, u <= demand(u), the same whichever way it is approached.
+    return brent_root(u -> demand(u) - u, lo, hi, g_lo, g_hi, (hi - lo) * eps(one(W))^(3 // 4), p.root_iters;
+                      nonnegative = true)
+end
+
+
+"""
+$(TYPEDSIGNATURES)
+
+Onset flux `q_on`, saddle-node flux `q_sn` and its pressure `N_sn` of every grounded cell (Sect. 2.6).
+They depend on the gradient, sliding speed, rate factor and bed only, not on `q` or `N`, so they are
+computed once per solve (and again in [`N_from_ub!`](@ref), for the new sliding speed) rather than
+in every sweep and every till-uptake evaluation.
+"""
+function update_channel_thresholds!(model::AguamentiHydroModel, grid::AbstractHydroGrid, state::HydroState)
+    aguamenti_columns!(channel_thresholds_column!, grid.Ny, model.workspace, model.params, model.routing, state, grid.Nx)
+    return nothing
+end
+
+function channel_thresholds_column!(j, ws, p::AguamentiParams, r, state, Nx)
+    z = zero(eltype(ws.q_sn))
+    @inbounds for i in 1:Nx
+        kappa = ws.kappa[i, j]
+        if state.mask[i, j] != GROUNDED || kappa >= 1
+            ws.q_on[i, j] = state.mask[i, j] == GROUNDED ? oftype(z, Inf) : z
+            ws.q_sn[i, j] = z; ws.N_sn[i, j] = z
+            continue
+        end
+        Psi, u_b = ws.Psi[i, j], r.abs_v_b[i, j]
+        ws.q_on[i, j] = onset_flux(p, Psi, u_b)
+        q_sn, N_sn = saddle_node_flux(p, kappa, Psi, u_b, r.A_visc[i, j], ws.D_s[i, j])
+        ws.q_sn[i, j] = q_sn; ws.N_sn[i, j] = N_sn
     end
-    return (lo + hi) / 2
+    return nothing
 end
 
 
@@ -195,7 +230,7 @@ function flux_balance_column!(j, model, p::AguamentiParams, r, state, Nx, steady
         if state.mask[i, j] != GROUNDED
             ws.N_star[i, j] = z; ws.N_inf[i, j] = z; ws.N_wet[i, j] = z
             ws.regime[i, j] = AGUAMENTI_NOT_GROUNDED
-            ws.q_on[i, j] = z; ws.q_sn[i, j] = z; ws.Lambda0[i, j] = z
+            ws.Lambda0[i, j] = z
             ws.q_h[i, j] = z; ws.q_ch[i, j] = z; ws.q_s[i, j] = z; ws.q_can[i, j] = z
             continue
         end
@@ -207,8 +242,7 @@ function flux_balance_column!(j, model, p::AguamentiParams, r, state, Nx, steady
         D_s   = ws.D_s[i, j]
         p_i   = ws.p_i[i, j]
 
-        q_on = kappa < 1 ? onset_flux(p, Psi, u_b) : oftype(q, Inf)
-        q_sn, _ = saddle_node_flux(p, kappa, Psi, u_b, A, D_s)
+        q_on, q_sn = ws.q_on[i, j], ws.q_sn[i, j]       # per solve, update_channel_thresholds!
         Lambda0 = kappa < 1 ? channel_growth_rate(p, q, Psi, u_b) : z
         chi = ws.chi[i, j]
         if steady_chi && kappa < 1
@@ -217,13 +251,14 @@ function flux_balance_column!(j, model, p::AguamentiParams, r, state, Nx, steady
             ws.chi[i, j] = chi
         end
 
-        N_star, channelized = flux_balance_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing = q >= q_on)
+        N_star, channelized = flux_balance_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing = q >= q_on,
+                                                N_sn = ws.N_sn[i, j])
         N_inf, regime = regime_pressure(p, N_star, p_i, strength_bound(p, kappa, ws.c_0[i, j]))
         N = grounding_line_correction(p, N_inf, state.h[i, j], state.b[i, j])
 
         ws.N_star[i, j] = N_star; ws.N_inf[i, j] = N_inf; ws.N_wet[i, j] = N
         ws.regime[i, j] = regime
-        ws.q_on[i, j] = q_on; ws.q_sn[i, j] = q_sn; ws.Lambda0[i, j] = Lambda0
+        ws.Lambda0[i, j] = Lambda0
         Ne = max(N, p.N_lo)
         ws.q_h[i, j]   = kappa < 1 ? sheet_flux(p, Ne, Psi, u_b, A) : z
         ws.q_ch[i, j]  = (kappa < 1 && channelized) ? chi * channel_discharge(p, Ne, Psi, A) / p.l_h : z
@@ -306,9 +341,9 @@ update_till_storage!(model::AguamentiHydroModel, grid::AbstractHydroGrid, state:
 $(TYPEDSIGNATURES)
 
 Solve the routing and the flux balance together (Eqs. 26a-26c, and the till exchange of 26e for a
-step): a Picard iteration on `(q, N)`, since the supply (frictional heat through `N`, dissipation
-through `q`), the till demand (through `N`) and, with [`HydraulicRouting`](@ref), the flow direction
-depend on the solution. Stops when both `q` and `state.N` change by less than `model.rtol` (relative to
+step): a Picard iteration on `(q, N)`, since the supply (dissipation through `q`, and frictional heat
+through `N` unless `model.lagged_friction`), the till demand (through `N`) and, with
+[`HydraulicRouting`](@ref), the flow direction depend on the solution. Stops when both `q` and `state.N` change by less than `model.rtol` (relative to
 their maxima), or after `model.max_iters` sweeps.
 """
 function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, state::HydroState, mode)
@@ -322,8 +357,11 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
     prepare_aguamenti_routing!(model, grid, state, false)
     Psi_min = p.Psi_min
     @. model.Psi = max(r.abs_grad_phi0, Psi_min)
+    update_channel_thresholds!(model, grid, state)
 
     mode isa SteadyMode && (model.chi_start .= model.chi)
+    # Basal stress at the N the solve starts from (lagged friction), or at every sweep's N below.
+    model.lagged_friction && update_tau_b!(r, state, r.sliding_law)
     start_time = time()
     converged = false
     n_iters = model.max_iters
@@ -339,10 +377,14 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
             prepare_aguamenti_routing!(model, grid, state, true)
         end
 
-        # Supply (Eq. 7): fixed melt, water from above, frictional heat at the current N, dissipation at the current q.
-        update_tau_b!(r, state, r.sliding_law)
+        # Supply (Eq. 7): fixed melt, water from above, frictional heat, and the dissipation of the routed
+        # flux q_in -- also in a cell the till leaves dry, which the water still crosses. (From the q with
+        # dry cells zeroed, a cell at the wet/dry edge would lose its dissipation melt one sweep after
+        # turning dry and regain it one sweep after turning wet: a period-2 flip.)
+        model.lagged_friction || update_tau_b!(r, state, r.sliding_law)
         @. r.mdot_total = r.mdot_fixed + r.i_eb
         add_friction_term!(r)
+        r.q .= model.q_in
         add_dissipation_term!(r, r.dissipation_melt)
         r.Q_sens .= 0
 
@@ -444,12 +486,16 @@ end
 """
 $(TYPEDSIGNATURES)
 
-`state.N` for a new sliding speed `abs_v_b` [m/s], with the routing held (`q`, `Psi` and the till
-exchange of the last solve): the flux balance alone, re-evaluated with the new cavity opening. See
-[`N_responds_to_ub`](@ref).
+`state.N` for a new sliding speed `abs_v_b` [m/s], with the routing held (`q`, `Psi`, the dry cells
+and the till exchange of the last solve): the channel thresholds and the flux balance alone,
+re-evaluated with the new cavity opening, and the overburden from the current `state.h` (a host may
+refresh the thickness in place between solves). See [`N_responds_to_ub`](@ref).
 """
 function N_from_ub!(model::AguamentiHydroModel, grid::AbstractHydroGrid, state::HydroState, abs_v_b)
+    p = model.params
     model.routing.abs_v_b .= abs_v_b
+    @. model.p_i = p.rho_i * p.g * state.h
+    update_channel_thresholds!(model, grid, state)
     update_flux_balance!(model, grid, state, false)
     update_sliding_pressure!(model, grid, state, false)
     return state.N

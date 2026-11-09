@@ -80,15 +80,27 @@ caller limits it by the water available at the interface (Eq. 9a) and then calls
 [`till_from_exchange`](@ref).
 """
 function till_relax(p::AguamentiParams, N_t, N, dt, h_t, k_t, p_i, dH_dt)
+    c = till_relax_coefficients(p, N_t, dt, h_t, k_t, p_i, dH_dt)
+    N_new, demand = till_relax_to(p, c, N)
+    return N_new, demand, c.N_u, c.storage
+end
+
+# The parts of `till_relax` that do not depend on the interfacial N: bounds, undrained stress, its void
+# ratio and storage, and the relaxation factor exp(-dt/T_t) over the step.
+@inline function till_relax_coefficients(p::AguamentiParams, N_t, dt, h_t, k_t, p_i, dH_dt)
     N_min, N_max = till_bounds(p, p_i)
     N_u = clamp(N_t + (1 - p.B) * p.rho_i * p.g * dH_dt * dt, N_min, N_max)
     e_u = till_void_ratio(p, N_u)
     storage = (1 - e_u / (1 + e_u)) * h_t
-    N_target = clamp(N, N_min, N_max)
-    T_t = till_consolidation_time(p, N_u, h_t, k_t)
-    N_new = clamp(N_target + (N_u - N_target) * exp(-dt / T_t), N_min, N_max)
-    demand = storage * (till_void_ratio(p, N_new) - e_u) / dt
-    return N_new, demand, N_u, storage
+    decay = exp(-dt / till_consolidation_time(p, N_u, h_t, k_t))
+    return (; N_min, N_max, N_u, e_u, storage, decay, dt)
+end
+
+# `(N_new, demand)` of `till_relax` towards the interfacial `N`, from its coefficients.
+@inline function till_relax_to(p::AguamentiParams, c, N)
+    N_target = clamp(N, c.N_min, c.N_max)
+    N_new = clamp(N_target + (c.N_u - N_target) * c.decay, c.N_min, c.N_max)
+    return N_new, c.storage * (till_void_ratio(p, N_new) - c.e_u) / c.dt
 end
 
 

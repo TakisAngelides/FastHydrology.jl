@@ -59,7 +59,7 @@ struct AguamentiParams{T <: AbstractFloat}
     Psi_min ::T   # floor on the hydraulic gradient used by the elements [Pa/m] (numerical guard for flat potentials)
     N_lo    ::T   # lower end of the effective-pressure search interval [Pa]
     N_hi    ::T   # upper end of the search interval of the saddle-node minimum [Pa]
-    root_iters ::Int  # bisection/golden-section iterations of the per-cell root finding (in log N)
+    root_iters ::Int  # cap on function evaluations of the per-cell Brent root finders (flux balance, till uptake); 2x for the saddle-node minimum
     chi_min ::T   # a decaying channel indicator below this is set to 0
     chi_dev ::T   # a growing channel indicator at or above this counts as a developed channel (Sect. 2.6)
 end

@@ -34,6 +34,130 @@ const AGUAMENTI_STRENGTH     = 5    # connected till, N* > N_0: N = N_0 = F_b c_
 end
 
 
+# Brent's method (Brent 1973: inverse quadratic interpolation and secant steps, safeguarded by
+# bisection) for a root of g on [a, b], with ga = g(a) and gb = g(b) of opposite signs or zero. Stops
+# when the bracket is narrower than `xtol` (absolute, in x), or after `maxiter` evaluations. Returns
+# the best estimate; with `nonnegative = true` the end of the final bracket where g >= 0 instead, which
+# makes the answer well defined where g jumps across zero without a root.
+@inline function brent_root(g, a, b, ga, gb, xtol, maxiter; nonnegative::Bool = false)
+    ga == 0 && return a
+    gb == 0 && return b
+    if abs(ga) < abs(gb)
+        a, b, ga, gb = b, a, gb, ga
+    end
+    c, gc = a, ga
+    d = e = b - a
+    for _ in 1:maxiter
+        if (gb > 0) == (gc > 0)
+            c, gc = a, ga
+            d = e = b - a
+        end
+        if abs(gc) < abs(gb)
+            a, b, c = b, c, b
+            ga, gb, gc = gb, gc, gb
+        end
+        tol = 2 * eps(b) * abs(b) + xtol / 2
+        m = (c - b) / 2
+        (abs(m) <= tol || gb == 0) && return (nonnegative && gb < 0) ? c : b
+        if abs(e) >= tol && abs(ga) > abs(gb)
+            s = gb / ga
+            if a == c                                    # secant
+                P = 2 * m * s
+                Q = 1 - s
+            else                                         # inverse quadratic interpolation
+                qq = ga / gc
+                r = gb / gc
+                P = s * (2 * m * qq * (qq - r) - (b - a) * (r - 1))
+                Q = (qq - 1) * (r - 1) * (s - 1)
+            end
+            P > 0 ? (Q = -Q) : (P = -P)
+            if 2P < min(3 * m * Q - abs(tol * Q), abs(e * Q))
+                e, d = d, P / Q
+            else
+                d = e = m
+            end
+        else
+            d = e = m
+        end
+        a, ga = b, gb
+        b += abs(d) > tol ? d : (m > 0 ? tol : -tol)
+        gb = g(b)
+    end
+    if nonnegative && gb < 0
+        # the bracket end opposite b (c) after the last step
+        (gb > 0) == (gc > 0) ? (c, gc = a, ga) : nothing
+        return gc >= 0 ? c : a
+    end
+    return b
+end
+
+# Root N in [lo, hi] of f(N) = q for a monotone, positive f on that interval with q strictly between
+# f(lo) and f(hi): Brent's method on log f(log N) = log q, where the element laws are close to power
+# laws (a few evaluations); to a relative precision of ~1e-12 in N.
+@inline function log_flux_root(f, q, lo, hi, maxiter)
+    fmin = floatmin(q)
+    lq = log(q)
+    g = x -> log(max(f(exp(x)), fmin)) - lq
+    a, b = log(lo), log(hi)
+    return exp(brent_root(g, a, b, g(a), g(b), sqrt(eps(one(q))) * eps(one(q))^(1 // 4), maxiter))
+end
+
+# Brent's minimiser (Brent 1973, golden section with parabolic interpolation) of a unimodal f on
+# [lo, hi] in log space, to a relative precision ~sqrt(eps) in N (the best a minimum can be located);
+# returns (N_min, f(N_min)). Used for the saddle node, once per cell and solve.
+function log_brent_min(f, lo, hi, maxiter)
+    T = typeof(lo)
+    cgold = (3 - sqrt(T(5))) / 2
+    a, b = log(lo), log(hi)
+    x = w = v = a + cgold * (b - a)
+    fx = fw = fv = f(exp(x))
+    d = e = zero(T)
+    tol0 = sqrt(eps(T))
+    for _ in 1:maxiter
+        xm = (a + b) / 2
+        tol1 = tol0 * abs(x) + tol0
+        tol2 = 2 * tol1
+        abs(x - xm) <= tol2 - (b - a) / 2 && break
+        if abs(e) > tol1
+            r = (x - w) * (fx - fv)
+            q = (x - v) * (fx - fw)
+            pp = (x - v) * q - (x - w) * r
+            q = 2 * (q - r)
+            q > 0 ? (pp = -pp) : (q = -q)
+            etemp = e
+            e = d
+            if abs(pp) >= abs(q * etemp / 2) || pp <= q * (a - x) || pp >= q * (b - x)
+                e = x >= xm ? a - x : b - x
+                d = cgold * e
+            else
+                d = pp / q
+                u = x + d
+                (u - a < tol2 || b - u < tol2) && (d = xm >= x ? tol1 : -tol1)
+            end
+        else
+            e = x >= xm ? a - x : b - x
+            d = cgold * e
+        end
+        u = abs(d) >= tol1 ? x + d : x + (d > 0 ? tol1 : -tol1)
+        fu = f(exp(u))
+        if fu <= fx
+            u >= x ? (a = x) : (b = x)
+            v, fv = w, fw
+            w, fw = x, fx
+            x, fx = u, fu
+        else
+            u < x ? (a = u) : (b = u)
+            if fu <= fw || w == x
+                v, fv = w, fw
+                w, fw = u, fu
+            elseif fu <= fv || v == x || v == w
+                v, fv = u, fu
+            end
+        end
+    end
+    return exp(x), fx
+end
+
 # Golden-section minimum of a unimodal f on [lo, hi] in log space; returns (x_min, f(x_min)).
 @inline function log_golden_min(f, lo, hi, iters)
     invphi = (sqrt(oftype(lo, 5)) - 1) / 2
@@ -68,7 +192,7 @@ branch and `q_sn = 0`.
 function saddle_node_flux(p::AguamentiParams, kappa, Psi, u_b, A, D_s)
     kappa >= 1 && return zero(Psi), zero(Psi)
     f = N -> total_flux(p, N, one(Psi), kappa, Psi, u_b, A, D_s)
-    N_m, q_m = log_golden_min(f, p.N_lo, p.N_hi, p.root_iters)
+    N_m, q_m = log_brent_min(f, p.N_lo, p.N_hi, 2 * p.root_iters)
     return q_m, N_m
 end
 
@@ -92,38 +216,43 @@ Fig. 8); developing from a pressurized sheet (onset at `q_Lambda < q_h,sat`), th
 `chi` but is capped at the root of the developed channel (`chi = 1`), so a young channel never raises
 `N` above the value of a developed one.
 """
-function flux_balance_root(p::AguamentiParams, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing::Bool = false)
+function flux_balance_root(p::AguamentiParams, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing::Bool = false,
+                           N_sn = nothing)
     z = zero(q)
     p_i > p.N_lo || return z, false
     iters = p.root_iters
+    # the developed channel's minimum (q_sn, N_sn) is the same for every flux: reused when the caller has it
+    sn = N_sn === nothing ? nothing : (N_sn, q_sn)
     if chi > 0 && kappa < 1 && q >= q_sn
         if developing && chi < p.chi_dev
             # A channel still developing from the uplift regime keeps the cell at the uplift floor (Sect. 2.6)
             total_flux(p, p.N_lo, z, kappa, Psi, u_b, A, D_s) <= q && return z, true
             # From a pressurized sheet: the root with the current chi, but never above the developed channel's
             N_c = channelized_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i)
-            N_1 = channelized_root(p, q, one(chi), kappa, Psi, u_b, A, D_s, p_i)
+            N_1 = channelized_root(p, q, one(chi), kappa, Psi, u_b, A, D_s, p_i; minimum = sn)
             return (N_c == 0 ? N_1 : min(N_c, N_1)), true
         end
-        return channelized_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i), true
+        return channelized_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i; minimum = chi == 1 ? sn : nothing), true
     else
         f = N -> total_flux(p, N, z, kappa, Psi, u_b, A, D_s)
         f(p.N_lo) <= q && return z, false         # flux above saturation: no pressurized state (uplift)
         f(p_i) >= q && return p_i, false          # root at or above p_i (free surface)
-        return log_bisect(N -> f(N) - q, p.N_lo, p_i, iters), false
+        return log_flux_root(f, q, p.N_lo, p_i, iters), false
     end
 end
 
 
-# Larger root of q_tot(N; chi) = q, on the side where q_tot increases; 0 if there is none, p_i if it is at or above p_i.
-function channelized_root(p::AguamentiParams, q, chi, kappa, Psi, u_b, A, D_s, p_i)
+# Larger root of q_tot(N; chi) = q, on the side where q_tot increases; 0 if there is none, p_i if it is at or
+# above p_i. `minimum = (N_m, q_m)` is the minimum of q_tot(N; chi) when already known (the saddle node for chi = 1).
+function channelized_root(p::AguamentiParams, q, chi, kappa, Psi, u_b, A, D_s, p_i; minimum = nothing)
     z = zero(q)
     f = N -> total_flux(p, N, chi, kappa, Psi, u_b, A, D_s)
-    N_m, q_m = log_golden_min(f, p.N_lo, p.N_hi, p.root_iters)
+    N_m, q_m = minimum === nothing ? log_brent_min(f, p.N_lo, p.N_hi, 2 * p.root_iters) : minimum
     q_m > q && return z                       # no root: a channel too small for this flux (uplift)
     N_m >= p_i && return p_i                  # the increasing side starts above the overburden
     f(p_i) <= q && return p_i                 # root at or above p_i
-    return log_bisect(N -> f(N) - q, N_m, p_i, p.root_iters)
+    f(N_m) >= q && return N_m                 # at the minimum itself (q = q_m, to round-off)
+    return log_flux_root(f, q, N_m, p_i, p.root_iters)
 end
 
 

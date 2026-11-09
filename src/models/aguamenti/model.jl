@@ -63,7 +63,7 @@ struct AguamentiWorkspace{A}
     freeze_deficit ::A  # freeze-on neither the routed water nor the till could supply [m/s] (for the ice model's accretion)
     dry      ::A  # 1 where the cell has no interfacial water (cold, or the till absorbs it all), else 0
     # Flux balance
-    q_in     ::A  # routed flux before dry cells are set to 0: the flux the flux balance (and the till target) sees [m2/s]
+    q_in     ::A  # routed flux before dry cells are set to 0: the flux the flux balance, the till target and the dissipation see [m2/s]
     chi_start::A  # channel indicator before a steady solve (the history its hysteresis keeps)
     N_star   ::A  # root of the flux balance on the active branch (0: no root) [Pa]
     N_inf    ::A  # far-field effective pressure, Eq. (23a) [Pa]
@@ -71,6 +71,7 @@ struct AguamentiWorkspace{A}
     regime   ::A  # regime code (AGUAMENTI_* constants)
     q_on     ::A  # onset flux of channelization, Eq. (16) [m2/s]
     q_sn     ::A  # saddle-node flux [m2/s]
+    N_sn     ::A  # effective pressure of the saddle node, where q_tot(N; chi = 1) is smallest [Pa]
     Lambda0  ::A  # channel growth rate, Eq. (15a) [1/s]
     q_h      ::A  # sheet flux at N [m2/s] (per unit width of the hard-bed part)
     q_ch     ::A  # channel flux chi Q_h / l_h at N [m2/s]
@@ -158,12 +159,22 @@ to the bounds), `chi0 = 0.0` (initial channel indicator).
 `e_max = 0.9`, `e_min = 0.3`, `B = 0.8`, `eps_u = 0.01`.
 
 Numerical: `Psi_min = 1.0` (floor on the gradient seen by the elements [Pa/m], for flat potentials),
-`N_lo = 1e-3`, `N_hi = 1e10` (search interval [Pa]), `root_iters = 60`, `chi_min = 1e-6`
+`N_lo = 1e-3`, `N_hi = 1e10` (search interval [Pa]), `root_iters = 60` (cap on the evaluations of
+each per-cell Brent search; they converge to ~1e-12 in far fewer), `chi_min = 1e-6`
 (a decaying indicator below it is set to 0), `chi_developed = 0.99` (a growing indicator below it is
 a channel still developing, see [`flux_balance_root`](@ref FastHydrology.flux_balance_root)),
 `max_iters = 30` and `rtol = 1e-6` (the Picard loop on `q` and `N`), `routing_relaxation = 0.5`
 (under-relaxation of the `N` in the routing potential of `HydraulicRouting`, see
-[`AbstractRoutingPotential`](@ref)), `verbose = false`.
+[`AbstractRoutingPotential`](@ref)), `lagged_friction = true` (see below), `verbose = false`.
+
+With a sliding law that depends on `N`, `lagged_friction = true` evaluates the basal stress (and so
+the frictional melt) once per solve, from the `state.N` the solve starts from, and the Picard loop
+iterates only routing, dissipation and flux balance; a coupled host iterates the friction feedback
+across its own calls (as it does through its velocity anyway). `false` re-evaluates `tau_b` at the
+current `N` in every sweep, a joint `(q, N)` loop that on real ice sheets ends in a period-2 cycle in
+cells where the routed flux is a small residual of frictional melt and upstream refreezing, or where
+`q` crosses the onset flux (as K24's joint loop, see the K24 friction-loop notes). For a sliding law
+independent of `N` the two are the same.
 
 # Keywords (routing, passed to the routing engine)
 
@@ -185,6 +196,7 @@ struct AguamentiHydroModel{T <: AbstractFloat, A, RP <: AbstractRoutingPotential
     max_iters         ::Int
     rtol              ::T
     routing_relaxation ::T
+    lagged_friction   ::Bool
     verbose           ::Bool
     info              ::AguamentiSolveInfo{T}
 end
@@ -236,7 +248,7 @@ function AguamentiHydroModel(
     eps_u = 0.01,
     # Numerical
     Psi_min = 1.0, N_lo = 1e-3, N_hi = 1e10, root_iters = 60, chi_min = 1e-6, chi_developed = 0.99,
-    max_iters = 30, rtol = 1e-6, routing_relaxation = 0.5, verbose = false,
+    max_iters = 30, rtol = 1e-6, routing_relaxation = 0.5, lagged_friction = true, verbose = false,
     # Routing
     routing_potential::AbstractRoutingPotential = GeometricRouting(),
     sliding_law = NoFrictionSlidingLaw(), routing_scheme = Warner(), coupling_length_kamb86 = 0.0,
@@ -301,7 +313,7 @@ function AguamentiHydroModel(
         N_t, chi,
         (alloc_field(grid) for _ in 1:(fieldcount(AguamentiWorkspace) - 8))...)
 
-    return AguamentiHydroModel(params, routing_potential, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(verbose),
+    return AguamentiHydroModel(params, routing_potential, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(lagged_friction), Bool(verbose),
                                AguamentiSolveInfo{T}())
 end
 
