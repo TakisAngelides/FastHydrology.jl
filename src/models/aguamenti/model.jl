@@ -85,6 +85,23 @@ end
 """
 $(TYPEDSIGNATURES)
 
+Outcome of the last solve of an [`AguamentiHydroModel`](@ref) (`model.info`): the number of Picard
+sweeps, whether it converged, the final relative changes of `q` and `N` over the last sweep, the wall
+time [s], and the residual history `(res_q, res_N)` of every sweep.
+"""
+mutable struct AguamentiSolveInfo{T}
+    iters     ::Int
+    converged ::Bool
+    res_q     ::T
+    res_N     ::T
+    elapsed   ::Float64
+    history   ::Vector{NTuple{2, T}}
+end
+AguamentiSolveInfo{T}() where {T} = AguamentiSolveInfo{T}(0, false, T(NaN), T(NaN), 0.0, NTuple{2, T}[])
+
+"""
+$(TYPEDSIGNATURES)
+
 The Aguamenti v1.0 subglacial hydrology (Gregov, Angelides, Scheiter and Kazmierczak), a quasi-steady
 extension of Kazmierczak et al. (2024) for hard, soft and mixed beds. In every grounded cell it
 computes the effective pressure `N` from five components (Fig. 2):
@@ -169,6 +186,7 @@ struct AguamentiHydroModel{T <: AbstractFloat, A, RP <: AbstractRoutingPotential
     rtol              ::T
     routing_relaxation ::T
     verbose           ::Bool
+    info              ::AguamentiSolveInfo{T}
 end
 
 function Base.getproperty(model::AguamentiHydroModel, name::Symbol)
@@ -283,7 +301,8 @@ function AguamentiHydroModel(
         N_t, chi,
         (alloc_field(grid) for _ in 1:(fieldcount(AguamentiWorkspace) - 8))...)
 
-    return AguamentiHydroModel(params, routing_potential, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(verbose))
+    return AguamentiHydroModel(params, routing_potential, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(verbose),
+                               AguamentiSolveInfo{T}())
 end
 
 

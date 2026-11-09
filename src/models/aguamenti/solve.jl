@@ -327,6 +327,8 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
     start_time = time()
     converged = false
     n_iters = model.max_iters
+    info = model.info
+    empty!(info.history)
     for iter in 1:model.max_iters
         model.q_prev .= r.q
         model.N_prev .= state.N
@@ -366,15 +368,19 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
         q_scale = max(masked_max_abs(grid, r.q, state.mask), eps(eltype(r.q)))
         N_scale = max(masked_max_abs(grid, state.N, state.mask), eps(eltype(state.N)))
         res_N = masked_max_abs_diff(grid, state.N, model.N_prev, state.mask) / N_scale
-        if iter > 1 &&
-           masked_max_abs_diff(grid, r.q, model.q_prev, state.mask) <= model.rtol * q_scale &&
-           res_N <= model.rtol
+        res_q = masked_max_abs_diff(grid, r.q, model.q_prev, state.mask) / q_scale
+        push!(info.history, (res_q, res_N))
+        if iter > 1 && res_q <= model.rtol && res_N <= model.rtol
             converged = true
             n_iters = iter
             break
         end
     end
 
+    info.iters = n_iters
+    info.converged = converged
+    info.res_q, info.res_N = isempty(info.history) ? (NaN, NaN) : info.history[end]
+    info.elapsed = time() - start_time
     if model.verbose
         status = converged ? "converged" : "did NOT converge (hit max_iters)"
         @info "Aguamenti (q, N) Picard loop: $status after $n_iters iteration(s) in $(round(time() - start_time, digits = 4)) s"
