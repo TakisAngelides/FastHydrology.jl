@@ -88,11 +88,25 @@ unconditionally (no hard dependency on Shakti), but only becomes runnable once `
 alongside `FastHydrology`, since the `run!`/`step!` methods that dispatch on it live in the
 `FastHydrologyShaktiExt` package extension.
 
+A fourth model, [`AguamentiHydroModel`](@ref), is Aguamenti v1.0 (Gregov, Angelides, Scheiter and
+Kazmierczak), a quasi-steady extension of K24 for hard, soft and mixed beds. It reuses the K24
+routing and source terms, replaces the conduit closure by a library of steady drainage elements
+(cavity sheet, Röthlisberger channel, inter-clast film, till canal) whose fluxes sum to the routed
+flux at one effective pressure per cell, and carries two prognostic fields: the till effective stress
+`N_t` (a local till reservoir that exchanges water with the interface) and the channel indicator `chi`
+(hysteretic channelization). Advance it with `step!(model, grid, state, dt; dH_dt)`, or put it in
+steady state with a [`SteadyStateSimulation`](@ref).
+
 ```@docs
 AbstractHydroModel
 KazmierczakHydroModel
 HABHydroModel
 ShaktiHydroModel
+AguamentiHydroModel
+AbstractRoutingPotential
+HydraulicRouting
+GeometricRouting
+set_aguamenti_inputs!
 ```
 
 ## Sliding Laws

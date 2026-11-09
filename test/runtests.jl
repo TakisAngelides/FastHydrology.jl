@@ -9,6 +9,7 @@ using NCDatasets
     include("models/kazmierczak2024/routing_schemes_test.jl")
     include("models/kazmierczak2024/float_type_test.jl")
     include("models/hab/hab_test.jl")
+    include("models/aguamenti/aguamenti_test.jl")
     include("models/kazmierczak2024/data_loaders_test.jl")
 end
 

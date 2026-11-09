@@ -44,6 +44,12 @@ include("models/hab/run.jl")
 
 include("models/shakti/model.jl")
 
+include("models/aguamenti/elements.jl")
+include("models/aguamenti/till.jl")
+include("models/aguamenti/flux_balance.jl")
+include("models/aguamenti/model.jl")
+include("models/aguamenti/solve.jl")
+
 # common/grid.jl
 export AbstractHydroGrid, ArrayHydroGrid
 export alloc_field
@@ -55,6 +61,9 @@ export GROUNDED, OCEAN, LAND, OTHER_BASIN, HydroMask, classify_mask
 
 # common/model.jl, models/kazmierczak2024/model.jl, models/hab/model.jl, models/shakti/model.jl
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
+
+# models/aguamenti
+export AguamentiHydroModel, AbstractRoutingPotential, HydraulicRouting, GeometricRouting, set_aguamenti_inputs!
 
 # models/kazmierczak2024/drainage.jl
 export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly
