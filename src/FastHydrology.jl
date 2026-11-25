@@ -63,7 +63,9 @@ export GROUNDED, OCEAN, LAND, OTHER_BASIN, HydroMask, classify_mask
 export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroModel
 
 # models/aguamenti
-export AguamentiHydroModel, AbstractRoutingPotential, HydraulicRouting, GeometricRouting, set_aguamenti_inputs!
+export AguamentiHydroModel, AbstractRoutingPotential, HydraulicRouting, GeometricRouting, WeightedRouting, set_aguamenti_inputs!
+export AbstractTillExchange, ImplicitTillExchange, LaggedTillExchange
+export AbstractSheetLaw, LaminarTurbulentSheetLaw, TurbulentSheetLaw
 
 # models/kazmierczak2024/drainage.jl
 export AbstractDrainageMode, BothDrainage, EfficientOnly, InefficientOnly

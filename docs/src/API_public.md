@@ -106,6 +106,13 @@ AguamentiHydroModel
 AbstractRoutingPotential
 HydraulicRouting
 GeometricRouting
+WeightedRouting
+AbstractTillExchange
+ImplicitTillExchange
+LaggedTillExchange
+AbstractSheetLaw
+LaminarTurbulentSheetLaw
+TurbulentSheetLaw
 set_aguamenti_inputs!
 ```
 
