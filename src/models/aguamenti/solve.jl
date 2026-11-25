@@ -242,8 +242,10 @@ function replay_aguamenti_tape!(uptake, psi_out, mdot_t, dry, refreeze, freeze_d
                 freeze_deficit[ci, cj] = max(u - W / area, z)    # 0 when a lagged release exceeds it
             end
             mdot_t[ci, cj] = u
-            # all of a freeze-on deficit from the till: exactly dry, not by the round-off of W - u area
-            out = (W < 0 && u == W / area) ? z : W - u * area
+            # the till takes all the water (or all of a freeze-on deficit comes from the till): exactly
+            # dry. From W - u area the round-off (~1e-16 m3/s) would decide, and a cell at that edge
+            # flipped between dry (N_slide) and wet at q ~ 0 (N near p_i) from sweep to sweep.
+            out = u == W / area ? z : W - u * area
             if out <= 0
                 dry[ci, cj] = one(z)
                 psi_out[ci, cj] = z
