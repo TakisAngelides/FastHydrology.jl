@@ -125,8 +125,40 @@ steady solve has no exchange (the till is in equilibrium with the interface).
 """
 abstract type AbstractTillExchange end
 
-"Solve each cell's till uptake with its own flux balance (default). See [`AbstractTillExchange`](@ref)."
-struct ImplicitTillExchange <: AbstractTillExchange end
+"""
+$(TYPEDSIGNATURES)
+
+Which channel indicator the per-cell uptake of [`ImplicitTillExchange`](@ref) holds within its root
+(the `N(q)` the till relaxes towards, see `FastHydrology.TillUptake`):
+
+- `StepStartChi()` (default): `chi^(j)` (`model.chi_start`), the indicator the step starts from, fixed
+  over the sweeps. The uptake then does not feed back on the indicator of the same step: with the
+  latest one, a cell that was wet in a sweep advanced `chi` at `q > 0`, its uptake saw a higher `N`, took
+  all the water and turned the cell dry; the next sweep advanced `chi` at `q = 0`, `N` fell, the till
+  released and the cell was wet again, a period-2 cycle of the sweeps that kept most steps of a transient
+  from converging (AIS 16 km, dt = 0.1 yr: 801 of 1000 steps; 0 with this choice, the solution changed
+  only on the cells that flipped). The flux balance still advances `chi` at the routed flux.
+- `LatestChi()`: the indicator of the latest flux balance (`model.chi`: `chi^(j)` in the first sweep,
+  then advanced over the step at the routed flux of the previous sweep, the same as the flux balance's
+  once the sweeps converge).
+"""
+abstract type AbstractUptakeChi end
+
+"The uptake holds the channel indicator the step starts from (default). See [`AbstractUptakeChi`](@ref)."
+struct StepStartChi <: AbstractUptakeChi end
+
+"The uptake holds the channel indicator of the latest flux balance. See [`AbstractUptakeChi`](@ref)."
+struct LatestChi <: AbstractUptakeChi end
+
+"""
+Solve each cell's till uptake with its own flux balance (default). `chi` selects the channel indicator
+held within the uptake's root, [`StepStartChi`](@ref) (default) or [`LatestChi`](@ref), see
+[`AbstractUptakeChi`](@ref). See [`AbstractTillExchange`](@ref).
+"""
+struct ImplicitTillExchange{C <: AbstractUptakeChi} <: AbstractTillExchange
+    chi::C
+end
+ImplicitTillExchange(; chi::AbstractUptakeChi = StepStartChi()) = ImplicitTillExchange(chi)
 
 "The lagged, bounded till exchange of Eqs. (27)-(28b). See [`AbstractTillExchange`](@ref)."
 struct LaggedTillExchange <: AbstractTillExchange end

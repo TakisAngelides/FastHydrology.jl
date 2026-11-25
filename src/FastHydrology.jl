@@ -65,6 +65,7 @@ export AbstractHydroModel, KazmierczakHydroModel, HABHydroModel, ShaktiHydroMode
 # models/aguamenti
 export AguamentiHydroModel, AbstractRoutingPotential, HydraulicRouting, GeometricRouting, WeightedRouting, set_aguamenti_inputs!
 export AbstractTillExchange, ImplicitTillExchange, LaggedTillExchange
+export AbstractUptakeChi, StepStartChi, LatestChi
 export AbstractSheetLaw, LaminarTurbulentSheetLaw, TurbulentSheetLaw
 
 # models/kazmierczak2024/drainage.jl

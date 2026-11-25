@@ -109,6 +109,9 @@ GeometricRouting
 WeightedRouting
 AbstractTillExchange
 ImplicitTillExchange
+AbstractUptakeChi
+StepStartChi
+LatestChi
 LaggedTillExchange
 AbstractSheetLaw
 LaminarTurbulentSheetLaw

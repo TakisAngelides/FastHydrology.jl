@@ -724,25 +724,37 @@ aguamenti_logu(u, lo, hi) = lo * (hi / lo)^u
         @test lu isa FastHydrology.LaggedUptake
         lu(2, 2, 1.0)
         @test (@allocated lu(2, 2, 1.0)) == 0
+        # the implicit uptake holds chi^(j) by default (StepStartChi), the latest chi with LatestChi
+        @test ImplicitTillExchange().chi isa StepStartChi
+        ms = aguamenti_model(grid)
+        @test FastHydrology.till_uptake(ms.till_exchange, ms, state, FastHydrology.StepMode(dt, nothing), area).chi === ms.chi_start
+        mlc = aguamenti_model(grid; till_exchange = ImplicitTillExchange(; chi = LatestChi()))
+        @test FastHydrology.till_uptake(mlc.till_exchange, mlc, state, FastHydrology.StepMode(dt, nothing), area).chi === mlc.chi
 
         # Implicit, with channels forming along mixed-bed flow lines: the till of a wet cell relaxes
         # towards the N of the cell and does not overshoot it. (With the channel indicator advanced inside
         # the uptake root at q(W - u dx dy), a release opened channels and raised N, a spurious root:
-        # N_t jumped 1.2 MPa past N.) The tolerance covers the branch jumps of N(q).
-        grid, state = aguamenti_margin(16, 8; bump = 20.0)
-        Nx, Ny = grid.Nx, grid.Ny
-        kappa = [j <= 4 ? 0.0 : (j <= 6 ? 0.4 : 1.0) for i in 1:Nx, j in 1:Ny]
-        G = [j <= 4 ? 12.0 : 0.4 for i in 1:Nx, j in 1:Ny]
-        mc = AguamentiHydroModel(grid, kappa, fill(100 / YR, Nx, Ny), fill(2.4e-24, Nx, Ny), G, zeros(Nx, Ny);
-                                 k_t = 1e-15, N_t0 = 1.2e6)
-        for _ in 1:4
-            Nt0 = copy(mc.N_t)
-            step!(mc, grid, state, 0.25YR)
-            for c in findall((state.mask .== GROUNDED) .& (mc.dry .== 0) .& (mc.kappa .> 0))
-                @test min(Nt0[c], state.N[c]) - 2e5 <= mc.N_t[c] <= max(Nt0[c], state.N[c]) + 2e5
+        # N_t jumped 1.2 MPa past N.) The tolerance covers the branch jumps of N(q). With the default
+        # StepStartChi the till relaxes towards the N at chi^(j): where a channel opens within the step
+        # (chi from 0), it lags the final N by that step, so there the bound applies with LatestChi only.
+        for chiopt in (StepStartChi(), LatestChi())
+            grid, state = aguamenti_margin(16, 8; bump = 20.0)
+            Nx, Ny = grid.Nx, grid.Ny
+            kappa = [j <= 4 ? 0.0 : (j <= 6 ? 0.4 : 1.0) for i in 1:Nx, j in 1:Ny]
+            G = [j <= 4 ? 12.0 : 0.4 for i in 1:Nx, j in 1:Ny]
+            mc = AguamentiHydroModel(grid, kappa, fill(100 / YR, Nx, Ny), fill(2.4e-24, Nx, Ny), G, zeros(Nx, Ny);
+                                     k_t = 1e-15, N_t0 = 1.2e6, till_exchange = ImplicitTillExchange(; chi = chiopt))
+            for _ in 1:4
+                Nt0, chi0 = copy(mc.N_t), copy(mc.chi)
+                step!(mc, grid, state, 0.25YR)
+                @test mc.info.converged
+                for c in findall((state.mask .== GROUNDED) .& (mc.dry .== 0) .& (mc.kappa .> 0))
+                    chiopt isa StepStartChi && chi0[c] == 0 && mc.chi[c] > 0 && continue
+                    @test min(Nt0[c], state.N[c]) - 2e5 <= mc.N_t[c] <= max(Nt0[c], state.N[c]) + 2e5
+                end
             end
+            @test any(mc.chi[:, 5:6] .> 0)
         end
-        @test any(mc.chi[:, 5:6] .> 0)
     end
 
     @testset "root finders" begin

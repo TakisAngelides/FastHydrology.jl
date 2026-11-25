@@ -242,7 +242,8 @@ function replay_aguamenti_tape!(uptake, psi_out, mdot_t, dry, refreeze, freeze_d
                 freeze_deficit[ci, cj] = max(u - W / area, z)    # 0 when a lagged release exceeds it
             end
             mdot_t[ci, cj] = u
-            out = W - u * area
+            # all of a freeze-on deficit from the till: exactly dry, not by the round-off of W - u area
+            out = (W < 0 && u == W / area) ? z : W - u * area
             if out <= 0
                 dry[ci, cj] = one(z)
                 psi_out[ci, cj] = z
@@ -268,9 +269,8 @@ Till uptake of one cell over a step with [`ImplicitTillExchange`](@ref), solved 
 cell's own flux balance: the till relaxes towards the `N` of the water that remains in the cell after
 its uptake, so the uptake `u` [m/s] solves `u = demand(N(q(W - u dx dy)))`, where `q = outflow /
 corfac` (the routing's psi-to-q conversion of the cell), `N(q)` is the flux balance with its regimes
-and grounding-line correction (Eqs. 20-23) at the channel indicator of the latest flux balance
-(`model.chi`: `chi^(j)` in the first sweep, then advanced over the step at the routed flux of the
-previous sweep, so the same as the flux balance's once the sweeps converge), and `demand(N)` the
+and grounding-line correction (Eqs. 20-23) at the channel indicator `chi` the option of
+[`AbstractUptakeChi`](@ref) selects (by default `chi^(j)`, the step's start), and `demand(N)` the
 exchange of the till relaxation over the step ([`till_relax`](@ref), Eq. 28a without the undrained
 term). The channel indicator is held within the root: advanced at `q(W - u dx dy)` it would let a
 release open channels, raise `N` and release more, a second, spurious root. The right-hand side
@@ -282,9 +282,10 @@ jumps (a switch of the active branch) and there is no root, the uptake is the la
 from upstream within one replay -- a till demand lagged by a sweep (or by a step, Eq. 28b) instead
 makes whole flow lines flip between wet and dry.
 """
-struct TillUptake{M, ST, TT, D}
+struct TillUptake{M, ST, TT, D, C}
     model ::M
     state ::ST
+    chi   ::C     # channel indicator held within the root: model.chi_start or model.chi
     dt    ::TT
     dH_dt ::D
     area  ::TT
@@ -298,7 +299,7 @@ function (tu::TillUptake)(i, j, W)
         (ws.kappa[i, j] == 0 || W <= 0) && return z
         p_i, kappa, Psi = ws.p_i[i, j], ws.kappa[i, j], ws.Psi[i, j]
         u_b, A, D_s = r.abs_v_b[i, j], r.A_visc[i, j], ws.D_s[i, j]
-        chi = ws.chi[i, j]
+        chi = tu.chi[i, j]
         N_t, h_t, k_t, h, b = ws.N_t[i, j], ws.h_t[i, j], ws.k_t[i, j], state.h[i, j], state.b[i, j]
         corfac = r.corfac[i, j] + eps(z)
         dH = tu.dH_dt === nothing ? z : tu.dH_dt[i, j]
@@ -352,8 +353,12 @@ The till uptake functor `uptake(i, j, W)` the routing replay calls in every cell
 [`replay_aguamenti_tape!`](@ref)): [`TillUptake`](@ref) for [`ImplicitTillExchange`](@ref),
 [`LaggedUptake`](@ref) for [`LaggedTillExchange`](@ref), and none in a steady solve.
 """
-till_uptake(::ImplicitTillExchange, model::AguamentiHydroModel, state::HydroState, mode::StepMode, area) =
-    TillUptake(model, state, mode.dt, mode.dH_dt, area)
+till_uptake(te::ImplicitTillExchange, model::AguamentiHydroModel, state::HydroState, mode::StepMode, area) =
+    TillUptake(model, state, uptake_chi(te.chi, model.workspace), mode.dt, mode.dH_dt, area)
+
+"The channel indicator array the uptake of [`ImplicitTillExchange`](@ref) holds, see [`AbstractUptakeChi`](@ref)."
+uptake_chi(::StepStartChi, ws) = ws.chi_start
+uptake_chi(::LatestChi, ws) = ws.chi
 till_uptake(::LaggedTillExchange, model::AguamentiHydroModel, state::HydroState, ::StepMode, area) =
     LaggedUptake(model.workspace, area)
 till_uptake(::AbstractTillExchange, model::AguamentiHydroModel, state::HydroState, ::SteadyMode, area) = NoUptake()
