@@ -378,6 +378,34 @@ aguamenti_logu(u, lo, hi) = lo * (hi / lo)^u
         @test_throws ArgumentError step!(m4, grid, state, -1.0)
     end
 
+    @testset "steady state: a fixed point of a step (till in equilibrium, freeze-on drained)" begin
+        # A mixed bed, pressurized, with N inside the till bounds: the step's till uptake must relax
+        # towards the N the cell gets (the routing's own q conversion), and a freeze-on cell's till is drained.
+        grid, state = aguamenti_margin(; bump = 30.0)
+        Nx, Ny = grid.Nx, grid.Ny
+        G = 5.0
+        for freeze_on in (false, true), qc in (QFromFaceAverage(), QFromOutflow())
+            q_T = zeros(Nx, Ny)
+            freeze_on && (q_T[1:2, 1:2] .= G + 0.3)       # conduction above the geothermal flux: freeze-on
+            m = AguamentiHydroModel(grid, fill(0.3, Nx, Ny), fill(30 / YR, Nx, Ny), fill(2.4e-24, Nx, Ny),
+                                    fill(G, Nx, Ny), q_T; k_t = 1e-14, routing_options = (; q_conversion = qc))
+            update_steady_state!(m, grid, state)
+            g = state.mask .== GROUNDED
+            fz = g .& (m.freeze_deficit .> 0)
+            @test (count(fz) > 0) == freeze_on && all(m.dry[fz] .== 1)
+            @test all(m.N_t[I] == till_bounds(p, m.p_i[I])[2] for I in findall(fz))
+            wet = g .& (m.dry .== 0)
+            Nmin, Nmax = till_bounds(p, maximum(m.p_i))
+            @test count(wet .& (Nmin .< state.N .< Nmax)) > 0
+            Nt0, N0 = copy(m.N_t), copy(state.N)
+            for _ in 1:3
+                step!(m, grid, state, YR)
+            end
+            @test maximum(abs.(m.N_t[g] .- Nt0[g]) ./ max.(Nt0[g], 1e4)) < 1e-6
+            @test maximum(abs.(state.N[g] .- N0[g]) ./ max.(N0[g], 1e4)) < 1e-6
+        end
+    end
+
     @testset "time steps: channel growth and decay" begin
         grid, state = aguamenti_margin()
         m = aguamenti_model(grid; G = 20.0)

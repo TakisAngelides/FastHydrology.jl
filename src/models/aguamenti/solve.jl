@@ -269,8 +269,8 @@ $(TYPEDSIGNATURES)
 
 Till uptake of one cell over a step with [`ImplicitTillExchange`](@ref), solved together with the
 cell's own flux balance: the till relaxes towards the `N` of the water that remains in the cell after
-its uptake, so the uptake `u` [m/s] solves `u = demand(N(q(W - u dx dy)))`, where `q = outflow /
-corfac` (the routing's psi-to-q conversion of the cell), `N(q)` is the flux balance with its regimes
+its uptake, so the uptake `u` [m/s] solves `u = demand(N(q(W - u dx dy)))`, where `q(out)` is the
+routing's psi-to-q conversion of the cell at the outflow `out` (see [`uptake_flux_coefficients`](@ref)), `N(q)` is the flux balance with its regimes
 and grounding-line correction (Eqs. 20-23) at the channel indicator `chi` the option of
 [`AbstractUptakeChi`](@ref) selects (by default `chi^(j)`, the step's start), and `demand(N)` the
 exchange of the till relaxation over the step ([`till_relax`](@ref), Eq. 28a without the undrained
@@ -284,13 +284,54 @@ jumps (a switch of the active branch) and there is no root, the uptake is the la
 from upstream within one replay -- a till demand lagged by a sweep (or by a step, Eq. 28b) instead
 makes whole flow lines flip between wet and dry.
 """
-struct TillUptake{M, ST, TT, D, C}
+struct TillUptake{M, ST, TT, D, C, Q}
     model ::M
     state ::ST
     chi   ::C     # channel indicator held within the root: model.chi_start or model.chi
     dt    ::TT
     dH_dt ::D
     area  ::TT
+    dx    ::TT    # cell size along x [m] (dy = area / dx), for the face-normal fluxes
+    q_conversion ::Q   # the routing's psi -> q conversion, which the uptake's q(W - u dx dy) follows
+end
+
+"""
+$(TYPEDSIGNATURES)
+
+The coefficients `(a_x, a_y, b_x, b_y)` of the interfacial flux of cell `(i, j)` as a function of its
+outflow `out` [m3/s] during the routing replay, `q = |(a_x + b_x out, a_y + b_y out)|` clamped to
+`[q_min, q_max]`: the same `q` the model then computes from the routed flux with its `q_conversion`, so
+the till of [`TillUptake`](@ref) relaxes towards the `N` the cell gets.
+- [`QFromOutflow`](@ref): `q = out / corfac` (`a = 0`).
+- [`QFromFaceAverage`](@ref): the face-normal fluxes averaged to the centre. `a` holds the inflow of
+  the cell's upstream neighbours across its faces, final when the replay reaches the cell (they come
+  before it in the routing order), and `b` the cell's own routing weights. With `out / corfac` here
+  instead (the inflow faces left out), the till relaxed towards an `N` the cell never has, and a
+  steady state was not a fixed point of a step (AIS: 174 wet cells whose till drifted by >10%).
+"""
+@inline function uptake_flux_coefficients(::QFromOutflow, tu::TillUptake, i, j)
+    r = tu.model.routing
+    z = zero(tu.area)
+    return z, z, @inbounds(one(z) / (r.corfac[i, j] + eps(z))), z
+end
+
+@inline function uptake_flux_coefficients(::QFromFaceAverage, tu::TillUptake, i, j)
+    r, mask = tu.model.routing, tu.state.mask
+    psi, w = r.psi_out, r.routing_tape.w8
+    Nx, Ny = size(psi)
+    z = zero(tu.area)
+    dx = tu.dx
+    dy = tu.area / dx
+    ax = ay = z
+    @inbounds begin
+        (i > 1  && mask[i - 1, j] == GROUNDED) && (ax += psi[i - 1, j] * w[2, i - 1, j])
+        (i < Nx && mask[i + 1, j] == GROUNDED) && (ax -= psi[i + 1, j] * w[1, i + 1, j])
+        (j > 1  && mask[i, j - 1] == GROUNDED) && (ay += psi[i, j - 1] * w[4, i, j - 1])
+        (j < Ny && mask[i, j + 1] == GROUNDED) && (ay -= psi[i, j + 1] * w[3, i, j + 1])
+        bx = w[2, i, j] - w[1, i, j]
+        by = w[4, i, j] - w[3, i, j]
+    end
+    return ax / (2dy), ay / (2dx), bx / (2dy), by / (2dx)
 end
 
 function (tu::TillUptake)(i, j, W)
@@ -303,14 +344,16 @@ function (tu::TillUptake)(i, j, W)
         u_b, A, D_s = r.abs_v_b[i, j], r.A_visc[i, j], ws.D_s[i, j]
         chi = tu.chi[i, j]
         N_t, h_t, k_t, h, b = ws.N_t[i, j], ws.h_t[i, j], ws.k_t[i, j], state.h[i, j], state.b[i, j]
-        corfac = r.corfac[i, j] + eps(z)
         dH = tu.dH_dt === nothing ? z : tu.dH_dt[i, j]
     end
     N0 = strength_bound(p, kappa, ws.c_0[i, j])
     q_on, q_sn, N_sn = ws.q_on[i, j], ws.q_sn[i, j], ws.N_sn[i, j]      # per solve, update_channel_thresholds!
     dt = tu.dt
+    ax, ay, bx, by = uptake_flux_coefficients(tu.q_conversion, tu, i, j)
+    q_min, q_max = r.q_min, r.q_max
     function N_of(u)
-        q = max(W - u * tu.area, z) / corfac
+        out = max(W - u * tu.area, z)
+        q = min(max(hypot(ax + bx * out, ay + by * out), q_min), q_max)
         N_star, _ = flux_balance_root(p, q, chi, kappa, Psi, u_b, A, D_s, p_i, q_sn; developing = q >= q_on, N_sn)
         N_inf, _ = regime_pressure(p, N_star, p_i, N0)
         return grounding_line_correction(p, N_inf, h, b)
@@ -355,15 +398,15 @@ The till uptake functor `uptake(i, j, W)` the routing replay calls in every cell
 [`replay_aguamenti_tape!`](@ref)): [`TillUptake`](@ref) for [`ImplicitTillExchange`](@ref),
 [`LaggedUptake`](@ref) for [`LaggedTillExchange`](@ref), and none in a steady solve.
 """
-till_uptake(te::ImplicitTillExchange, model::AguamentiHydroModel, state::HydroState, mode::StepMode, area) =
-    TillUptake(model, state, uptake_chi(te.chi, model.workspace), mode.dt, mode.dH_dt, area)
+till_uptake(te::ImplicitTillExchange, model::AguamentiHydroModel, state::HydroState, mode::StepMode, area, dx = sqrt(area)) =
+    TillUptake(model, state, uptake_chi(te.chi, model.workspace), mode.dt, mode.dH_dt, area, oftype(area, dx), model.routing.q_conversion)
 
 "The channel indicator array the uptake of [`ImplicitTillExchange`](@ref) holds, see [`AbstractUptakeChi`](@ref)."
 uptake_chi(::StepStartChi, ws) = ws.chi_start
 uptake_chi(::LatestChi, ws) = ws.chi
-till_uptake(::LaggedTillExchange, model::AguamentiHydroModel, state::HydroState, ::StepMode, area) =
+till_uptake(::LaggedTillExchange, model::AguamentiHydroModel, state::HydroState, ::StepMode, area, dx = sqrt(area)) =
     LaggedUptake(model.workspace, area)
-till_uptake(::AbstractTillExchange, model::AguamentiHydroModel, state::HydroState, ::SteadyMode, area) = NoUptake()
+till_uptake(::AbstractTillExchange, model::AguamentiHydroModel, state::HydroState, ::SteadyMode, area, dx = sqrt(area)) = NoUptake()
 
 
 """
@@ -519,7 +562,9 @@ function update_sliding_pressure!(model::AguamentiHydroModel, grid::AbstractHydr
         p_i = ws.p_i[i, j]
         if equilibrate_till
             N_min, N_max = till_bounds(p, p_i)
-            ws.N_t[i, j] = clamp(ws.N_wet[i, j], N_min, N_max)
+            # A temperate cell under freeze-on (a deficit the till would supply) drains its till to the
+            # residual content, N_max, as a step does (Eqs. 9b, 27); it has no interfacial water to equilibrate with.
+            ws.N_t[i, j] = (ws.cold[i, j] == 0 && ws.freeze_deficit[i, j] > 0) ? N_max : clamp(ws.N_wet[i, j], N_min, N_max)
         end
         kappa = ws.kappa[i, j]
         if ws.dry[i, j] != 0
@@ -658,7 +703,7 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
         update_till_storage!(model, grid, state, mode)
         tape = r.routing_tape
         tape.valid || record_routing_tape!(tape, r, grid, state)
-        uptake = till_uptake(model.till_exchange, model, state, mode, area)
+        uptake = till_uptake(model.till_exchange, model, state, mode, area, grid.dx)
         replay_aguamenti_tape!(uptake, r.psi_out, model.mdot_t, model.dry, model.refreeze, model.freeze_deficit, r.mdot_total,
                                model.release_max, model.cold, state.mask, tape, grid.Nx, grid.Ny, grid.dx, grid.dy, p.rho_w)
         update_q_from_psi_out!(r, grid, state)
