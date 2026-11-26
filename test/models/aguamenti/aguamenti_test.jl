@@ -421,6 +421,18 @@ aguamenti_logu(u, lo, hi) = lo * (hi / lo)^u
             @test !mh.info.dissipation_held && isnan(mh.info.res_diss) && !mf.info.dissipation_held
             @test s_free.N == s_held.N && mf.chi == mh.chi
         end
+        # the failure it fixes: with till (kappa = 0.5) the first step of the margin keeps moving at the
+        # 1e-6 level with the free rule; the default holds the dissipation flux at sweep 10 and converges
+        for kap in (0.5, 1.0)
+            gf, sf = aguamenti_margin(); gh, sh = aguamenti_margin()
+            mf1 = aguamenti_model(gf; kappa = kap, G = 20.0, dissipation_rule = FreeDissipation())
+            mh1 = aguamenti_model(gh; kappa = kap, G = 20.0)
+            step!(mf1, gf, sf, 1.0); step!(mh1, gh, sh, 1.0)
+            @test !mf1.info.converged && mf1.info.iters == mf1.max_iters
+            @test mh1.info.converged && mh1.info.iters == HeldDissipation().after
+            @test mh1.info.dissipation_held && mh1.info.res_diss < 1e-4
+            @test maximum(abs.(sh.N .- sf.N)) <= 1e-4 * maximum(abs, sf.N)
+        end
         # held from sweep 2: the dissipation melt is that of the held flux, and the gap is reported
         g3, s3 = aguamenti_margin()
         m2 = aguamenti_model(g3; G = 20.0, dissipation_rule = HeldDissipation(; after = 2))
