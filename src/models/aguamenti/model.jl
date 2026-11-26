@@ -167,6 +167,41 @@ struct LaggedTillExchange <: AbstractTillExchange end
 """
 $(TYPEDSIGNATURES)
 
+The flux the dissipation melt of a sweep is evaluated from (Eq. 7b, `q Psi` with the cell-centred
+discretization), within the Picard sweeps of a solve. It is the routed flux `q_in` of the previous
+sweep, so it closes a feedback loop `q -> dissipation melt -> q` through the till uptake downstream.
+Where `N` depends steeply on `q` (sheet cells with a relative gain `|dN/N| / |dq/q|` above about 2) the
+loop is a period-doubling instability of the sweeps, which settles in a small period-2 cycle (AIS 16
+km spin-up, dt = 0.1 yr: 2 of 1000 steps at relative residuals 3e-3 in `q`, 8e-4 in `N`, about 60 cells).
+Without the dissipation the same steps converge in 2 sweeps.
+
+- `HeldDissipation(; after = 10)` (default): a solve still not converged after `after` sweeps holds the
+  flux of the dissipation at the mean `q_in` of its last two sweeps for the remaining sweeps (the
+  centre of a period-2 cycle), and `(q, N)` converge on it. `model.info.dissipation_held` says whether
+  it was held, and `model.info.res_diss` is the largest gap between the held flux and the final `q_in`,
+  relative to the largest `q` (the error of the dissipation melt made by holding it).
+- `FreeDissipation()`: the previous sweep's `q_in` in every sweep.
+
+With `routing_options = (; dissipation_discretization = FaceDissipation())` the dissipation is taken
+from the routing tape and is not held.
+"""
+abstract type AbstractDissipationRule end
+
+"The dissipation melt of every sweep comes from the previous sweep's flux. See [`AbstractDissipationRule`](@ref)."
+struct FreeDissipation <: AbstractDissipationRule end
+
+"A solve not converged after `after` sweeps holds the flux of its dissipation melt (default). See [`AbstractDissipationRule`](@ref)."
+struct HeldDissipation <: AbstractDissipationRule
+    after::Int
+end
+HeldDissipation(; after::Integer = 10) =
+    (after >= 2 || throw(ArgumentError("HeldDissipation: after must be >= 2")); HeldDissipation(Int(after)))
+
+
+
+"""
+$(TYPEDSIGNATURES)
+
 Every array buffer of [`AguamentiHydroModel`](@ref) beyond those of its routing engine: the bed data,
 the two state fields (`N_t`, `chi`), and the outputs of the flux balance and the till reservoir.
 """
@@ -212,6 +247,8 @@ struct AguamentiWorkspace{A}
     q_ch     ::A  # channel flux chi Q_h / l_h at N [m2/s]
     q_s      ::A  # film flux at N [m2/s] (per unit width of the soft-bed part)
     q_can    ::A  # canal flux Q_s / l_s at N [m2/s]
+    q_diss   ::A  # the flux the dissipation melt is held at (HeldDissipation) [m2/s]
+    q_in_prev ::A # q_in of the previous sweep [m2/s]
     # Picard loop
     q_prev   ::A
     N_prev   ::A
@@ -229,7 +266,8 @@ bound and the number of cells the clip of Eq. (26c) lowered (of the last graph b
 otherwise), and, in a steady solve with `WeightedRouting`, `res_route`, the largest change of `N`
 relative to its maximum between the `N` the last graph was built with and the final one (the graph is
 held after `max_iters ÷ 2` sweeps if it has not settled, and `converged` is then `false`; `NaN`
-otherwise).
+otherwise), and, with [`HeldDissipation`](@ref), whether the flux of the
+dissipation melt was held (`dissipation_held`) and the gap it leaves (`res_diss`, `NaN` if not held).
 """
 mutable struct AguamentiSolveInfo{T}
     iters     ::Int
@@ -242,8 +280,10 @@ mutable struct AguamentiSolveInfo{T}
     G_gamma   ::T
     clipped   ::Int
     res_route ::T
+    dissipation_held ::Bool
+    res_diss  ::T
 end
-AguamentiSolveInfo{T}() where {T} = AguamentiSolveInfo{T}(0, false, T(NaN), T(NaN), 0.0, NTuple{2, T}[], 0, T(NaN), 0, T(NaN))
+AguamentiSolveInfo{T}() where {T} = AguamentiSolveInfo{T}(0, false, T(NaN), T(NaN), 0.0, NTuple{2, T}[], 0, T(NaN), 0, T(NaN), false, T(NaN))
 
 """
 $(TYPEDSIGNATURES)
@@ -334,6 +374,9 @@ in a steady solve, see [`AbstractRoutingPotential`](@ref)), `lagged_friction = t
 `till_exchange = ImplicitTillExchange()`: how the till exchange of a step is computed, see
 [`AbstractTillExchange`](@ref).
 
+`dissipation_rule = HeldDissipation()`: whether a solve that has not converged after some sweeps holds
+the flux its dissipation melt is evaluated from, see [`AbstractDissipationRule`](@ref).
+
 With a sliding law that depends on `N`, `lagged_friction = true` evaluates the basal stress (and so
 the frictional melt) once per solve, from the `state.N` the solve starts from, and the Picard loop
 iterates only routing, dissipation and flux balance; a coupled host iterates the friction feedback
@@ -357,10 +400,11 @@ dissipation melt is the cell-centred `q Psi` of Eq. (7b) (`CellCentredDissipatio
 `routing_options` says otherwise.
 """
 struct AguamentiHydroModel{T <: AbstractFloat, A, RP <: AbstractRoutingPotential, TE <: AbstractTillExchange,
-                           KM <: KazmierczakHydroModel, P <: AguamentiParams{T}} <: AbstractHydroModel
+                           KM <: KazmierczakHydroModel, P <: AguamentiParams{T}, DR <: AbstractDissipationRule} <: AbstractHydroModel
     params            ::P
     routing_potential ::RP
     till_exchange     ::TE
+    dissipation_rule  ::DR
     routing           ::KM
     workspace         ::AguamentiWorkspace{A}
     max_iters         ::Int
@@ -423,6 +467,7 @@ function AguamentiHydroModel(
     max_iters = 30, rtol = 1e-6, routing_relaxation = 0.5, lagged_friction = true, verbose = false,
     # Routing
     routing_potential::AbstractRoutingPotential = GeometricRouting(), till_exchange::AbstractTillExchange = ImplicitTillExchange(),
+    dissipation_rule::AbstractDissipationRule = HeldDissipation(),
     sliding_law = NoFrictionSlidingLaw(), routing_scheme = Warner(), coupling_length_kamb86 = 0.0,
     dissipation_melt = true, routing_options::NamedTuple = (;),
 )
@@ -487,7 +532,7 @@ function AguamentiHydroModel(
         N_t, chi,
         (alloc_field(grid) for _ in 1:(fieldcount(AguamentiWorkspace) - 8))...)
 
-    return AguamentiHydroModel(params, routing_potential, till_exchange, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(lagged_friction), Bool(verbose),
+    return AguamentiHydroModel(params, routing_potential, till_exchange, dissipation_rule, routing, workspace, Int(max_iters), T(rtol), T(routing_relaxation), Bool(lagged_friction), Bool(verbose),
                                AguamentiSolveInfo{T}())
 end
 

@@ -407,6 +407,33 @@ aguamenti_logu(u, lo, hi) = lo * (hi / lo)^u
         @test sum(m.chi) < sum(chi_before)
     end
 
+    @testset "dissipation rule: the flux of the dissipation melt held within a solve" begin
+        @test aguamenti_model(aguamenti_margin()[1]).dissipation_rule isa HeldDissipation
+        @test HeldDissipation().after == 10
+        @test_throws ArgumentError HeldDissipation(; after = 1)
+        # a solve that converges before `after` sweeps is the same with either rule
+        g2, s_free = aguamenti_margin(); _, s_held = aguamenti_margin()
+        mf = aguamenti_model(g2; G = 20.0, dissipation_rule = FreeDissipation())
+        mh = aguamenti_model(g2; G = 20.0)
+        for dt in (1.0, 5YR, 5YR)
+            step!(mf, g2, s_free, dt); step!(mh, g2, s_held, dt)
+            @test mf.info.converged && mh.info.converged && mh.info.iters < 10
+            @test !mh.info.dissipation_held && isnan(mh.info.res_diss) && !mf.info.dissipation_held
+            @test s_free.N == s_held.N && mf.chi == mh.chi
+        end
+        # held from sweep 2: the dissipation melt is that of the held flux, and the gap is reported
+        g3, s3 = aguamenti_margin()
+        m2 = aguamenti_model(g3; G = 20.0, dissipation_rule = HeldDissipation(; after = 2))
+        for dt in (1.0, 5YR)
+            step!(m2, g3, s3, dt)
+            @test m2.info.converged
+            if m2.info.iters >= 2
+                @test m2.info.dissipation_held && 0 <= m2.info.res_diss < 1
+            end
+            @test all(isfinite, s3.N)
+        end
+    end
+
     @testset "routing options, sliding coupling and N_from_ub!" begin
         grid, state = aguamenti_margin()
         mh = aguamenti_model(grid; routing_potential = HydraulicRouting(), max_iters = 200)

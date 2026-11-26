@@ -630,6 +630,8 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
 
     # Basal stress at the N the solve starts from (lagged friction), or at every sweep's N below.
     model.lagged_friction && update_tau_b!(r, state, r.sliding_law)
+    info.dissipation_held = false
+    info.res_diss = NaN
     start_time = time()
     converged = false
     n_iters = model.max_iters
@@ -648,7 +650,7 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
         model.lagged_friction || update_tau_b!(r, state, r.sliding_law)
         @. r.mdot_total = r.mdot_fixed + r.i_eb
         add_friction_term!(r)
-        r.q .= model.q_in
+        dissipation_flux!(model.dissipation_rule, model, iter)
         add_dissipation_term!(r, r.dissipation_melt)
         r.Q_sens .= 0
 
@@ -663,6 +665,7 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
         # A dry or cold cell has no interfacial water (the face-averaged q would still see its inflow). The
         # flux balance keeps the routed flux, so the till of a dry cell keeps relaxing towards the pressure
         # of the water it absorbs rather than towards the q = 0 pressure (which would flip it wet again).
+        model.q_in_prev .= model.q_in
         model.q_in .= r.q
         z = zero(eltype(r.q))
         @. r.q = ifelse(model.dry != 0, z, r.q)
@@ -694,6 +697,10 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
     info.res_q, info.res_N = isempty(info.history) ? (NaN, NaN) : info.history[end]
     N_scale = max(masked_max_abs(grid, state.N, state.mask), eps(eltype(state.N)))
     info.res_route = routing_residual(model, model.routing_potential, grid, state, mode, N_scale)
+    if info.dissipation_held
+        q_scale = max(masked_max_abs(grid, model.q_in, state.mask), eps(eltype(r.q)))
+        info.res_diss = masked_max_abs_diff(grid, model.q_diss, model.q_in, state.mask) / q_scale
+    end
     info.elapsed = time() - start_time
     if model.verbose
         status = converged ? "converged" : "did NOT converge (hit max_iters)"
@@ -702,6 +709,18 @@ function solve_aguamenti!(model::AguamentiHydroModel, grid::AbstractHydroGrid, s
     return converged
 end
 
+
+# The flux the dissipation melt of this sweep is evaluated from, left in r.q (see AbstractDissipationRule).
+dissipation_flux!(::FreeDissipation, model, iter) = (model.routing.q .= model.q_in; nothing)
+
+function dissipation_flux!(rule::HeldDissipation, model, iter)
+    if iter == rule.after
+        @. model.q_diss = (model.q_in + model.q_in_prev) / 2     # the centre of a period-2 cycle
+        model.info.dissipation_held = true
+    end
+    model.routing.q .= iter >= rule.after ? model.q_diss : model.q_in
+    return nothing
+end
 
 """
 $(TYPEDSIGNATURES)
